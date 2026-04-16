@@ -90,7 +90,7 @@ export function useApp({ onAppCreated }: UseAppOptions): {
 
       if (msg.id === 1 && msg.result) {
         window.parent.postMessage(
-          { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+          { jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} },
           "*"
         );
         setIsConnected(true);
@@ -120,11 +120,11 @@ export function useApp({ onAppCreated }: UseAppOptions): {
       {
         jsonrpc: "2.0",
         id: 1,
-        method: "initialize",
+        method: "ui/initialize",
         params: {
-          protocolVersion: "2025-11-25",
-          capabilities: {},
-          clientInfo: { name: "example-mcp-o11y", version: "1.0.0" },
+          protocolVersion: "2026-01-26",
+          appCapabilities: {},
+          appInfo: { name: "example-mcp-o11y", version: "1.0.0" },
         },
       },
       "*"
