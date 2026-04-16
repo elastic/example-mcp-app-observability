@@ -1,0 +1,448 @@
+version: '1'
+name: K8s CrashLoopBackOff Investigation (OTel)
+description: >
+  Automatically investigates a Kubernetes CrashLoopBackOff or OOMKilled alert
+  on clusters using the OTel ingest path (EDOT / kube-stack). Queries pod
+  context, ML anomaly results, upstream health, and recent changes, then uses
+  AI to synthesize a root cause hypothesis before anyone opens a dashboard.
+enabled: true
+tags:
+  - kubernetes
+  - observability
+  - investigation
+  - otel
+
+consts:
+  # OTel-receiver-namespaced indices (EDOT default)
+  k8s_pod_metrics_index: "metrics-kubeletstatsreceiver.otel-*"
+  k8s_cluster_metrics_index: "metrics-k8sclusterreceiver.otel-*"
+  k8s_logs_index: "logs-*.otel-*"
+  k8s_events_index: "logs-k8seventsreceiver.otel-*"
+  apm_txn_metrics_index: "metrics-service_transaction.1m.otel-default"
+  ml_anomalies_index: ".ml-anomalies-*"
+  ml_memory_job: "k8s_pod_memory_growth"
+  upstream_error_multiplier: 5
+  upstream_latency_multiplier: 3
+  recent_change_window_minutes: 120
+
+inputs:
+  properties:
+    service_name:
+      type: string
+      description: "K8s deployment / service name of the alerting service"
+    namespace:
+      type: string
+      description: "K8s namespace of the alerting service"
+    pod_name:
+      type: string
+      description: "Name of the specific pod that triggered the alert"
+    alert_timestamp:
+      type: string
+      description: "ISO8601 timestamp of the alert firing"
+
+triggers:
+  - type: alert
+
+steps:
+
+  # =========================================================================
+  # STEP 1 — Characterize the triggering event
+  # =========================================================================
+  # k8sclusterreceiver emits k8s.container.restarts and k8s.container.status.last_terminated_reason.
+  # kubeletstatsreceiver emits k8s.pod.memory_limit_utilization / k8s.pod.cpu_limit_utilization as ratios.
+  - name: characterize_event
+    type: elasticsearch.esql.query
+    with:
+      query: |
+        FROM metrics-k8sclusterreceiver.otel-*
+        | WHERE k8s.pod.name == "{{ inputs.pod_name }}"
+          AND k8s.namespace.name == "{{ inputs.namespace }}"
+          AND @timestamp > NOW() - 1 hour
+        | STATS
+            restart_count    = MAX(k8s.container.restarts),
+            last_term_reason = VALUES(k8s.container.status.last_terminated_reason)
+        | EVAL last_term_reason = MV_FIRST(last_term_reason)
+      format: json
+    on-failure:
+      continue: true
+
+  - name: characterize_utilization
+    type: elasticsearch.esql.query
+    with:
+      query: |
+        FROM metrics-kubeletstatsreceiver.otel-*
+        | WHERE k8s.pod.name == "{{ inputs.pod_name }}"
+          AND k8s.namespace.name == "{{ inputs.namespace }}"
+          AND @timestamp > NOW() - 15 minutes
+        | STATS
+            memory_util_pct = ROUND(MAX(k8s.pod.memory_limit_utilization) * 100, 1),
+            cpu_util_pct    = ROUND(MAX(k8s.pod.cpu_limit_utilization) * 100, 1)
+      format: json
+    on-failure:
+      continue: true
+
+  # CPU-throttling proxy: fraction of sample buckets where container-level
+  # cpu_limit_utilization was pinned >= 0.95. Sustained high values here
+  # correlate with cgroup CPU throttling even when a dedicated
+  # throttled.time counter isn't exported by the kubelet.
+  - name: characterize_throttling
+    type: elasticsearch.esql.query
+    with:
+      query: |
+        FROM metrics-kubeletstatsreceiver.otel-*
+        | WHERE k8s.pod.name == "{{ inputs.pod_name }}"
+          AND k8s.namespace.name == "{{ inputs.namespace }}"
+          AND @timestamp > NOW() - 15 minutes
+        | EVAL pegged = CASE(k8s.container.cpu_limit_utilization >= 0.95, 1, 0)
+        | STATS
+            total_samples = COUNT(*),
+            pegged_samples = SUM(pegged),
+            max_cpu_util = ROUND(MAX(k8s.container.cpu_limit_utilization) * 100, 1)
+        | EVAL throttle_fraction = ROUND(pegged_samples::double / total_samples, 2)
+        | KEEP throttle_fraction, max_cpu_util, pegged_samples, total_samples
+      format: json
+    on-failure:
+      continue: true
+
+  # last_term_reason is already scalar (MV_FIRST in the ESQL above).
+  # values[0] shape is [restart_count, last_term_reason].
+  - name: set_term_reason
+    type: data.set
+    with:
+      term_reason: "{{ steps.characterize_event.output.values[0][1] | default: '' }}"
+
+  # Branch on OOMKilled (replaces exit-code 137 check from the legacy workflow)
+  - name: route_by_term_reason
+    type: if
+    condition: "steps.set_term_reason.output.term_reason: OOMKilled"
+    steps:
+
+      # =======================================================================
+      # STEP 2a — Memory investigation: consult ML anomaly results
+      # =======================================================================
+      - name: check_ml_memory_anomaly
+        type: elasticsearch.search
+        with:
+          index: ".ml-anomalies-*"
+          query:
+            bool:
+              must:
+                - term:
+                    job_id: "{{ consts.ml_memory_job }}"
+                - term:
+                    partition_field_value: "{{ inputs.service_name }}"
+                - range:
+                    timestamp:
+                      gte: "now-1h"
+              filter:
+                - range:
+                    anomaly_score:
+                      gte: 50
+          size: 1
+          sort: "anomaly_score:desc"
+        on-failure:
+          continue: true
+
+      - name: set_anomaly_count
+        type: data.set
+        with:
+          anomaly_count: "{{ steps.check_ml_memory_anomaly.output.hits.total.value | default: 0 }}"
+
+      - name: branch_on_leak_signal
+        type: if
+        condition: "steps.set_anomaly_count.output.anomaly_count > 0"
+        steps:
+          - name: flag_leak_suspected
+            type: data.set
+            with:
+              leak_suspected: "true"
+              anomaly_score: "{{ steps.check_ml_memory_anomaly.output.hits.hits[0]._source.anomaly_score }}"
+        else:
+          - name: flag_load_driven_oom
+            type: data.set
+            with:
+              leak_suspected: "false"
+              oom_note: "memory spike appears load-driven, no ML anomaly found"
+
+    else:
+      # Not OOM — investigate application logs
+      # =======================================================================
+      # STEP 2b — Log investigation: retrieve + AI classify
+      # =======================================================================
+      - name: get_recent_logs
+        type: elasticsearch.esql.query
+        with:
+          query: |
+            FROM logs-*.otel-*
+            | WHERE k8s.pod.name == "{{ inputs.pod_name }}"
+              AND k8s.namespace.name == "{{ inputs.namespace }}"
+              AND @timestamp < "{{ inputs.alert_timestamp }}"
+              AND @timestamp > NOW() - 1 hour
+            | SORT @timestamp DESC
+            | LIMIT 200
+            | KEEP @timestamp, body.text, severity_text, k8s.container.name
+          format: json
+        on-failure:
+          continue: true
+
+      - name: set_log_count
+        type: data.set
+        with:
+          log_count: "{{ steps.get_recent_logs.output.values | size | default: 0 }}"
+
+      - name: branch_on_logs_available
+        type: if
+        condition: "steps.set_log_count.output.log_count > 0"
+        steps:
+          - name: classify_log_pattern
+            type: ai.classify
+            with:
+              input: "{{ steps.get_recent_logs.output | json }}"
+              categories:
+                - connection_refused
+                - dependency_unavailable
+                - out_of_memory
+                - timeout
+                - panic_or_segfault
+                - unrecognized
+              instructions: |
+                You are classifying Kubernetes container logs immediately before a crash.
+                Identify the dominant error pattern from the log lines provided.
+                Choose the single best category. If no clear pattern is found, return "unrecognized".
+              includeRationale: true
+        else:
+          - name: set_no_logs_classification
+            type: data.set
+            with:
+              log_classification_category: "no_logs_available"
+              log_classification_rationale: >
+                No container logs were found in the hour before the alert.
+                Container may have crashed before writing logs, or log shipping is broken.
+                Check if pod was scheduled, and verify EDOT logs collector is healthy.
+
+  # =========================================================================
+  # STEP 3 — Check upstream service health
+  # =========================================================================
+  # OTel APM emits service_destination metrics with span.destination.service.resource.
+  - name: get_dependencies
+    type: elasticsearch.esql.query
+    with:
+      query: |
+        FROM metrics-service_destination.1m.otel-default
+        | WHERE service.name == "{{ inputs.service_name }}"
+          AND @timestamp > NOW() - 1 hour
+        | STATS _count = COUNT(*) BY span.destination.service.resource
+        | KEEP span.destination.service.resource
+        | LIMIT 10
+      format: json
+    on-failure:
+      continue: true
+
+  - name: check_has_dependencies
+    type: data.set
+    with:
+      has_dependencies: "{{ steps.get_dependencies.output.values | size | default: 0 }}"
+
+  # NOTE: OTel APM metrics use aggregate_metric_double for transaction.duration.summary
+  # and event.success_count. ESQL exposes AVG()/SUM() on these but not percentiles on
+  # the histogram type — so we compare mean latency rather than p99. Error rate is
+  # derived from success count vs total event count per minute-bucket.
+  - name: get_upstream_current
+    type: elasticsearch.esql.query
+    if: "steps.check_has_dependencies.output.has_dependencies > 0"
+    with:
+      query: |
+        FROM metrics-service_transaction.1m.otel-default
+        | WHERE service.name IN ({{ steps.get_dependencies.output.values | join: '", "' | prepend: '"' | append: '"' }})
+          AND @timestamp > NOW() - 1 hour
+        | STATS
+            current_avg_ms   = ROUND(AVG(transaction.duration.summary) / 1000, 2),
+            total_events     = COUNT(transaction.duration.summary),
+            total_successes  = SUM(event.success_count)
+          BY service.name
+        | EVAL current_error_rate = ROUND((total_events - total_successes) / total_events * 100, 2)
+        | KEEP service.name, current_avg_ms, current_error_rate
+      format: json
+    on-failure:
+      continue: true
+
+  - name: get_upstream_baseline
+    type: elasticsearch.esql.query
+    if: "steps.check_has_dependencies.output.has_dependencies > 0"
+    with:
+      query: |
+        FROM metrics-service_transaction.1m.otel-default
+        | WHERE service.name IN ({{ steps.get_dependencies.output.values | join: '", "' | prepend: '"' | append: '"' }})
+          AND @timestamp > NOW() - 169 hours
+          AND @timestamp < NOW() - 168 hours
+        | STATS
+            baseline_avg_ms  = ROUND(AVG(transaction.duration.summary) / 1000, 2),
+            total_events     = COUNT(transaction.duration.summary),
+            total_successes  = SUM(event.success_count)
+          BY service.name
+        | EVAL baseline_error_rate = ROUND((total_events - total_successes) / total_events * 100, 2)
+        | KEEP service.name, baseline_avg_ms, baseline_error_rate
+      format: json
+    on-failure:
+      continue: true
+
+  # Guard against empty dependency data. Without rows in both current AND baseline,
+  # ai.classify will falsely return "upstream_healthy" on zero evidence.
+  - name: set_upstream_row_counts
+    type: data.set
+    with:
+      current_rows:  "{{ steps.get_upstream_current.output.values  | size | default: 0 }}"
+      baseline_rows: "{{ steps.get_upstream_baseline.output.values | size | default: 0 }}"
+
+  - name: branch_on_upstream_data
+    type: if
+    condition: "steps.set_upstream_row_counts.output.current_rows > 0 AND steps.set_upstream_row_counts.output.baseline_rows > 0"
+    steps:
+      - name: assess_upstream_health
+        type: ai.classify
+        with:
+          input: |
+            Current upstream metrics: {{ steps.get_upstream_current.output | json }}
+            Baseline upstream metrics (same hour, 7 days ago): {{ steps.get_upstream_baseline.output | json }}
+            Alert timestamp: {{ inputs.alert_timestamp }}
+            Error rate threshold: {{ consts.upstream_error_multiplier }}x baseline
+            Latency threshold: {{ consts.upstream_latency_multiplier }}x baseline
+          categories:
+            - upstream_degraded
+            - upstream_healthy
+          instructions: |
+            Compare current vs baseline metrics for each upstream dependency.
+            Return "upstream_degraded" if any dependency has:
+              - error rate more than {{ consts.upstream_error_multiplier }}x its baseline, OR
+              - mean latency more than {{ consts.upstream_latency_multiplier }}x its baseline
+            AND the degradation began before the alert timestamp.
+            Return "upstream_healthy" if all dependencies are within normal range.
+            In your rationale, name the specific dependency that degraded and by how much.
+          includeRationale: true
+    else:
+      - name: set_upstream_insufficient_data
+        type: data.set
+        with:
+          upstream_assessment_category: "insufficient_data"
+          upstream_assessment_rationale: >
+            No APM upstream metrics were available to evaluate. Either this service has no
+            outgoing dependencies, APM is not instrumented, or no traffic was produced in
+            the comparison windows. Upstream health cannot be determined from signals.
+
+  # =========================================================================
+  # STEP 4 — Correlate with recent K8s changes
+  # =========================================================================
+  - name: get_recent_changes
+    type: elasticsearch.esql.query
+    with:
+      query: |
+        FROM logs-k8seventsreceiver.otel-*
+        | WHERE resource.attributes.k8s.namespace.name == "{{ inputs.namespace }}"
+          AND @timestamp > NOW() - 2 hours
+          AND attributes.k8s.event.reason IN (
+              "Pulling", "Pulled",
+              "Created", "Started",
+              "SuccessfulRescale",
+              "Evicted",
+              "FailedScheduling",
+              "BackOff",
+              "Killing"
+          )
+        | SORT @timestamp DESC
+        | KEEP @timestamp,
+               attributes.k8s.event.reason,
+               body.text,
+               resource.attributes.k8s.object.name
+        | LIMIT 20
+      format: json
+    on-failure:
+      continue: true
+
+  # =========================================================================
+  # STEP 5 — AI synthesis: root cause summary
+  # =========================================================================
+  - name: synthesize_findings
+    type: ai.summarize
+    with:
+      input: |
+        ## Investigation context for {{ inputs.service_name }} in {{ inputs.namespace }}
+
+        ### Alert
+        Alert timestamp: {{ inputs.alert_timestamp }}
+        Pod: {{ inputs.pod_name }}
+
+        ### Step 1 — Pod characterization
+        Restart / termination data: {{ steps.characterize_event.output | json }}
+        Utilization (memory / cpu vs limits): {{ steps.characterize_utilization.output | json }}
+        Last terminated reason: {{ steps.set_term_reason.output.term_reason }}
+
+        ### Step 2 — Memory / Log investigation
+        {% if steps.set_anomaly_count.output.anomaly_count > 0 %}
+        ML memory anomaly detected. Anomaly score: {{ steps.check_ml_memory_anomaly.output.hits.hits[0]._source.anomaly_score }}
+        Leak suspected: true
+        {% elsif steps.flag_load_driven_oom.output.oom_note %}
+        ML memory anomaly check: no anomaly found. {{ steps.flag_load_driven_oom.output.oom_note }}
+        Leak suspected: false
+        {% endif %}
+        {% if steps.classify_log_pattern.output.category %}
+        Log pattern classification: {{ steps.classify_log_pattern.output.category }}
+        Rationale: {{ steps.classify_log_pattern.output.rationale }}
+        {% elsif steps.set_no_logs_classification.output.log_classification_category %}
+        Log pattern classification: {{ steps.set_no_logs_classification.output.log_classification_category }}
+        Rationale: {{ steps.set_no_logs_classification.output.log_classification_rationale }}
+        {% endif %}
+
+        ### Step 3 — CPU throttling
+        {% if steps.characterize_throttling.output.values[0] %}
+        Fraction of samples with cpu_limit_utilization >= 0.95 (last 15m): {{ steps.characterize_throttling.output.values[0][0] }}
+        Peak container CPU utilization vs limit: {{ steps.characterize_throttling.output.values[0][1] }}%
+        Pegged samples: {{ steps.characterize_throttling.output.values[0][2] }} of {{ steps.characterize_throttling.output.values[0][3] }}
+        {% else %}
+        No throttling data available.
+        {% endif %}
+
+        ### Step 4 — Upstream health
+        {% if steps.assess_upstream_health.output.category %}
+        Assessment: {{ steps.assess_upstream_health.output.category }}
+        Rationale: {{ steps.assess_upstream_health.output.rationale }}
+        {% else %}
+        Assessment: {{ steps.set_upstream_insufficient_data.output.upstream_assessment_category }}
+        Rationale: {{ steps.set_upstream_insufficient_data.output.upstream_assessment_rationale }}
+        {% endif %}
+
+        ### Step 5 — Recent K8s events
+        {{ steps.get_recent_changes.output | json }}
+
+      instructions: |
+        You are an SRE assistant synthesizing a Kubernetes incident investigation.
+        Produce a structured root cause summary in exactly this format:
+
+        ---
+        ROOT CAUSE HYPOTHESIS (confidence: high | medium | low)
+
+        [One paragraph synthesizing the evidence chain. Name the specific
+        service, the symptom, and the most likely cause. Be concrete.]
+
+        EVIDENCE
+        - [Finding from pod characterization: termination reason, restart count, utilization %]
+        - [Finding from memory ML or log classification]
+        - [Finding from upstream health, if degraded]
+        - [Finding from recent changes, if any found]
+
+        PROBABLE CAUSE: [Single most likely cause in one sentence]
+
+        RECOMMENDED NEXT STEPS
+        1. [Most immediately actionable step]
+        2. [Secondary step]
+        3. [Optional third step if warranted]
+
+        DOWNSTREAM IMPACT
+        [List services that depend on the alerting service, from the dependency data above.
+         If no dependencies found, say "No downstream dependencies identified."]
+
+        CONFIDENCE NOTE
+        [Only include if confidence is medium or low. Explain what signal is missing.]
+        ---
+
+        Do not add commentary outside this format.
+      maxLength: 1500

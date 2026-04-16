@@ -6,11 +6,19 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
+import {
+  registerAppTool,
+  registerAppResource,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
+import fs from "fs";
 import { executeEsql, rowsFromEsql } from "../elastic/esql.js";
 import { esRequest } from "../elastic/client.js";
 import { mlAnomalyIndicesExist } from "../elastic/ml.js";
+import { resolveViewPath } from "./view-path.js";
+
+const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
 
 interface ServiceRow {
   service: string;
@@ -237,7 +245,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
           "Matches against influencer field values."
         ),
       },
-      _meta: { ui: {} },
+      _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
     async ({ namespace, lookback, job_filter, exclude_entities }) => {
       const lb = lookback || "15m";
@@ -295,6 +303,20 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       }
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    }
+  );
+
+  const viewPath = resolveViewPath("apm-health-summary");
+  registerAppResource(
+    server,
+    RESOURCE_URI,
+    RESOURCE_URI,
+    { mimeType: RESOURCE_MIME_TYPE },
+    async () => {
+      const html = fs.readFileSync(viewPath, "utf-8");
+      return {
+        contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }],
+      };
     }
   );
 }

@@ -1,0 +1,137 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ *
+ * Minimal MCP App shim — replaces @modelcontextprotocol/ext-apps/react
+ * Implements just enough of the MCP UI postMessage protocol to:
+ *   1. Do the initialize handshake with the host
+ *   2. Receive ui/notifications/tool-result messages
+ *   3. Call server tools via tools/call (callServerTool)
+ *
+ * Cuts per-app bundle from ~456KB to ~30KB by removing the ext-apps dependency.
+ */
+
+import { useState, useEffect, useRef } from "react";
+
+export interface ToolResultParams {
+  content?: Array<{ type: string; text?: string }>;
+}
+
+export interface AppLike {
+  ontoolresult: ((params: ToolResultParams) => void) | null;
+  ontoolinput: ((params: Record<string, unknown>) => void) | null;
+  callServerTool: (params: {
+    name: string;
+    arguments: Record<string, unknown>;
+  }) => Promise<ToolResultParams>;
+}
+
+interface UseAppOptions {
+  appInfo?: { name: string; version: string };
+  capabilities?: Record<string, unknown>;
+  onAppCreated?: (app: AppLike) => void;
+}
+
+const _pending = new Map<
+  number,
+  { resolve: (v: ToolResultParams) => void; reject: (e: Error) => void }
+>();
+let _nextId = 100;
+
+export function useApp({ onAppCreated }: UseAppOptions): {
+  isConnected: boolean;
+  error: Error | null;
+} {
+  const [isConnected, setIsConnected] = useState(false);
+  const [error] = useState<Error | null>(null);
+  const appRef = useRef<AppLike>({
+    ontoolresult: null,
+    ontoolinput: null,
+    callServerTool: () => Promise.reject(new Error("not initialized")),
+  });
+
+  useEffect(() => {
+    const app = appRef.current;
+
+    app.callServerTool = (params) => {
+      return new Promise<ToolResultParams>((resolve, reject) => {
+        const id = _nextId++;
+        _pending.set(id, { resolve, reject });
+
+        window.parent.postMessage(
+          { jsonrpc: "2.0", id, method: "tools/call", params },
+          "*"
+        );
+
+        setTimeout(() => {
+          if (_pending.has(id)) {
+            _pending.delete(id);
+            reject(new Error(`Tool call '${params.name}' timed out after 60s`));
+          }
+        }, 60_000);
+      });
+    };
+
+    onAppCreated?.(app);
+
+    const handleMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== "object") return;
+
+      if (msg.id !== undefined && msg.id !== 1 && _pending.has(msg.id)) {
+        const { resolve, reject } = _pending.get(msg.id)!;
+        _pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message || "Tool call failed"));
+        else resolve(msg.result ?? {});
+        return;
+      }
+
+      if (msg.id === 1 && msg.result) {
+        window.parent.postMessage(
+          { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+          "*"
+        );
+        setIsConnected(true);
+      }
+
+      if (msg.method === "ui/notifications/tool-result") {
+        app.ontoolresult?.(msg.params);
+        setIsConnected(true);
+      }
+
+      if (msg.method === "ui/notifications/tool-input") {
+        const args = msg.params?.arguments as Record<string, unknown> | undefined;
+        if (args) app.ontoolinput?.(args);
+      }
+
+      if (
+        msg.method === "ui/notifications/initialized" ||
+        msg.method === "ui/notifications/host-context-changed"
+      ) {
+        setIsConnected(true);
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+
+    window.parent.postMessage(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "example-mcp-o11y", version: "1.0.0" },
+        },
+      },
+      "*"
+    );
+
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  return { isConnected, error };
+}

@@ -57,5 +57,6 @@ jobs:
             example-mcp-o11y.tgz \
             example-mcp-o11y-*.tgz \
             dist/skills/*.zip \
+            workflows/*.yaml \
             --title "Elastic Observability MCP App ${{ github.ref_name }}" \
             --generate-notes

@@ -34,9 +34,17 @@ Tools are grouped by the backend they require. A logs-or-metrics-only Elastic Ob
 | --- | --- |
 | `k8s-blast-radius` | Assess the impact of a node going offline — full outage, degraded, unaffected, reschedule feasibility. APM is optional — enriches the output with user-facing service impact but is not required. |
 
-One MCP App view ships in v1: `anomaly-explainer` — a severity gauge + timeline rendered inline in the client UI when `ml-anomalies` returns results.
+Four MCP App views ship in v1, each rendered inline when its tool returns:
 
-One Agent Builder workflow ships alongside: `create-alert-rule` — the workflow form of the alert-rule tool, for clients that prefer Agent Builder over MCP tools.
+- `anomaly-explainer` — severity gauge + timeline for `ml-anomalies`
+- `apm-health-summary` — cluster health badge with service / pod / anomaly rollups
+- `apm-service-dependencies` — layered DAG with call volume, latency, and hover-path highlighting
+- `k8s-blast-radius` — radial node-impact diagram with rescheduling feasibility
+
+Two Agent Builder workflows ship alongside — for clients that prefer Agent Builder workflows over MCP tools:
+
+- `create-alert-rule` — the workflow form of the alert-rule tool.
+- `k8s-crashloop-investigation-otel` — automatic CrashLoopBackOff / OOMKilled investigation for clusters on the OTel ingest path (EDOT / kube-stack). Pulls pod context, ML anomalies, upstream health, and recent changes, then synthesizes a root-cause hypothesis.
 
 Six skills ship as separate `.zip` artifacts (one per tool). Upload individually in Claude Desktop via **Customize → Skills → Create Skill → Upload a skill**. Each skill teaches the agent when to reach for the paired tool and how to fill its parameters from natural-language user intent, so users don't need to know tool names or deployment specifics.
 

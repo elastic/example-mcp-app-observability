@@ -6,9 +6,17 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
+import {
+  registerAppTool,
+  registerAppResource,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
+import fs from "fs";
 import { executeEsql, rowsFromEsql } from "../elastic/esql.js";
+import { resolveViewPath } from "./view-path.js";
+
+const RESOURCE_URI = "ui://apm-service-dependencies/mcp-app.html";
 
 interface EdgeRow {
   "service.name"?: string;
@@ -102,7 +110,7 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
           "a faster, topology-only response."
         ),
       },
-      _meta: { ui: {} },
+      _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
     async ({ service, namespace, lookback, include_health }) => {
       const lb = lookback || "1h";
@@ -270,6 +278,20 @@ FROM traces-generic.otel-*
       result.filters = namespace ? { lookback: lb, namespace } : { lookback: lb };
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    }
+  );
+
+  const viewPath = resolveViewPath("apm-service-dependencies");
+  registerAppResource(
+    server,
+    RESOURCE_URI,
+    RESOURCE_URI,
+    { mimeType: RESOURCE_MIME_TYPE },
+    async () => {
+      const html = fs.readFileSync(viewPath, "utf-8");
+      return {
+        contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }],
+      };
     }
   );
 }
