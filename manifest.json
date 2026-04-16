@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "example-mcp-o11y",
   "display_name": "Elastic Observability",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule creation.",
   "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and create Kibana threshold alerts.",
   "author": {
@@ -20,7 +20,10 @@
     "entry_point": "dist/main.bundle.mjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/main.bundle.mjs", "--stdio"],
+      "args": [
+        "${__dirname}/dist/main.bundle.mjs",
+        "--stdio"
+      ],
       "env": {
         "ELASTICSEARCH_URL": "${user_config.elasticsearch_url}",
         "ELASTICSEARCH_API_KEY": "${user_config.elasticsearch_api_key}",
@@ -99,9 +102,15 @@
     "mcp-app"
   ],
   "license": "Apache-2.0",
-  "privacy_policies": ["https://www.elastic.co/legal/privacy-statement"],
+  "privacy_policies": [
+    "https://www.elastic.co/legal/privacy-statement"
+  ],
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=22.0.0"
     }
