@@ -6,38 +6,17 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
+import {
+  registerAppTool,
+  registerAppResource,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
+import fs from "fs";
 import { executeEsql, rowsFromEsql } from "../elastic/esql.js";
+import { resolveViewPath } from "./view-path.js";
 
-const RENDER_SUMMARY =
-  "Render as a self-contained HTML artifact. " +
-  "Frame as hypothetical: 'If [node name] goes offline...' " +
-  "LAYOUT — compact, summary-first, NOT a long list: " +
-  "1) Hero banner: node name (truncated middle with '...'), status badge (red/amber/green), big number 'N deployments lose pods'. " +
-  "2) Severity bar: horizontal stacked bar showing red/amber/green proportions with counts. " +
-  "3) Three COLLAPSIBLE sections (ALL COLLAPSED by default, click header to expand): " +
-  "   - 'Full Outage (N)' — red accent. When expanded, show deployments as compact pills/chips (name + namespace + 'N/N pods'), NOT full cards. Wrap in a flex grid. " +
-  "   - 'Degraded (N)' — amber accent. Same pill layout. " +
-  "   - 'Unaffected (N)' — green accent, muted. Show count only; expand shows first 10 names. " +
-  "4) Rescheduling footer: single line — 'X GB required / Y GB available across N nodes' with green checkmark or red X. " +
-  "5) Downstream services panel (only if data present): compact pill list. " +
-  "Dark bg #0f172a, card bg #1e293b, text #f1f5f9 / #94a3b8. " +
-  "No external dependencies. Keep the entire visualization under ~600px tall when collapsed.";
-
-const RENDER_RADIAL =
-  "Render as a self-contained HTML artifact — a RADIAL blast-radius diagram. " +
-  "Frame as hypothetical: 'If node X goes offline...' " +
-  "Center: the node (circle, labeled). " +
-  "Inner ring (red #ef4444): full_outage deployments — each a dot/circle sized by pods_total, labeled. " +
-  "Middle ring (amber #f59e0b): degraded deployments. " +
-  "Outer ring (green #22c55e, faded): unaffected deployments (show only first 10, with '+N more' label). " +
-  "Draw lines from center to each affected deployment. " +
-  "Top-right: summary box — status badge, pods at risk, rescheduling feasibility. " +
-  "If downstream_services present, show them as small diamonds connected to their parent deployment. " +
-  "Use SVG for the diagram. Dark bg #0f172a, text #f1f5f9 / #94a3b8. " +
-  "No external dependencies. Tooltip on hover showing deployment details. " +
-  "The visual should immediately communicate impact through spatial proximity to center = severity.";
+const RESOURCE_URI = "ui://k8s-blast-radius/mcp-app.html";
 
 function fmtBytes(b: number | null | undefined): string {
   if (!b) return "—";
@@ -93,21 +72,18 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
         "enough spare capacity to reschedule. Core output (pod impact + rescheduling feasibility) works from K8s " +
         "metrics alone; if APM data is present, the response adds a downstream_services section naming user-facing " +
         "services in affected namespaces. Use when the user asks about the impact of draining a node, a maintenance " +
-        "window, or 'what happens if this node goes away'. Includes render instructions for an inline HTML visualization.",
+        "window, or 'what happens if this node goes away'. Renders an inline radial diagram — center = the node, " +
+        "ring 1 = affected deployments (red=full outage, amber=degraded), ring 2 = downstream namespaces.",
       inputSchema: {
         node: z.string().describe(
           "Kubernetes node name to analyze. Matched exactly against kubernetes.node.name — e.g. " +
           "'gke-prod-pool-1-abc123', 'ip-10-0-1-42.ec2.internal'. If the user describes a node ambiguously " +
           "('the noisy node', 'the one running frontend'), confirm the exact node name before calling."
         ),
-        layout: z.enum(["summary", "radial"]).optional().describe(
-          "Visualization layout. 'summary' (default) renders a compact severity-grouped view; " +
-          "'radial' renders a concentric-ring diagram where proximity-to-center encodes severity."
-        ),
       },
-      _meta: { ui: {} },
+      _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
-    async ({ node, layout }) => {
+    async ({ node }) => {
       const podsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE kubernetes.node.name == "${node}"
   AND kubernetes.pod.name IS NOT NULL
@@ -251,7 +227,6 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
         unaffected_count: unaffected.length,
         unaffected: unaffected.slice(0, 10),
         rescheduling,
-        render_instructions: layout === "radial" ? RENDER_RADIAL : RENDER_SUMMARY,
       };
 
       if (apmPresent) {
@@ -263,6 +238,20 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       }
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    }
+  );
+
+  const viewPath = resolveViewPath("k8s-blast-radius");
+  registerAppResource(
+    server,
+    RESOURCE_URI,
+    RESOURCE_URI,
+    { mimeType: RESOURCE_MIME_TYPE },
+    async () => {
+      const html = fs.readFileSync(viewPath, "utf-8");
+      return {
+        contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }],
+      };
     }
   );
 }

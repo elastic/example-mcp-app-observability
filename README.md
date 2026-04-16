@@ -40,10 +40,6 @@ One Agent Builder workflow ships alongside: `create-alert-rule` — the workflow
 
 Six skills ship as separate `.zip` artifacts (one per tool). Upload individually in Claude Desktop via **Customize → Skills → Create Skill → Upload a skill**. Each skill teaches the agent when to reach for the paired tool and how to fill its parameters from natural-language user intent, so users don't need to know tool names or deployment specifics.
 
-### Deferred
-
-`service-infra-map` (full K8s topology map) depends on the `k8s-discover` topology indices (`topology-nodes-*`, `topology-edges-*`), which are not yet published outside of Forge. It will land in the next release once those indices ship.
-
 ## Requirements
 
 - Node ≥ 22
