@@ -1,0 +1,123 @@
+version: '1'
+name: Create Alert Rule
+description: >-
+  Create a Kibana observability custom-threshold alert rule. Monitors a metric
+  field with a configurable aggregation, comparator, threshold, and lookback
+  window; optionally scoped by a KQL filter. Runs in a caller-specified space
+  and supports attaching notification actions (connectors). Use this to add
+  deterministic alerting after an incident investigation.
+enabled: true
+
+triggers:
+  - type: manual
+
+inputs:
+  properties:
+    rule_name:
+      type: string
+      description: Human-readable name for the alert rule.
+    metric_field:
+      type: string
+      description: Metric field to evaluate, e.g. k8s.pod.memory.working_set.
+    threshold:
+      type: number
+      description: Numeric threshold the aggregated metric is compared against.
+    comparator:
+      type: string
+      enum: ['>', '>=', '<', '<=']
+      default: '>'
+    kql_filter:
+      type: string
+      default: ''
+      description: Optional KQL filter scoped to metrics-*.
+    check_interval:
+      type: string
+      default: '1m'
+      description: Rule schedule interval (e.g. 1m, 5m, 1h).
+    agg_type:
+      type: string
+      enum: [avg, max, min, sum, count]
+      default: 'avg'
+    time_size:
+      type: integer
+      default: 5
+    time_unit:
+      type: string
+      enum: [m, h, d]
+      default: 'm'
+    space_id:
+      type: string
+      default: 'default'
+      description: Kibana space the rule is created in.
+    notification_actions:
+      type: array
+      default: []
+      description: >-
+        Optional list of Kibana alerting action objects attached to the rule
+        (e.g. Slack, email, webhook connectors). Each item must match the
+        Kibana Alerting API action schema, with at minimum `id` (connector
+        id), `group` (action group, e.g. custom_threshold.fired), and
+        `params`. When omitted, the rule fires but notifies no one.
+      items:
+        type: object
+  required: [rule_name, metric_field, threshold]
+  additionalProperties: false
+
+steps:
+  - name: create_rule
+    type: kibana.request
+    on-failure:
+      fallback:
+        - name: shape_error
+          type: console
+          with:
+            message: >-
+              {"error": "Rule creation failed for '{{ inputs.rule_name }}'.
+              See step error details."}
+      continue: true
+    with:
+      method: POST
+      path: '/s/{{ inputs.space_id }}/api/alerting/rule'
+      headers:
+        Content-Type: application/json
+        kbn-xsrf: 'true'
+      body:
+        name: '{{ inputs.rule_name }}'
+        rule_type_id: observability.rules.custom_threshold
+        consumer: alerts
+        schedule:
+          interval: '{{ inputs.check_interval }}'
+        params:
+          criteria:
+            - metrics:
+                - name: A
+                  aggType: '{{ inputs.agg_type }}'
+                  field: '{{ inputs.metric_field }}'
+              comparator: '{{ inputs.comparator }}'
+              threshold:
+                - {{ inputs.threshold }}
+              timeSize: '{{ inputs.time_size }}'
+              timeUnit: '{{ inputs.time_unit }}'
+          searchConfiguration:
+            index: metrics-*
+            query:
+              query: '{{ inputs.kql_filter }}'
+              language: kuery
+          alertOnNoData: true
+          alertOnGroupDisappear: true
+        actions: {{ inputs.notification_actions }}
+        tags:
+          - agent-builder-generated
+        enabled: true
+
+  - name: shape_success
+    if: "{{ steps.create_rule.output.id }}"
+    type: console
+    with:
+      message: >-
+        Alert rule '{{ inputs.rule_name }}' created successfully. It will check
+        {{ inputs.agg_type }}({{ inputs.metric_field }}) {{ inputs.comparator }}
+        {{ inputs.threshold }} every {{ inputs.check_interval }}. Rule ID:
+        {{ steps.create_rule.output.id }}. View in Kibana → Alerts → Rules.
+        Cleanup: DELETE /s/{{ inputs.space_id }}/api/alerting/rule/{{ steps.create_rule.output.id }}
+        with kbn-xsrf: true header.

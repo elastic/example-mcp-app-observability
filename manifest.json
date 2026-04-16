@@ -1,0 +1,109 @@
+{
+  "manifest_version": "0.3",
+  "name": "example-mcp-o11y",
+  "display_name": "Elastic Observability",
+  "version": "0.1.0",
+  "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule creation.",
+  "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and create Kibana threshold alerts.",
+  "author": {
+    "name": "Elastic",
+    "url": "https://www.elastic.co"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elastic/example-mcp-o11y.git"
+  },
+  "homepage": "https://github.com/elastic/example-mcp-o11y",
+  "support": "https://github.com/elastic/example-mcp-o11y/issues",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/main.bundle.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/main.bundle.mjs", "--stdio"],
+      "env": {
+        "ELASTICSEARCH_URL": "${user_config.elasticsearch_url}",
+        "ELASTICSEARCH_API_KEY": "${user_config.elasticsearch_api_key}",
+        "KIBANA_URL": "${user_config.kibana_url}",
+        "KIBANA_API_KEY": "${user_config.kibana_api_key}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "watch",
+      "description": "Transient watcher — blocks until an ML anomaly fires or an ES|QL metric condition is met. Universal: metric mode needs no specific backend."
+    },
+    {
+      "name": "ml-anomalies",
+      "description": "Query ML anomaly detection records. Requires: Elastic ML jobs configured."
+    },
+    {
+      "name": "apm-health-summary",
+      "description": "Cluster-level health rollup from APM service telemetry, with K8s and ML context when available. Requires: Elastic APM (K8s/ML optional)."
+    },
+    {
+      "name": "k8s-blast-radius",
+      "description": "Assess the impact of a Kubernetes node going offline. Requires: Kubernetes (kubeletstats). APM is optional — enriches output with downstream user-facing service impact."
+    },
+    {
+      "name": "apm-service-dependencies",
+      "description": "Service dependency graph from APM telemetry. Requires: Elastic APM."
+    },
+    {
+      "name": "create-alert-rule",
+      "description": "Create a persistent Kibana custom-threshold alerting rule. Universal: works on any metric field in any index pattern."
+    }
+  ],
+  "tools_generated": true,
+  "user_config": {
+    "elasticsearch_url": {
+      "type": "string",
+      "title": "Elasticsearch URL",
+      "description": "Elasticsearch URL (e.g. https://your-cluster.es.cloud.example.com)",
+      "required": true,
+      "sensitive": false
+    },
+    "elasticsearch_api_key": {
+      "type": "string",
+      "title": "Elasticsearch API Key",
+      "description": "API key for Elasticsearch authentication",
+      "required": true,
+      "sensitive": true
+    },
+    "kibana_url": {
+      "type": "string",
+      "title": "Kibana URL",
+      "description": "Kibana URL (e.g. https://your-cluster.kb.cloud.example.com)",
+      "required": true,
+      "sensitive": false
+    },
+    "kibana_api_key": {
+      "type": "string",
+      "title": "Kibana API Key",
+      "description": "API key for Kibana authentication",
+      "required": true,
+      "sensitive": true
+    }
+  },
+  "keywords": [
+    "observability",
+    "elastic",
+    "elasticsearch",
+    "kibana",
+    "kubernetes",
+    "opentelemetry",
+    "otel",
+    "apm",
+    "sre",
+    "mcp-app"
+  ],
+  "license": "Apache-2.0",
+  "privacy_policies": ["https://www.elastic.co/legal/privacy-statement"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=22.0.0"
+    }
+  }
+}

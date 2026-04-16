@@ -1,0 +1,41 @@
+# Source and config
+src/
+*.ts
+tsconfig*.json
+vite.config.*
+.env*
+
+# Dependencies (esbuild bundle is self-contained)
+node_modules/
+package-lock.json
+
+# Build scripts and tooling
+scripts/
+.github/
+
+# Skills (shipped as separate .zip artifacts), workflows, docs
+skills/
+workflows/
+.claude/
+docs/
+
+# Dev / IDE
+.vscode/
+.git/
+*.map
+
+# Misc
+*.zip
+*.mcpb
+*.md
+*.backup
+*.code-workspace
+.DS_Store
+.gitignore
+package.json
+
+# Only keep: manifest.json, dist/main.bundle.mjs, dist/views/
+# Exclude the rest of dist/ (tsc output, declarations, etc.)
+dist/main.js
+dist/src/
+dist/**/*.d.ts

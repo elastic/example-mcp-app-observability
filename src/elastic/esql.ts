@@ -1,0 +1,26 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ */
+
+import { esRequest } from "./client.js";
+import type { EsqlResult } from "../shared/types.js";
+
+export async function executeEsql(query: string): Promise<EsqlResult> {
+  return esRequest<EsqlResult>("/_query", {
+    body: { query },
+    params: { format: "json" },
+  });
+}
+
+export function rowsFromEsql<T>(result: EsqlResult): T[] {
+  return result.values.map((row) => {
+    const obj: Record<string, unknown> = {};
+    result.columns.forEach((col, i) => {
+      obj[col.name] = row[i];
+    });
+    return obj as T;
+  });
+}
