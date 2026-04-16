@@ -130,7 +130,43 @@ export function useApp({ onAppCreated }: UseAppOptions): {
       "*"
     );
 
-    return () => window.removeEventListener("message", handleMessage);
+    let pending = false;
+    let lastW = 0;
+    let lastH = 0;
+    const notifySize = () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        const root = document.documentElement;
+        const prev = root.style.height;
+        root.style.height = "max-content";
+        const h = Math.ceil(root.getBoundingClientRect().height);
+        root.style.height = prev;
+        const w = Math.ceil(window.innerWidth);
+        if (w !== lastW || h !== lastH) {
+          lastW = w;
+          lastH = h;
+          window.parent.postMessage(
+            {
+              jsonrpc: "2.0",
+              method: "ui/notifications/size-changed",
+              params: { width: w, height: h },
+            },
+            "*"
+          );
+        }
+      });
+    };
+    notifySize();
+    const ro = new ResizeObserver(notifySize);
+    ro.observe(document.documentElement);
+    ro.observe(document.body);
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      ro.disconnect();
+    };
   }, []);
 
   return { isConnected, error };
