@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "example-mcp-o11y",
   "display_name": "Elastic Observability",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule creation.",
   "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and create Kibana threshold alerts.",
   "author": {
@@ -83,9 +83,9 @@
     },
     "kibana_api_key": {
       "type": "string",
-      "title": "Kibana API Key",
-      "description": "API key for Kibana authentication",
-      "required": true,
+      "title": "Kibana API Key (optional)",
+      "description": "API key for Kibana authentication. Leave blank to reuse the Elasticsearch API key — in most Elastic Cloud deployments the same key authenticates against both endpoints.",
+      "required": false,
       "sensitive": true
     }
   },
