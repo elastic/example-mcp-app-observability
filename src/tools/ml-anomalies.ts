@@ -18,16 +18,82 @@ import {
   queryAnomalies,
   type AnomalyQueryResult,
 } from "../elastic/ml.js";
+import { esRequest } from "../elastic/client.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://anomaly-explainer/mcp-app.html";
 
 type InvestigationAction = { label: string; prompt: string };
 
+interface TimePoint {
+  timestamp: number;
+  value: number;
+  typical?: number;
+}
+
 interface Enriched extends AnomalyQueryResult {
   investigation_actions?: InvestigationAction[];
   detail?: Record<string, unknown>;
   time_series_title?: string;
+  time_series?: TimePoint[];
+}
+
+interface ModelPlotHit {
+  _source: {
+    timestamp?: number;
+    actual?: number | number[];
+    model_median?: number;
+  };
+}
+
+async function fetchModelPlot(
+  top: AnomalyQueryResult["anomalies"][number] & {
+    jobId: string;
+    byFieldValue?: string;
+    partitionFieldValue?: string;
+    overFieldValue?: string;
+  },
+  lookback: string
+): Promise<TimePoint[]> {
+  // Extend lookback so the chart has enough buckets even when the user asked for a short window.
+  const extended = /^\d+m$/.test(lookback) ? "3h" : lookback;
+  const must: unknown[] = [
+    { term: { result_type: "model_plot" } },
+    { term: { job_id: top.jobId } },
+    { range: { timestamp: { gte: `now-${extended}` } } },
+  ];
+  if (top.byFieldValue) must.push({ term: { by_field_value: top.byFieldValue } });
+  if (top.partitionFieldValue)
+    must.push({ term: { partition_field_value: top.partitionFieldValue } });
+  if (top.overFieldValue) must.push({ term: { over_field_value: top.overFieldValue } });
+
+  const body = {
+    size: 500,
+    sort: [{ timestamp: { order: "asc" } }],
+    query: { bool: { must } },
+    _source: ["timestamp", "actual", "model_median"],
+  };
+
+  try {
+    const resp = await esRequest<{ hits: { hits: ModelPlotHit[] } }>(
+      "/.ml-anomalies-*/_search",
+      { body }
+    );
+    return resp.hits.hits
+      .map((h) => {
+        const s = h._source;
+        const actual = Array.isArray(s.actual) ? s.actual[0] : s.actual;
+        if (actual == null || s.timestamp == null) return null;
+        return {
+          timestamp: s.timestamp,
+          value: actual,
+          typical: s.model_median,
+        } as TimePoint;
+      })
+      .filter((p): p is TimePoint => p !== null);
+  } catch {
+    return [];
+  }
 }
 
 function detectUnit(jobId: string, fieldName?: string): "bytes" | "ms" | "pct" | "raw" {
@@ -38,10 +104,10 @@ function detectUnit(jobId: string, fieldName?: string): "bytes" | "ms" | "pct" |
   return "raw";
 }
 
-function enrichForView(
+async function enrichForView(
   result: AnomalyQueryResult,
   filters: { entity?: string; jobId?: string; lookback?: string }
-): Enriched {
+): Promise<Enriched> {
   const anomalies = result.anomalies || [];
   const enriched: Enriched = { ...result };
 
@@ -117,6 +183,27 @@ function enrichForView(
       const readableField = top.fieldName.split(".").slice(-2).join(".");
       enriched.time_series_title = `${readableField} — actual vs typical`;
     }
+
+    // Fetch model_plot time series when the view is likely to render in detail mode:
+    // explicit entity/job filter, a single returned anomaly, or the top anomaly is clearly
+    // identifiable via by/partition/over field values.
+    const uniqueEntities = new Set(
+      anomalies.map((a) => a.byFieldValue || a.partitionFieldValue || a.entity)
+    );
+    const detailLikely =
+      !!filters.entity ||
+      !!filters.jobId ||
+      anomalies.length === 1 ||
+      uniqueEntities.size === 1;
+    const hasIdentifier =
+      !!top.byFieldValue || !!top.partitionFieldValue || !!top.overFieldValue;
+    if (detailLikely && hasIdentifier) {
+      const ts = await fetchModelPlot(
+        top as Parameters<typeof fetchModelPlot>[0],
+        filters.lookback || "6h"
+      );
+      if (ts.length >= 2) enriched.time_series = ts;
+    }
   }
 
   return enriched;
@@ -188,7 +275,7 @@ export function registerMlAnomaliesTool(server: McpServer) {
         limit,
       });
 
-      const enriched = enrichForView(result, { entity, jobId: job_id, lookback });
+      const enriched = await enrichForView(result, { entity, jobId: job_id, lookback });
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify(enriched) }],
