@@ -36,9 +36,8 @@ This project provides six interactive SRE tools, each with a rich React-based UI
 
 Every tool emits an `investigation_actions` list so the UI can surface opinionated next-step prompts — click-to-send without forcing the user to guess the right follow-up tool.
 
-Two Agent Builder workflows ship alongside — for clients that prefer Agent Builder workflows over MCP tools:
+An Agent Builder workflow ships alongside — for clients that prefer Agent Builder workflows over MCP tools:
 
-- `create-alert-rule` — workflow form of the alert-rule tool (the MCP App version is preferred for most clients).
 - `k8s-crashloop-investigation-otel` — automatic CrashLoopBackOff / OOMKilled investigation for clusters on the OTel ingest path (EDOT / kube-stack). Pulls pod context, ML anomalies, upstream health, and recent changes, then synthesizes a root-cause hypothesis.
 
 ## How It Works
