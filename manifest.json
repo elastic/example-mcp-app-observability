@@ -1,6 +1,6 @@
 {
   "manifest_version": "0.3",
-  "name": "example-mcp-o11y",
+  "name": "example-mcp-app-observability",
   "display_name": "Elastic Observability",
   "version": "0.1.9",
   "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule creation.",
@@ -11,10 +11,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/elastic/example-mcp-o11y.git"
+    "url": "https://github.com/elastic/example-mcp-app-observability.git"
   },
-  "homepage": "https://github.com/elastic/example-mcp-o11y",
-  "support": "https://github.com/elastic/example-mcp-o11y/issues",
+  "homepage": "https://github.com/elastic/example-mcp-app-observability",
+  "support": "https://github.com/elastic/example-mcp-app-observability/issues",
   "server": {
     "type": "node",
     "entry_point": "dist/main.bundle.mjs",
@@ -101,7 +101,7 @@
     "sre",
     "mcp-app"
   ],
-  "license": "Apache-2.0",
+  "license": "Elastic-2.0",
   "privacy_policies": [
     "https://www.elastic.co/legal/privacy-statement"
   ],

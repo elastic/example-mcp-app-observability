@@ -144,7 +144,7 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
         params: {
           protocolVersion: "2026-01-26",
           appCapabilities: {},
-          appInfo: appInfo ?? { name: "example-mcp-o11y", version: "1.0.0" },
+          appInfo: appInfo ?? { name: "example-mcp-app-observability", version: "1.0.0" },
         },
       },
       "*"

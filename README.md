@@ -1,74 +1,67 @@
 # Elastic Observability MCP App
 
-> **Tech preview** — interactive SRE workflows for Elastic Observability, delivered as an MCP App server for Claude Desktop and other MCP clients.
+An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) that brings interactive SRE workflows for Elastic Observability directly into Claude, VS Code, and other MCP-compatible AI hosts. Built on the [Model Context Protocol](https://modelcontextprotocol.io/) with interactive UI extensions that render inline in the conversation.
 
-Bring agentic observability investigation to your MCP client of choice. Watch ML anomalies fire, roll up cluster health, assess blast radius, map service dependencies, and create persistent Kibana alerts — all against live Elasticsearch data.
+> **What are MCP Apps?** MCP Apps extend the Model Context Protocol to let tool servers return interactive HTML interfaces — dashboards, forms, visualizations — that render inside the AI conversation. The LLM calls a tool, and instead of just returning text, an interactive UI appears alongside the response.
 
-## What's in v1
+## What This Does
 
-Tools are grouped by the backend they require. A logs-or-metrics-only Elastic Observability customer can use the **Universal** tools immediately; the prefixed tools (`apm-*`, `k8s-*`) surface their requirements in both name and description so users know up front whether a tool applies to their deployment.
+This project provides six interactive SRE tools, each with a rich React-based UI that renders inline when Claude (or another MCP host) calls the tool. Tools are grouped by the backend they require — a logs-or-metrics-only Elastic Observability customer can use the **Universal** tools immediately; the prefixed tools (`apm-*`, `k8s-*`) surface their requirements in both name and description.
 
 ### Universal (any Elastic Observability deployment)
 
-| Tool | Description |
-| --- | --- |
-| `watch` | Blocks until an ML anomaly fires or an ES\|QL metric condition is met. Metric mode works on any numeric field. |
-| `create-alert-rule` | Create a persistent Kibana custom-threshold alerting rule against any metric field in any index. |
+| Tool | What It Does |
+|------|-------------|
+| **watch** | Blocks until an ML anomaly fires or an ES\|QL metric condition is met. Metric mode works on any numeric field. |
+| **create-alert-rule** | Create a persistent Kibana custom-threshold alerting rule against any metric field in any index. |
 
 ### ML-dependent
 
-| Tool | Description |
-| --- | --- |
-| `ml-anomalies` | Query ML anomaly detection records and open an inline anomaly-explainer view. Requires ML jobs configured. |
+| Tool | What It Does |
+|------|-------------|
+| **ml-anomalies** | Query ML anomaly-detection records and open an inline anomaly-explainer view. Requires ML jobs configured. |
 
 ### APM-dependent
 
-| Tool | Description |
-| --- | --- |
-| `apm-health-summary` | Cluster-level health rollup from APM service telemetry; layers in K8s and ML context when available. Gracefully degrades if K8s or ML is absent. |
-| `apm-service-dependencies` | Service dependency graph (upstream/downstream, protocols, call volume). |
+| Tool | What It Does |
+|------|-------------|
+| **apm-health-summary** | Cluster-level health rollup from APM service telemetry; layers in K8s and ML context when available. |
+| **apm-service-dependencies** | Service dependency graph (upstream/downstream, protocols, call volume). |
 
 ### Kubernetes-dependent
 
-| Tool | Description |
-| --- | --- |
-| `k8s-blast-radius` | Assess the impact of a node going offline — full outage, degraded, unaffected, reschedule feasibility. APM is optional — enriches the output with user-facing service impact but is not required. |
-
-Six MCP App views ship in v1 — one per tool, rendered inline when the tool returns:
-
-- `anomaly-explainer` — dual-mode for `ml-anomalies`: overview (severity counts, affected entities, by-job breakdown) or single-anomaly detail (score / actual / typical / deviation, comparison bar, time-series)
-- `apm-health-summary` — cluster health badge, anomaly-severity donut, top memory pods, service throughput
-- `apm-service-dependencies` — layered DAG with call volume, latency, and hover-path highlighting
-- `k8s-blast-radius` — radial node-impact diagram with floating summary, SPOF detection, safe-zone arc, rescheduling feasibility
-- `watch` — dual-mode for `watch`: metric condition with trend chart and threshold line, or anomaly trigger with hypothesis-ready investigation hints
-- `create-alert-rule` — live rule card with condition, window, check interval, KQL filter, tags, and next-step prompts
+| Tool | What It Does |
+|------|-------------|
+| **k8s-blast-radius** | Assess the impact of a node going offline — full outage, degraded, unaffected, reschedule feasibility. APM optional. |
 
 Every tool emits an `investigation_actions` list so the UI can surface opinionated next-step prompts — click-to-send without forcing the user to guess the right follow-up tool.
 
 Two Agent Builder workflows ship alongside — for clients that prefer Agent Builder workflows over MCP tools:
 
-- `create-alert-rule` — workflow form of the alert-rule tool (the MCP App version above is preferred for most clients).
+- `create-alert-rule` — workflow form of the alert-rule tool (the MCP App version is preferred for most clients).
 - `k8s-crashloop-investigation-otel` — automatic CrashLoopBackOff / OOMKilled investigation for clusters on the OTel ingest path (EDOT / kube-stack). Pulls pod context, ML anomalies, upstream health, and recent changes, then synthesizes a root-cause hypothesis.
 
-Six skills ship as separate `.zip` artifacts (one per tool). Upload individually in Claude Desktop via **Customize → Skills → Create Skill → Upload a skill**. Each skill teaches the agent when to reach for the paired tool and how to fill its parameters from natural-language user intent, so users don't need to know tool names or deployment specifics.
+## How It Works
 
-## Requirements
+When a user asks Claude to watch for an anomaly or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
 
-- Node ≥ 22
-- An Elasticsearch cluster with OpenTelemetry data (EDOT + kube-stack recommended)
-- A Kibana instance with Alerting enabled
+### Skills
 
-## Install — Claude Desktop
+The `skills/` directory contains [Claude Skills](https://claude.com/docs/skills/overview) — `SKILL.md` files that teach Claude *when* and *how* to use the tools. Each skill teaches the agent to reach for the paired tool and fill its parameters from natural-language user intent, so users don't need to know tool names or deployment specifics. Skills ship as separate `.zip` artifacts (one per tool); upload individually in Claude Desktop via **Customize → Skills → Create Skill → Upload a skill**.
 
-Grab the latest `.mcpb` from [Releases](https://github.com/elastic/example-mcp-o11y/releases) and double-click it. Claude Desktop will prompt for the four connection settings.
+## Installation
 
-## Install — other MCP clients
+### Claude Desktop
+
+Grab the latest `.mcpb` from [Releases](https://github.com/elastic/example-mcp-app-observability/releases) and double-click it. Claude Desktop will prompt for the four connection settings.
+
+### Cursor / VS Code / Claude Code
 
 ```bash
-npm install -g example-mcp-o11y
+npm install -g example-mcp-app-observability
 ```
 
-Then point your MCP client at `example-mcp-o11y --stdio` with these env vars:
+Then point your MCP client at `example-mcp-app-observability --stdio` with these env vars:
 
 ```bash
 export ELASTICSEARCH_URL="https://<cluster>.es.cloud.example.com"
@@ -77,19 +70,32 @@ export KIBANA_URL="https://<cluster>.kb.cloud.example.com"
 export KIBANA_API_KEY="<api-key>"
 ```
 
-HTTP transport is available by running without `--stdio` (default port `3001`, POST to `/mcp`).
+### HTTP transport
+
+Run without `--stdio` (default port `3001`, POST to `/mcp`).
+
+### Requirements
+
+- Node ≥ 22
+- An Elasticsearch cluster with OpenTelemetry data (EDOT + kube-stack recommended)
+- A Kibana instance with Alerting enabled
 
 ## Development
 
 ```bash
-npm install
-cp .env.example .env       # fill in connection settings
-npm run dev                # watch mode: tsx + vite
-npm run typecheck
-npm run build              # tsc + view bundles
-npm run mcpb:pack          # produces example-mcp-o11y.mcpb
+npm run dev          # Watch mode
+npm run typecheck    # Type-check only
+npm run build:views  # Build views only
+npm run build:server # Build server only
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure, build targets (`.mcpb`, `.tgz`, skill zips), and the release process.
+
+## Inspired By
+
+- [Elastic Agent Skills](https://github.com/elastic/agent-skills) — SRE triage methodology and observability skill patterns
+- [MCP Apps Specification](https://modelcontextprotocol.io/extensions/apps/overview) — Interactive UI extensions for MCP
 
 ## License
 
-Apache-2.0 at the package level. Individual source files are licensed under Elastic License 2.0 — see file headers and `LICENSE.txt`.
+Elastic-2.0

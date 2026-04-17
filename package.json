@@ -1,19 +1,19 @@
 {
-  "name": "example-mcp-o11y",
+  "name": "example-mcp-app-observability",
   "version": "0.1.9",
   "description": "MCP App server for Elastic Observability — interactive SRE workflows for Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, remediation, and alert-rule creation",
   "type": "module",
   "license": "Elastic-2.0",
   "main": "dist/main.js",
   "bin": {
-    "example-mcp-o11y": "./dist/main.js"
+    "example-mcp-app-observability": "./dist/main.js"
   },
   "files": [
     "dist/"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/elastic/example-mcp-o11y.git"
+    "url": "https://github.com/elastic/example-mcp-app-observability.git"
   },
   "keywords": [
     "mcp",

@@ -6,7 +6,7 @@
 
 #
 # Build an MCPB bundle (.mcpb) for Claude Desktop distribution.
-# Produces example-mcp-o11y.mcpb in the repo root.
+# Produces example-mcp-app-observability.mcpb in the repo root.
 # Usage: ./scripts/build-mcpb.sh
 #
 set -euo pipefail
@@ -31,10 +31,10 @@ npx @anthropic-ai/mcpb pack .
 
 VERSION=$(node -e "console.log(require('./package.json').version)")
 echo ""
-echo "==> Done! example-mcp-o11y.mcpb (v${VERSION}) is ready."
+echo "==> Done! example-mcp-app-observability.mcpb (v${VERSION}) is ready."
 echo ""
 echo "Distribute via GitHub release:"
-echo "  gh release create v${VERSION} example-mcp-o11y.mcpb"
+echo "  gh release create v${VERSION} example-mcp-app-observability.mcpb"
 echo ""
 echo "Install in Claude Desktop:"
 echo "  Double-click the .mcpb file"

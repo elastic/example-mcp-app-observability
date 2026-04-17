@@ -42,7 +42,7 @@ jobs:
       - name: Pack npm tarball
         run: |
           npm pack
-          cp example-mcp-o11y-*.tgz example-mcp-o11y.tgz
+          cp example-mcp-app-observability-*.tgz example-mcp-app-observability.tgz
 
       - name: Build skill zips
         run: npm run skills:zip
@@ -54,8 +54,8 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" \
             "$MCPB_FILE" \
-            example-mcp-o11y.tgz \
-            example-mcp-o11y-*.tgz \
+            example-mcp-app-observability.tgz \
+            example-mcp-app-observability-*.tgz \
             dist/skills/*.zip \
             workflows/*.yaml \
             --title "Elastic Observability MCP App ${{ github.ref_name }}" \
