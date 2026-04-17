@@ -3,17 +3,41 @@
  * or more contributor license agreements. Licensed under the Elastic License
  * 2.0; you may not use this file except in compliance with the Elastic License
  * 2.0.
+ *
+ * Anomaly Explainer — dual-mode view:
+ *
+ *   DETAIL    One anomaly in focus (user filtered by entity/job, or a single result).
+ *             Header with job + entity, 4 stat cards (score / actual / typical / deviation),
+ *             an actual-vs-typical ComparisonBar, an optional time-series chart, and a
+ *             row of investigation-action buttons.
+ *
+ *   OVERVIEW  Many anomalies across many entities/jobs. Severity breakdown, affected-entity
+ *             list grouped by job, and investigation-action buttons.
+ *
+ * Mode is chosen from the payload itself — no input knob. `filters.entity` / `filters.jobId`
+ * being set is a strong "detail" signal; otherwise we fall back to cardinality.
  */
 
-import React, { useState, useRef, useCallback, useEffect } from "react";
-import { useApp, AppLike, ToolResultParams } from "./shared/use-app";
-import { parseToolResult } from "./shared/parse-tool-result";
-import { theme, baseStyles } from "./shared/theme";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
+import { parseToolResult } from "@shared/parse-tool-result";
+import { theme, baseStyles } from "@shared/theme";
+import {
+  StatCard,
+  StatGrid,
+  SectionCard,
+  StatusBadge,
+  BadgeTone,
+  ComparisonBar,
+  HBarRow,
+  InvestigationActions,
+  InvestigationAction,
+} from "@shared/components";
 
 interface Anomaly {
   jobId: string;
   recordScore: number;
-  severity: string;
+  severity: "critical" | "major" | "minor";
   timestamp: string | number;
   functionName?: string;
   fieldName?: string;
@@ -24,229 +48,479 @@ interface Anomaly {
   influencers?: Record<string, string[]>;
 }
 
+interface TimePoint {
+  timestamp: string | number;
+  value: number;
+  typical?: number;
+}
+
 interface AnomalyData {
   anomalies?: Anomaly[];
+  top_anomalies?: Anomaly[];
   total?: number;
   returned?: number;
   jobsSummary?: Record<string, number>;
-  status?: string;
-  top_anomalies?: Anomaly[];
+  filters?: { entity?: string; jobId?: string; minScore?: number; lookback?: string };
   headline?: string;
   affected_services?: string[];
+  time_series?: TimePoint[];
+  time_series_title?: string;
+  investigation_actions?: InvestigationAction[];
+  detail?: {
+    entity_label?: string;
+    namespace?: string;
+    actual_label?: string;
+    typical_label?: string;
+    actual_sub?: string;
+    typical_sub?: string;
+    unit_format?: "bytes" | "ms" | "pct" | "raw";
+  };
 }
 
-const SEVERITY_COLORS = [
-  { min: 0, max: 50, color: theme.green, label: "Normal" },
-  { min: 50, max: 75, color: theme.amber, label: "Minor" },
-  { min: 75, max: 90, color: theme.orange, label: "Major" },
-  { min: 90, max: 101, color: theme.red, label: "Critical" },
-];
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function firstNum(v: number | number[] | undefined): number | undefined {
   if (v === undefined) return undefined;
   return Array.isArray(v) ? v[0] : v;
 }
 
-function SeverityGauge({ score }: { score: number }) {
-  const band = SEVERITY_COLORS.find((b) => score >= b.min && score < b.max) || SEVERITY_COLORS[3];
-  const pct = Math.min(100, Math.max(0, score));
+function severityTone(score: number): BadgeTone {
+  if (score >= 90) return "critical";
+  if (score >= 75) return "major";
+  if (score >= 50) return "minor";
+  return "ok";
+}
 
-  const radius = 70;
-  const cx = 90;
-  const cy = 85;
-  const startAngle = -180;
-  const endAngle = 0;
-  const range = endAngle - startAngle;
-  const angle = startAngle + (pct / 100) * range;
+function entityLabel(a: Anomaly): string {
+  if (a.entity) return a.entity.split("=").pop() || a.entity;
+  const infl = Object.values(a.influencers || {}).flat()[0];
+  return infl ?? "unknown";
+}
 
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const arcPath = (start: number, end: number, r: number) => {
-    const x1 = cx + r * Math.cos(toRad(start));
-    const y1 = cy + r * Math.sin(toRad(start));
-    const x2 = cx + r * Math.cos(toRad(end));
-    const y2 = cy + r * Math.sin(toRad(end));
-    const large = end - start > 180 ? 1 : 0;
-    return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
-  };
+function fmtValue(
+  v: number | undefined,
+  hint: { jobId?: string; fieldName?: string; unit?: "bytes" | "ms" | "pct" | "raw" }
+): string {
+  if (v === undefined || v === null || Number.isNaN(v)) return "—";
+  const u = hint.unit
+    ?? (hint.fieldName?.includes("memory") || hint.fieldName?.includes("bytes") || hint.jobId?.includes("memory")
+      ? "bytes"
+      : hint.fieldName?.includes("latency") || hint.fieldName?.includes("duration") || hint.jobId?.includes("latency")
+      ? "ms"
+      : hint.jobId?.includes("cpu") || hint.fieldName?.includes("pct") || hint.fieldName?.includes("utilization")
+      ? "pct"
+      : "raw");
+  if (u === "bytes") {
+    if (Math.abs(v) >= 1024 * 1024 * 1024) return `${(v / (1024 ** 3)).toFixed(1)} GB`;
+    if (Math.abs(v) >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(1)} MB`;
+    if (Math.abs(v) >= 1024) return `${(v / 1024).toFixed(1)} KB`;
+    return `${v.toFixed(0)} B`;
+  }
+  if (u === "ms") return `${v.toFixed(v < 10 ? 2 : 0)} ms`;
+  if (u === "pct") return `${(v * (v <= 1 ? 100 : 1)).toFixed(1)}%`;
+  if (Math.abs(v) >= 1000) return v.toFixed(0);
+  if (Math.abs(v) >= 10) return v.toFixed(1);
+  return v.toFixed(2);
+}
 
-  const needleX = cx + (radius - 10) * Math.cos(toRad(angle));
-  const needleY = cy + (radius - 10) * Math.sin(toRad(angle));
+function fmtTime(t: string | number): string {
+  const d = new Date(typeof t === "number" ? t : t);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ── Time-series chart (for detail mode) ────────────────────────────────────
+
+function TimeSeriesChart({
+  points,
+  actualLabel = "actual",
+  typicalLabel = "typical",
+  yFormat,
+}: {
+  points: TimePoint[];
+  actualLabel?: string;
+  typicalLabel?: string;
+  yFormat?: (v: number) => string;
+}) {
+  const fmtY = yFormat ?? ((v: number) => fmtValue(v, { unit: "raw" }));
+  if (points.length < 2) return null;
+  const w = 560;
+  const h = 160;
+  const padL = 40;
+  const padR = 10;
+  const padT = 14;
+  const padB = 20;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  const toMs = (t: string | number) => (typeof t === "number" ? t : new Date(t).getTime());
+  const sorted = [...points].sort((a, b) => toMs(a.timestamp) - toMs(b.timestamp));
+  const tMin = toMs(sorted[0].timestamp);
+  const tMax = toMs(sorted[sorted.length - 1].timestamp);
+  const tRange = tMax - tMin || 1;
+
+  const allY = sorted.flatMap((p) => [p.value, p.typical ?? p.value]);
+  const yMax = Math.max(...allY) * 1.1;
+  const yMin = Math.min(0, Math.min(...allY) * 0.95);
+  const yRange = yMax - yMin || 1;
+
+  const xOf = (t: string | number) => padL + ((toMs(t) - tMin) / tRange) * plotW;
+  const yOf = (v: number) => padT + plotH - ((v - yMin) / yRange) * plotH;
+
+  const actualPath = sorted
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${xOf(p.timestamp).toFixed(1)} ${yOf(p.value).toFixed(1)}`)
+    .join(" ");
+  const typicalPath = sorted.every((p) => p.typical !== undefined)
+    ? sorted
+        .map((p, i) =>
+          `${i === 0 ? "M" : "L"} ${xOf(p.timestamp).toFixed(1)} ${yOf(p.typical!).toFixed(1)}`
+        )
+        .join(" ")
+    : null;
+
+  const yTicks = [yMin, yMin + yRange / 2, yMax];
 
   return (
-    <div style={{ textAlign: "center", padding: "16px 0" }}>
-      <svg width="180" height="110" viewBox="0 0 180 110">
-        <path d={arcPath(-180, 0, radius)} fill="none" stroke={theme.border} strokeWidth="12" strokeLinecap="round" />
-        {SEVERITY_COLORS.map((b) => (
+    <div>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
+        {yTicks.map((t) => (
+          <g key={t}>
+            <line
+              x1={padL}
+              x2={w - padR}
+              y1={yOf(t)}
+              y2={yOf(t)}
+              stroke={theme.border}
+              strokeWidth={0.5}
+              strokeDasharray="3 3"
+            />
+            <text
+              x={padL - 4}
+              y={yOf(t) + 3}
+              textAnchor="end"
+              fill={theme.textDim}
+              fontSize={9}
+              fontFamily="'JetBrains Mono', monospace"
+            >
+              {fmtY(t)}
+            </text>
+          </g>
+        ))}
+        <text
+          x={padL}
+          y={h - 4}
+          fill={theme.textDim}
+          fontSize={9}
+          fontFamily="'JetBrains Mono', monospace"
+        >
+          {fmtTime(sorted[0].timestamp)}
+        </text>
+        <text
+          x={w - padR}
+          y={h - 4}
+          textAnchor="end"
+          fill={theme.textDim}
+          fontSize={9}
+          fontFamily="'JetBrains Mono', monospace"
+        >
+          {fmtTime(sorted[sorted.length - 1].timestamp)}
+        </text>
+        {typicalPath && (
           <path
-            key={b.label}
-            d={arcPath(startAngle + (b.min / 100) * range, startAngle + (b.max / 100) * range, radius)}
+            d={typicalPath}
             fill="none"
-            stroke={b.color}
-            strokeWidth="12"
-            strokeLinecap="round"
-            opacity={0.25}
+            stroke={theme.textDim}
+            strokeWidth={1.5}
+            strokeDasharray="4 4"
+          />
+        )}
+        <path d={actualPath} fill="none" stroke={theme.redSoft} strokeWidth={2} />
+        {sorted.map((p, i) => (
+          <circle
+            key={i}
+            cx={xOf(p.timestamp)}
+            cy={yOf(p.value)}
+            r={2.5}
+            fill={theme.redSoft}
           />
         ))}
-        <path d={arcPath(-180, angle, radius)} fill="none" stroke={band.color} strokeWidth="12" strokeLinecap="round" />
-        <line x1={cx} y1={cy} x2={needleX} y2={needleY} stroke={theme.text} strokeWidth="2" strokeLinecap="round" />
-        <circle cx={cx} cy={cy} r="4" fill={theme.text} />
-        <text x={cx} y={cy + 28} textAnchor="middle" fill={band.color} fontSize="24" fontWeight="700" fontFamily="'JetBrains Mono', monospace">
-          {Math.round(score)}
-        </text>
       </svg>
-      <div style={{ color: band.color, fontWeight: 600, fontSize: 14, marginTop: -4 }}>{band.label}</div>
-    </div>
-  );
-}
-
-function explainAnomaly(a: Anomaly): string {
-  const field = a.fieldName || "a metric";
-  const entity = a.entity?.split("=").pop() || "unknown entity";
-  const actual = firstNum(a.actual);
-  const typical = firstNum(a.typical);
-  const dev = a.deviationPercent ?? 0;
-  const direction = dev > 0 ? "higher" : "lower";
-  const absDev = Math.abs(dev);
-
-  if (a.jobId?.includes("memory")) {
-    const actualMB = typeof actual === "number" ? Math.round(actual / (1024 * 1024)) : "?";
-    const typicalMB = typeof typical === "number" ? Math.round(typical / (1024 * 1024)) : "?";
-    return (
-      `Memory usage on ${entity} is ${absDev.toFixed(0)}% ${direction} than normal. ` +
-      `Currently at ${actualMB}MB (typical: ${typicalMB}MB). ` +
-      (direction === "higher"
-        ? "This could indicate a memory leak, increased load, or resource contention."
-        : "This could indicate reduced traffic or a recent restart clearing cached data.")
-    );
-  }
-
-  if (a.jobId?.includes("cpu")) {
-    return (
-      `CPU usage on ${entity} is ${absDev.toFixed(0)}% ${direction} than normal. ` +
-      (direction === "higher"
-        ? "This may cause increased latency and could lead to throttling if sustained."
-        : "Lower-than-expected CPU may indicate reduced traffic or a stalled process.")
-    );
-  }
-
-  if (a.jobId?.includes("network")) {
-    return (
-      `Network I/O on ${entity} is ${absDev.toFixed(0)}% ${direction} than normal. ` +
-      (direction === "higher"
-        ? "Elevated network traffic may indicate increased client load, retry storms, or data replication issues."
-        : "Reduced network traffic may indicate upstream failures blocking requests from reaching this service.")
-    );
-  }
-
-  if (a.jobId?.includes("restart")) {
-    return `Pod restart rate for ${entity} is anomalous. Frequent restarts typically indicate OOMKills, liveness probe failures, or application crashes.`;
-  }
-
-  return (
-    `${field} on ${entity} is ${absDev.toFixed(0)}% ${direction} than the ML baseline. ` +
-    `Actual: ${actual?.toFixed(1) ?? "?"}, Typical: ${typical?.toFixed(1) ?? "?"}.`
-  );
-}
-
-function EntityCard({ anomaly }: { anomaly: Anomaly }) {
-  const band = SEVERITY_COLORS.find((b) => anomaly.recordScore >= b.min && anomaly.recordScore < b.max) || SEVERITY_COLORS[3];
-  const entityLabel = anomaly.entity?.split("=").pop()
-    ?? Object.values(anomaly.influencers || {}).flat()[0]
-    ?? "unknown";
-
-  return (
-    <div
-      style={{
-        background: theme.bgSecondary,
-        border: `1px solid ${theme.border}`,
-        borderLeft: `3px solid ${band.color}`,
-        borderRadius: 6,
-        padding: "10px 14px",
-        marginBottom: 8,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: theme.text }}>{entityLabel}</span>
-        <span className="mono" style={{ fontSize: 11, color: band.color, fontWeight: 700 }}>
-          {anomaly.recordScore.toFixed(0)}
+      <div
+        style={{
+          display: "flex",
+          gap: 14,
+          marginTop: 4,
+          fontSize: 11,
+          color: theme.textMuted,
+        }}
+      >
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 14, height: 2, background: theme.redSoft }} />
+          {actualLabel}
         </span>
-      </div>
-      <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 6 }}>
-        {anomaly.jobId} &middot; {anomaly.functionName || anomaly.fieldName}
-      </div>
-      {anomaly.deviationPercent !== undefined && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ flex: 1, height: 6, background: theme.border, borderRadius: 3, overflow: "hidden" }}>
-            <div
+        {typicalPath && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <span
               style={{
-                width: `${Math.min(100, Math.abs(anomaly.deviationPercent))}%`,
-                height: "100%",
-                background: band.color,
-                borderRadius: 3,
+                width: 14,
+                height: 0,
+                borderTop: `2px dashed ${theme.textDim}`,
               }}
             />
-          </div>
-          <span className="mono" style={{ fontSize: 11, color: band.color, minWidth: 50, textAlign: "right" }}>
-            {anomaly.deviationPercent > 0 ? "+" : ""}
-            {anomaly.deviationPercent.toFixed(1)}%
+            {typicalLabel}
           </span>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
 
-function Timeline({ anomalies }: { anomalies: Anomaly[] }) {
-  if (anomalies.length < 2) return null;
-  const toMs = (t: string | number) => (typeof t === "number" ? t : new Date(t).getTime());
-  const sorted = [...anomalies].sort((a, b) => toMs(a.timestamp) - toMs(b.timestamp));
-  const minT = toMs(sorted[0].timestamp);
-  const maxT = toMs(sorted[sorted.length - 1].timestamp);
-  const range = maxT - minT || 1;
-  const width = 320;
-  const height = 60;
-  const padX = 10;
-  const padY = 8;
-  const plotW = width - padX * 2;
-  const plotH = height - padY * 2;
+// ── Detail mode ────────────────────────────────────────────────────────────
 
-  const points = sorted.map((a) => ({
-    x: padX + ((toMs(a.timestamp) - minT) / range) * plotW,
-    y: padY + plotH - (a.recordScore / 100) * plotH,
-    score: a.recordScore,
-    color: (SEVERITY_COLORS.find((b) => a.recordScore >= b.min && a.recordScore < b.max) || SEVERITY_COLORS[3]).color,
-  }));
+function DetailMode({
+  top,
+  data,
+  onSend,
+  detailCount,
+}: {
+  top: Anomaly;
+  data: AnomalyData;
+  onSend: (p: string) => void;
+  detailCount: number;
+}) {
+  const tone = severityTone(top.recordScore);
+  const actual = firstNum(top.actual);
+  const typical = firstNum(top.typical);
+  const dev = top.deviationPercent;
+  const direction = (dev ?? 0) >= 0 ? "+" : "";
+  const label = data.detail?.entity_label || entityLabel(top);
+  const namespace = data.detail?.namespace;
+  const actualLabel = data.detail?.actual_label || "Actual";
+  const typicalLabel = data.detail?.typical_label || "Typical";
+  const actualSub = data.detail?.actual_sub;
+  const typicalSub = data.detail?.typical_sub || "learned baseline";
+  const valueHint = { jobId: top.jobId, fieldName: top.fieldName, unit: data.detail?.unit_format };
 
-  const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  // Header hierarchy from screenshot:
+  //   job-id           (small, muted)
+  //   entity-label     (big, bold)
+  //   namespace · function(field)   (small, muted)
+  const contextLine = [
+    namespace,
+    top.functionName && top.fieldName ? `${top.functionName}(${top.fieldName})` : top.fieldName,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>Anomaly score over time</div>
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: "auto" }}>
-        {[50, 75, 90].map((t) => (
-          <line
-            key={t}
-            x1={padX}
-            x2={width - padX}
-            y1={padY + plotH - (t / 100) * plotH}
-            y2={padY + plotH - (t / 100) * plotH}
-            stroke={theme.border}
-            strokeWidth={0.5}
-            strokeDasharray="3 3"
+    <>
+      <SectionCard>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: 12,
+            marginBottom: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div
+              className="mono"
+              style={{ fontSize: 11, color: theme.textMuted, marginBottom: 2 }}
+            >
+              {top.jobId}
+            </div>
+            <div
+              className="mono"
+              style={{
+                fontSize: 15,
+                fontWeight: 700,
+                color: theme.text,
+                marginBottom: 2,
+                wordBreak: "break-all",
+              }}
+            >
+              {label}
+            </div>
+            {contextLine && (
+              <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
+                {contextLine}
+              </div>
+            )}
+          </div>
+          <StatusBadge tone={tone}>{top.severity}</StatusBadge>
+        </div>
+
+        <StatGrid>
+          <StatCard
+            label="Anomaly score"
+            value={top.recordScore.toFixed(1)}
+            tone={tone === "critical" ? "critical" : tone === "major" ? "major" : undefined}
+            sub="out of 100"
           />
-        ))}
-        <path d={pathD} fill="none" stroke={theme.blue} strokeWidth="1.5" />
-        {points.map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r="3" fill={p.color} />
-        ))}
-      </svg>
-    </div>
+          <StatCard
+            label={actualLabel}
+            value={fmtValue(actual, valueHint)}
+            tone={(dev ?? 0) >= 25 ? "critical" : undefined}
+            sub={actualSub}
+          />
+          <StatCard label={typicalLabel} value={fmtValue(typical, valueHint)} sub={typicalSub} />
+          <StatCard
+            label="Deviation"
+            value={dev !== undefined ? `${direction}${dev.toFixed(1)}%` : "—"}
+            tone={(dev ?? 0) >= 50 ? "critical" : (dev ?? 0) >= 25 ? "major" : undefined}
+            sub={(dev ?? 0) >= 0 ? "above baseline" : "below baseline"}
+          />
+        </StatGrid>
+
+        {actual !== undefined && typical !== undefined && (
+          <div style={{ marginTop: 10 }}>
+            <ComparisonBar
+              baselineLabel={`${typicalLabel} (${fmtValue(typical, valueHint)})`}
+              actualLabel={`${actualLabel} (${fmtValue(actual, valueHint)})`}
+              baselineValue={typical}
+              actualValue={actual}
+            />
+          </div>
+        )}
+      </SectionCard>
+
+      {data.time_series && data.time_series.length > 1 && (
+        <SectionCard title={data.time_series_title || "Value over time"}>
+          <TimeSeriesChart
+            points={data.time_series}
+            yFormat={(v) => fmtValue(v, valueHint)}
+          />
+        </SectionCard>
+      )}
+
+      {detailCount > 1 && (
+        <SectionCard title={`Related anomalies (${detailCount - 1})`}>
+          {(data.anomalies || []).slice(1, 6).map((a, i) => (
+            <HBarRow
+              key={i}
+              label={`${entityLabel(a)} · ${a.jobId}`}
+              value={a.recordScore}
+              valueLabel={`${Math.round(a.recordScore)}`}
+              max={100}
+              color={
+                a.recordScore >= 90
+                  ? theme.red
+                  : a.recordScore >= 75
+                  ? theme.orange
+                  : theme.amber
+              }
+            />
+          ))}
+        </SectionCard>
+      )}
+
+      <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+    </>
   );
 }
+
+// ── Overview mode ──────────────────────────────────────────────────────────
+
+function OverviewMode({ data, onSend }: { data: AnomalyData; onSend: (p: string) => void }) {
+  const anomalies = data.anomalies ?? [];
+
+  // Bucket by severity
+  const bySev = { critical: 0, major: 0, minor: 0 };
+  for (const a of anomalies) bySev[a.severity] = (bySev[a.severity] || 0) + 1;
+
+  // Unique entities, highest-score wins
+  const byEntity = new Map<string, Anomaly>();
+  for (const a of anomalies) {
+    const key = a.entity || entityLabel(a);
+    const prev = byEntity.get(key);
+    if (!prev || a.recordScore > prev.recordScore) byEntity.set(key, a);
+  }
+  const entities = [...byEntity.values()].sort((a, b) => b.recordScore - a.recordScore);
+
+  const jobs = data.jobsSummary || {};
+  const jobCount = Object.keys(jobs).length;
+
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 12,
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
+            Anomaly overview
+          </div>
+          <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
+            {data.filters?.lookback ? `last ${data.filters.lookback}` : "recent"}
+            {data.filters?.minScore !== undefined ? ` · score ≥ ${data.filters.minScore}` : ""}
+          </div>
+        </div>
+        <StatusBadge tone={bySev.critical > 0 ? "critical" : bySev.major > 0 ? "major" : "minor"}>
+          {anomalies.length} firing
+        </StatusBadge>
+      </div>
+
+      <StatGrid>
+        <StatCard label="Critical" value={bySev.critical} tone={bySev.critical > 0 ? "critical" : undefined} sub="score ≥ 90" />
+        <StatCard label="Major" value={bySev.major} tone={bySev.major > 0 ? "major" : undefined} sub="75–89" />
+        <StatCard label="Minor" value={bySev.minor} sub="50–74" />
+        <StatCard label="Entities" value={byEntity.size} sub={`${jobCount} job${jobCount === 1 ? "" : "s"}`} />
+      </StatGrid>
+
+      <SectionCard title={`Affected entities (${entities.length})`}>
+        {entities.slice(0, 10).map((a, i) => (
+          <HBarRow
+            key={i}
+            label={`${entityLabel(a)} · ${a.jobId}`}
+            value={a.recordScore}
+            valueLabel={`${Math.round(a.recordScore)}`}
+            max={100}
+            color={
+              a.recordScore >= 90
+                ? theme.red
+                : a.recordScore >= 75
+                ? theme.orange
+                : theme.amber
+            }
+          />
+        ))}
+      </SectionCard>
+
+      {jobCount > 1 && (
+        <SectionCard title="By ML job">
+          {Object.entries(jobs)
+            .sort((a, b) => b[1] - a[1])
+            .map(([job, count]) => (
+              <HBarRow
+                key={job}
+                label={job}
+                value={count}
+                valueLabel={`${count}`}
+                max={Math.max(...Object.values(jobs))}
+                color={theme.blue}
+              />
+            ))}
+        </SectionCard>
+      )}
+
+      <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+    </>
+  );
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────
 
 export function App() {
   const [data, setData] = useState<AnomalyData | null>(null);
-  const appRef = useRef<AppLike | null>(null);
+  const [app, setApp] = useState<AppLike | null>(null);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -264,46 +538,53 @@ export function App() {
 
   useApp({
     appInfo: { name: "Anomaly Explainer", version: "1.0.0" },
-    capabilities: {},
-    onAppCreated: (app) => {
-      appRef.current = app;
-      app.ontoolresult = handleToolResult;
+    onAppCreated: (a) => {
+      a.ontoolresult = handleToolResult;
+      setApp(a);
     },
   });
 
-  if (!data || !data.anomalies?.length) {
+  const mode = useMemo<"detail" | "overview" | null>(() => {
+    if (!data?.anomalies?.length) return null;
+    const anomalies = data.anomalies;
+    if (anomalies.length === 1) return "detail";
+    if (data.filters?.entity || data.filters?.jobId) return "detail";
+    // Single-entity result even without a filter
+    const entities = new Set(anomalies.map((a) => a.entity || entityLabel(a)));
+    if (entities.size === 1) return "detail";
+    return "overview";
+  }, [data]);
+
+  const onSend = useCallback(
+    (prompt: string) => {
+      app?.sendMessage(prompt);
+    },
+    [app]
+  );
+
+  if (!data || !mode) {
     return (
       <div style={{ padding: 24, textAlign: "center", color: theme.textMuted }}>
-        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for anomaly data...</div>
+        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for anomaly data…</div>
         <div style={{ fontSize: 11 }}>Call ml-anomalies or watch to populate this view.</div>
       </div>
     );
   }
 
-  const anomalies = data.anomalies;
-  const top = anomalies[0];
-  const explanation = explainAnomaly(top);
-
-  const uniqueEntities = new Map<string, Anomaly>();
-  for (const a of anomalies) {
-    const key = a.entity || a.jobId + (a.fieldName || "");
-    if (!uniqueEntities.has(key) || a.recordScore > uniqueEntities.get(key)!.recordScore) {
-      uniqueEntities.set(key, a);
-    }
-  }
+  const top = data.anomalies![0];
 
   return (
-    <div style={{ padding: "12px 16px", maxWidth: 400 }}>
+    <div style={{ padding: "14px 16px", maxWidth: 620 }}>
       {data.headline && (
         <div
           style={{
             fontSize: 12,
             fontWeight: 600,
-            color: theme.red,
+            color: theme.redSoft,
             marginBottom: 12,
-            padding: "6px 10px",
+            padding: "8px 10px",
             background: `${theme.red}15`,
-            borderRadius: 4,
+            borderRadius: 6,
             border: `1px solid ${theme.red}30`,
           }}
         >
@@ -311,65 +592,16 @@ export function App() {
         </div>
       )}
 
-      <SeverityGauge score={top.recordScore} />
-
-      <div
-        style={{
-          background: theme.bgSecondary,
-          border: `1px solid ${theme.border}`,
-          borderRadius: 6,
-          padding: "10px 14px",
-          marginBottom: 16,
-          fontSize: 12,
-          lineHeight: 1.6,
-          color: theme.text,
-        }}
-      >
-        <div
-          style={{
-            fontWeight: 600,
-            marginBottom: 4,
-            color: theme.amber,
-            fontSize: 11,
-            textTransform: "uppercase",
-            letterSpacing: 0.5,
-          }}
-        >
-          What this means
-        </div>
-        {explanation}
-      </div>
-
-      <div
-        style={{
-          fontSize: 11,
-          color: theme.textMuted,
-          marginBottom: 6,
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: 0.5,
-        }}
-      >
-        Affected entities ({uniqueEntities.size})
-      </div>
-      {[...uniqueEntities.values()].slice(0, 8).map((a, i) => (
-        <EntityCard key={i} anomaly={a} />
-      ))}
-
-      <Timeline anomalies={anomalies} />
-
-      <div
-        style={{
-          marginTop: 12,
-          fontSize: 11,
-          color: theme.textDim,
-          display: "flex",
-          justifyContent: "space-between",
-        }}
-      >
-        <span>{data.total ?? anomalies.length} total anomalies</span>
-        {data.jobsSummary && <span>{Object.keys(data.jobsSummary).length} ML jobs reporting</span>}
-      </div>
+      {mode === "detail" ? (
+        <DetailMode
+          top={top}
+          data={data}
+          onSend={onSend}
+          detailCount={data.anomalies!.length}
+        />
+      ) : (
+        <OverviewMode data={data} onSend={onSend} />
+      )}
     </div>
   );
 }

@@ -11,9 +11,9 @@
  */
 
 import React, { useState, useMemo, useCallback } from "react";
-import { useApp } from "./shared/use-app";
-import { parseToolResult } from "./shared/parse-tool-result";
-import { theme } from "./shared/theme";
+import { useApp } from "@shared/use-app";
+import { parseToolResult } from "@shared/parse-tool-result";
+import { theme } from "@shared/theme";
 
 interface ServiceHealth {
   span_count: number;

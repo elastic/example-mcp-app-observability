@@ -4,13 +4,15 @@
  * 2.0; you may not use this file except in compliance with the Elastic License
  * 2.0.
  *
- * Minimal MCP App shim — replaces @modelcontextprotocol/ext-apps/react
- * Implements just enough of the MCP UI postMessage protocol to:
- *   1. Do the initialize handshake with the host
- *   2. Receive ui/notifications/tool-result messages
- *   3. Call server tools via tools/call (callServerTool)
+ * Minimal MCP Apps shim — implements just enough of the UI protocol to:
+ *   1. Handshake with the host via ui/initialize + ui/notifications/initialized
+ *   2. Receive ui/notifications/tool-result
+ *   3. Call server tools via tools/call
+ *   4. Send user messages via ui/message (for next-step buttons)
+ *   5. Report size via ui/notifications/size-changed (ResizeObserver-driven)
  *
- * Cuts per-app bundle from ~456KB to ~30KB by removing the ext-apps dependency.
+ * Matches the @modelcontextprotocol/ext-apps spec (protocolVersion 2026-01-26)
+ * without pulling in the full library's 450KB of Zod schemas.
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -26,6 +28,7 @@ export interface AppLike {
     name: string;
     arguments: Record<string, unknown>;
   }) => Promise<ToolResultParams>;
+  sendMessage: (text: string) => void;
 }
 
 interface UseAppOptions {
@@ -40,7 +43,7 @@ const _pending = new Map<
 >();
 let _nextId = 100;
 
-export function useApp({ onAppCreated }: UseAppOptions): {
+export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
   isConnected: boolean;
   error: Error | null;
 } {
@@ -50,6 +53,7 @@ export function useApp({ onAppCreated }: UseAppOptions): {
     ontoolresult: null,
     ontoolinput: null,
     callServerTool: () => Promise.reject(new Error("not initialized")),
+    sendMessage: () => {},
   });
 
   useEffect(() => {
@@ -72,6 +76,22 @@ export function useApp({ onAppCreated }: UseAppOptions): {
           }
         }, 60_000);
       });
+    };
+
+    app.sendMessage = (text) => {
+      const id = _nextId++;
+      window.parent.postMessage(
+        {
+          jsonrpc: "2.0",
+          id,
+          method: "ui/message",
+          params: {
+            role: "user",
+            content: [{ type: "text", text }],
+          },
+        },
+        "*"
+      );
     };
 
     onAppCreated?.(app);
@@ -124,7 +144,7 @@ export function useApp({ onAppCreated }: UseAppOptions): {
         params: {
           protocolVersion: "2026-01-26",
           appCapabilities: {},
-          appInfo: { name: "example-mcp-o11y", version: "1.0.0" },
+          appInfo: appInfo ?? { name: "example-mcp-o11y", version: "1.0.0" },
         },
       },
       "*"

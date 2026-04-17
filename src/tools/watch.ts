@@ -6,10 +6,18 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
+import {
+  registerAppTool,
+  registerAppResource,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
+import fs from "fs";
 import { mlAnomalyIndicesExist, queryAnomalies, severityLabel } from "../elastic/ml.js";
 import { executeEsql } from "../elastic/esql.js";
+import { resolveViewPath } from "./view-path.js";
+
+const RESOURCE_URI = "ui://watch/mcp-app.html";
 
 type Comparator = "<" | "<=" | ">" | ">=" | "==";
 
@@ -307,14 +315,92 @@ export function registerWatchTool(server: McpServer) {
           "E.g. 'frontend memory working set', 'checkout p99 latency'."
         ),
       },
-      _meta: { ui: {} },
+      _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
     async (args: WatchInput) => {
       const mode = args.mode || "anomaly";
-      const result = mode === "metric"
+      const raw = mode === "metric"
         ? await handleMetricMode(args)
         : await handleAnomalyMode(args);
+      const result = enrichForView(raw, args);
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
+
+  const viewPath = resolveViewPath("watch");
+  registerAppResource(
+    server,
+    RESOURCE_URI,
+    RESOURCE_URI,
+    { mimeType: RESOURCE_MIME_TYPE },
+    async () => {
+      const html = fs.readFileSync(viewPath, "utf-8");
+      return { contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }] };
+    }
+  );
+}
+
+function detectUnit(description: string, esql?: string): "bytes" | "ms" | "pct" | "raw" {
+  const s = `${description || ""} ${esql || ""}`.toLowerCase();
+  if (s.includes("memory") || s.includes("bytes") || s.includes("working_set")) return "bytes";
+  if (s.includes("latency") || s.includes("duration") || s.includes("ms")) return "ms";
+  if (s.includes("cpu") || s.includes("utilization") || s.includes("pct")) return "pct";
+  return "raw";
+}
+
+function enrichForView(result: Record<string, unknown>, args: WatchInput): Record<string, unknown> {
+  const enriched = { ...result };
+  const actions: { label: string; prompt: string }[] = [];
+
+  if (result.status === "CONDITION_MET" || result.status === "TIMEOUT") {
+    enriched.esql = args.esql;
+    enriched.namespace = args.namespace;
+    enriched.unit = detectUnit(String(result.description || ""), args.esql);
+
+    if (result.status === "CONDITION_MET") {
+      actions.push({
+        label: "Create alert rule",
+        prompt: `Now that the metric meets the condition, persist monitoring with create-alert-rule. Use the same ES|QL target and threshold.`,
+      });
+      actions.push({
+        label: "Confirm cluster health",
+        prompt: "Use apm-health-summary to confirm the rest of the cluster is healthy after this stabilization.",
+      });
+      actions.push({
+        label: "Re-check ML anomalies",
+        prompt: "Use ml-anomalies with lookback 1h and min_score 50 to confirm no related anomalies are still firing.",
+      });
+    } else {
+      actions.push({
+        label: "Check anomalies",
+        prompt: "Use ml-anomalies with lookback 1h to see if the metric's failure to stabilize has fired an anomaly.",
+      });
+      actions.push({
+        label: "Persist as alert rule",
+        prompt: "Use create-alert-rule to turn this watch into a persistent Kibana rule that will page if the condition ever fires.",
+      });
+    }
+  } else if (result.status === "ALERT") {
+    // Anomaly-mode alerts: derive investigation actions from the hints.
+    const hints = (result.investigation_hints as { tool: string; reason: string; args: Record<string, unknown> }[]) || [];
+    for (const h of hints) {
+      const argStr = Object.entries(h.args || {})
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .join(", ");
+      const label = h.tool === "ml-anomalies"
+        ? "Drill into anomalies"
+        : h.tool === "apm-service-dependencies"
+        ? "Service dependencies"
+        : h.tool === "k8s-blast-radius"
+        ? "Blast radius"
+        : h.tool;
+      actions.push({
+        label,
+        prompt: `Use ${h.tool}${argStr ? ` with ${argStr}` : ""}. ${h.reason}`,
+      });
+    }
+  }
+
+  if (actions.length) enriched.investigation_actions = actions;
+  return enriched;
 }

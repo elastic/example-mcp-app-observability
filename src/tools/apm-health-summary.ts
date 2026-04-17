@@ -277,6 +277,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         },
         degraded_services: degraded,
       };
+      if (exclude_entities) result.exclude_filter = exclude_entities;
 
       if (pods.length) {
         result.pods = { total: pods.length, top_memory: pods.slice(0, 5) };
@@ -301,6 +302,38 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       } else if (degraded.length) {
         result.recommendation = `Investigate ${degraded[0].service}: ${degraded[0].reasons.join(", ")}. Use ml-anomalies for details.`;
       }
+
+      // Investigation-action buttons for the view footer.
+      const actions: { label: string; prompt: string }[] = [];
+      const topEntity = anomalies.top_entities?.[0]?.entity;
+      const topPod = pods[0]?.pod;
+      if (topPod) {
+        const shortPod = topPod.replace(/-[a-z0-9]{8,10}-[a-z0-9]{5}$/, "");
+        actions.push({
+          label: `Drill into ${shortPod}`,
+          prompt: `Use ml-anomalies with entity "${shortPod}" and lookback "1h" to explain anomalies for this pod.`,
+        });
+      }
+      if (pods[1]) {
+        const shortPod = pods[1].pod.replace(/-[a-z0-9]{8,10}-[a-z0-9]{5}$/, "");
+        actions.push({
+          label: `Drill into ${shortPod}`,
+          prompt: `Use ml-anomalies with entity "${shortPod}" and lookback "1h" to explain anomalies for this pod.`,
+        });
+      }
+      if (degraded.length) {
+        actions.push({
+          label: `Investigate ${degraded[0].service}`,
+          prompt: `Use ml-anomalies with entity "${degraded[0].service}" and lookback "1h" to find the root cause.`,
+        });
+      }
+      if (topEntity) {
+        actions.push({
+          label: "Check blast radius",
+          prompt: `Use k8s-blast-radius to assess impact if the node hosting ${topEntity} fails.`,
+        });
+      }
+      if (actions.length) result.investigation_actions = actions;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

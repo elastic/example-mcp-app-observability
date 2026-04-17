@@ -6,10 +6,18 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
+import {
+  registerAppTool,
+  registerAppResource,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
+import fs from "fs";
 import { createCustomThresholdRule } from "../elastic/alerting.js";
 import { getConfig } from "../elastic/client.js";
+import { resolveViewPath } from "./view-path.js";
+
+const RESOURCE_URI = "ui://create-alert-rule/mcp-app.html";
 
 export function registerCreateAlertRuleTool(server: McpServer) {
   registerAppTool(
@@ -64,7 +72,7 @@ export function registerCreateAlertRuleTool(server: McpServer) {
           "'traces-apm*', 'custom-*'."
         ),
       },
-      _meta: { ui: {} },
+      _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
     async (input) => {
       try {
@@ -85,6 +93,23 @@ export function registerCreateAlertRuleTool(server: McpServer) {
         const aggType = input.agg_type ?? "avg";
         const comparator = input.comparator ?? ">";
         const checkInterval = input.check_interval ?? "1m";
+        const timeSize = input.time_size ?? 5;
+        const timeUnit = input.time_unit ?? "m";
+
+        const actions: { label: string; prompt: string }[] = [
+          {
+            label: "Check new anomalies",
+            prompt: "Use ml-anomalies with lookback 1h and min_score 50 to see if anything else has fired since creating this rule.",
+          },
+          {
+            label: "Confirm cluster health",
+            prompt: "Use apm-health-summary to confirm the rest of the cluster is healthy.",
+          },
+          {
+            label: "Watch metric stabilize",
+            prompt: `Use watch in metric mode with the same condition (${comparator} ${input.threshold}) to verify the metric now stays in the healthy range.`,
+          },
+        ];
 
         return {
           content: [
@@ -99,10 +124,16 @@ export function registerCreateAlertRuleTool(server: McpServer) {
                 threshold: input.threshold,
                 comparator,
                 check_interval: checkInterval,
+                agg_type: aggType,
+                time_size: timeSize,
+                time_unit: timeUnit,
+                kql_filter: input.kql_filter,
+                index_pattern: input.index_pattern ?? "metrics-*",
                 enabled: true,
                 tags: rule.tags,
                 message: `Alert rule '${input.rule_name}' created successfully. It will check ${aggType}(${input.metric_field}) ${comparator} ${input.threshold} every ${checkInterval}. Rule ID: ${rule.id}. View in Kibana → Alerts → Rules.`,
                 cleanup_hint: `To delete this rule: DELETE ${kibanaUrl}/api/alerting/rule/${rule.id} with kbn-xsrf: true header.`,
+                investigation_actions: actions,
               }),
             },
           ],
@@ -110,9 +141,21 @@ export function registerCreateAlertRuleTool(server: McpServer) {
       } catch (exc) {
         const msg = exc instanceof Error ? exc.message : String(exc);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: `Rule creation failed: ${msg}` }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ status: "error", error: `Rule creation failed: ${msg}` }) }],
         };
       }
+    }
+  );
+
+  const viewPath = resolveViewPath("create-alert-rule");
+  registerAppResource(
+    server,
+    RESOURCE_URI,
+    RESOURCE_URI,
+    { mimeType: RESOURCE_MIME_TYPE },
+    async () => {
+      const html = fs.readFileSync(viewPath, "utf-8");
+      return { contents: [{ uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html }] };
     }
   );
 }

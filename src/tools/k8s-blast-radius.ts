@@ -237,6 +237,33 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
           "downstream user-facing service impact cannot be inferred without APM.";
       }
 
+      const actions: { label: string; prompt: string }[] = [];
+      const spof = fullOutage.find((d: any) => d.pods_total === 1);
+      if (spof) {
+        actions.push({
+          label: `Investigate SPOF: ${spof.deployment}`,
+          prompt: `Use ml-anomalies with entity "${spof.deployment}" and lookback "1h" to check for anomalies on this single-replica deployment.`,
+        });
+      }
+      const topFull = fullOutage[0] as any;
+      if (topFull && (!spof || topFull.deployment !== spof.deployment)) {
+        actions.push({
+          label: `Check ${topFull.deployment} health`,
+          prompt: `Use ml-anomalies with entity "${topFull.deployment}" and lookback "1h" to see if this deployment is already struggling.`,
+        });
+      }
+      if (feasible === false) {
+        actions.push({
+          label: "Create capacity alert",
+          prompt: `Use create-alert-rule to watch cluster memory headroom. Rule name "Cluster headroom below rescheduling need", metric field "k8s.node.memory.available", threshold ${totalMemoryAtRisk}, comparator "<".`,
+        });
+      }
+      actions.push({
+        label: "Cluster health rollup",
+        prompt: "Use apm-health-summary to see overall namespace health and correlate with this blast radius.",
+      });
+      result.investigation_actions = actions;
+
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );

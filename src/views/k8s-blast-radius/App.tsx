@@ -8,19 +8,18 @@
  * when a Kubernetes node goes offline.
  *
  * Layout:
- *   Center  — the node under analysis
- *   Ring 1  — full_outage + degraded deployments (direct impact)
- *   Ring 2  — downstream APM services in affected namespaces
- *
- * Consumes the JSON payload returned by the `k8s-blast-radius` tool.
+ *   Floating summary card (top-left): counts + rescheduling feasibility
+ *   Center:   the node under analysis
+ *   Ring 1:   full_outage + degraded deployments (direct impact)
+ *   Safe arc: green arc on the right representing unaffected capacity
+ *   Hover:    tooltip with deployment / namespace detail
  */
 
-import React, { useCallback, useMemo, useState } from "react";
-import { useApp } from "./shared/use-app";
-import { parseToolResult } from "./shared/parse-tool-result";
-import { theme } from "./shared/theme";
-
-// ── Data shape returned by k8s-blast-radius tool ───────────────────────────
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useApp, AppLike } from "@shared/use-app";
+import { parseToolResult } from "@shared/parse-tool-result";
+import { theme, baseStyles } from "@shared/theme";
+import { InvestigationActions, InvestigationAction } from "@shared/components";
 
 interface Deployment {
   deployment: string;
@@ -56,12 +55,15 @@ interface BlastRadiusData {
   rescheduling: Rescheduling;
   downstream_services?: DownstreamService[];
   downstream_services_note?: string;
+  investigation_actions?: InvestigationAction[];
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+function polarToXY(cx: number, cy: number, r: number, angle: number) {
+  return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+}
 
-function polarToXY(cx: number, cy: number, radius: number, angle: number) {
-  return { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 1) + "\u2026" : text;
 }
 
 function truncateMiddle(text: string, max: number): string {
@@ -70,22 +72,16 @@ function truncateMiddle(text: string, max: number): string {
   return text.slice(0, keep) + "\u2026" + text.slice(-keep);
 }
 
-function truncate(text: string, max: number): string {
-  return text.length > max ? text.slice(0, max - 1) + "\u2026" : text;
-}
-
-function statusRisk(status: string): { pct: number; color: string; label: string } {
-  if (status === "AT RISK") return { pct: 80, color: theme.red, label: "AT RISK" };
-  if (status === "PARTIAL RISK") return { pct: 50, color: theme.amber, label: "PARTIAL" };
-  if (status === "SAFE") return { pct: 10, color: theme.green, label: "SAFE" };
-  return { pct: 50, color: theme.textMuted, label: status };
+function statusStyle(status: string): { color: string; label: string } {
+  if (status === "AT RISK") return { color: theme.red, label: "AT RISK" };
+  if (status === "PARTIAL RISK") return { color: theme.amber, label: "PARTIAL" };
+  if (status === "SAFE") return { color: theme.green, label: "SAFE" };
+  return { color: theme.textMuted, label: status };
 }
 
 function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
 }
-
-// ── Tooltip ────────────────────────────────────────────────────────────────
 
 interface TooltipInfo {
   x: number;
@@ -99,22 +95,23 @@ function Tooltip({ info }: { info: TooltipInfo }) {
     <div
       style={{
         position: "absolute",
-        left: info.x + 12,
+        left: info.x + 14,
         top: info.y - 8,
-        background: "#1a1d2a",
-        border: `1px solid ${theme.border}`,
+        background: theme.bgTertiary,
+        border: `1px solid ${theme.borderStrong}`,
         borderRadius: 6,
-        padding: "6px 10px",
+        padding: "8px 12px",
         pointerEvents: "none",
         zIndex: 100,
-        maxWidth: 240,
+        maxWidth: 260,
+        boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
       }}
     >
-      <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", marginBottom: 2 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: theme.text, marginBottom: 4 }}>
         {info.name}
       </div>
       {info.details.map((d, i) => (
-        <div key={i} style={{ fontSize: 10, color: theme.textMuted, lineHeight: 1.4 }}>
+        <div key={i} style={{ fontSize: 11, color: theme.textMuted, lineHeight: 1.5 }}>
           {d}
         </div>
       ))}
@@ -122,53 +119,43 @@ function Tooltip({ info }: { info: TooltipInfo }) {
   );
 }
 
-// ── Legend dot ─────────────────────────────────────────────────────────────
-
-function LegendDot({ color, label }: { color: string; label: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-      <div
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: `${color}40`,
-          border: `1.5px solid ${color}`,
-        }}
-      />
-      <span style={{ fontSize: 9, color: theme.textMuted }}>{label}</span>
-    </div>
-  );
-}
-
-// ── Main App ───────────────────────────────────────────────────────────────
-
 export function App() {
   const [data, setData] = useState<BlastRadiusData | null>(null);
   const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
+  const [app, setApp] = useState<AppLike | null>(null);
+
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.textContent = baseStyles;
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, []);
 
   const { isConnected, error } = useApp({
-    onAppCreated: (app) => {
-      app.ontoolresult = (params) => {
+    appInfo: { name: "K8s Blast Radius", version: "1.0.0" },
+    onAppCreated: (a) => {
+      a.ontoolresult = (params) => {
         const parsed = parseToolResult<BlastRadiusData>(params);
-        if (parsed?.node && parsed?.status) {
-          setData(parsed);
-        }
+        if (parsed?.node && parsed?.status) setData(parsed);
       };
+      setApp(a);
     },
   });
+
+  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
   const layout = useMemo(() => {
     if (!data) return null;
 
-    const svgW = 620;
-    const svgH = 480;
+    const svgW = 600;
+    const svgH = 520;
     const cx = svgW / 2;
-    const cy = svgH / 2;
-    const ring1Radius = 135;
-    const ring2Radius = 215;
+    const cy = svgH / 2 + 10;
+    const ring1Radius = 180;
 
-    const center = { x: cx, y: cy, r: 32 };
+    const fullOutage = data.full_outage || [];
+    const degraded = data.degraded || [];
+    const ring1Total = fullOutage.length + degraded.length;
 
     interface RingItem {
       x: number;
@@ -181,16 +168,19 @@ export function App() {
       details: string[];
     }
 
-    const fullOutage = data.full_outage || [];
-    const degraded = data.degraded || [];
-    const ring1Total = fullOutage.length + degraded.length;
-
     const ring1: RingItem[] = [];
 
+    // Distribute affected deployments across 270° on the left & top, leaving
+    // the right-side ~90° arc for the "safe zone" indicator.
+    const startAngle = Math.PI / 4; // 45° (bottom-right start)
+    const endAngle = 2 * Math.PI - Math.PI / 4; // 315° sweep, skipping right-side arc
+    const sweep = endAngle - startAngle;
+
     fullOutage.forEach((dep, i) => {
-      const angle = (2 * Math.PI * i) / Math.max(ring1Total, 1) - Math.PI / 2;
+      const t = ring1Total > 1 ? i / (ring1Total - 1) : 0.5;
+      const angle = startAngle + t * sweep + Math.PI / 2; // rotate so top=0
       const pos = polarToXY(cx, cy, ring1Radius, angle);
-      const r = clamp(11 + dep.pods_on_node * 2, 11, 22);
+      const r = clamp(10 + dep.pods_on_node * 1.5, 10, 18);
       ring1.push({
         ...pos,
         r,
@@ -209,10 +199,11 @@ export function App() {
     });
 
     degraded.forEach((dep, i) => {
-      const angle =
-        (2 * Math.PI * (fullOutage.length + i)) / Math.max(ring1Total, 1) - Math.PI / 2;
+      const idx = fullOutage.length + i;
+      const t = ring1Total > 1 ? idx / (ring1Total - 1) : 0.5;
+      const angle = startAngle + t * sweep + Math.PI / 2;
       const pos = polarToXY(cx, cy, ring1Radius, angle);
-      const r = clamp(10 + dep.pods_on_node * 2, 10, 20);
+      const r = clamp(9 + dep.pods_on_node * 1.5, 9, 16);
       ring1.push({
         ...pos,
         r,
@@ -229,37 +220,6 @@ export function App() {
       });
     });
 
-    // Group downstream services by namespace so we don't overflow ring 2
-    const downstream = data.downstream_services || [];
-    const byNamespace = new Map<string, string[]>();
-    for (const svc of downstream) {
-      const list = byNamespace.get(svc.namespace) || [];
-      list.push(svc.service);
-      byNamespace.set(svc.namespace, list);
-    }
-    const downstreamEntries = Array.from(byNamespace.entries());
-
-    const ring2: RingItem[] = downstreamEntries.map(([namespace, services], i) => {
-      const angle =
-        (2 * Math.PI * i) / Math.max(downstreamEntries.length, 1) - Math.PI / 2;
-      const pos = polarToXY(cx, cy, ring2Radius, angle);
-      return {
-        ...pos,
-        r: clamp(8 + services.length, 8, 14),
-        color: theme.blue,
-        label: namespace,
-        isSpof: false,
-        outage: false,
-        details: [
-          `Namespace: ${namespace}`,
-          `Services: ${services.length}`,
-          ...services.slice(0, 6).map((s) => `  • ${s}`),
-          services.length > 6 ? `  …and ${services.length - 6} more` : "",
-        ].filter(Boolean),
-      };
-    });
-
-    // Edges from center to ring1
     const edgesR1 = ring1.map((item) => ({
       x1: cx,
       y1: cy,
@@ -268,29 +228,32 @@ export function App() {
       outage: item.outage,
     }));
 
-    // Edges from each ring2 item to the ring1 item in the same namespace (if any)
-    const edgesR2: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
-    for (const r2 of ring2) {
-      // r2.label is a namespace; find ring1 items in that namespace via details
-      const match = ring1.find((r1) => r1.details[0] === `Namespace: ${r2.label}`);
-      if (match) {
-        edgesR2.push({ x1: match.x, y1: match.y, x2: r2.x, y2: r2.y });
-      } else {
-        edgesR2.push({ x1: cx, y1: cy, x2: r2.x, y2: r2.y });
-      }
-    }
+    // Safe-zone arc — a filled green arc on the right side indicating the
+    // portion of the cluster that survives this node failure. Width is
+    // proportional to unaffected_count / (unaffected_count + affected).
+    const affected = ring1Total;
+    const safe = data.unaffected_count || 0;
+    const total = affected + safe;
+    const safeFrac = total > 0 ? safe / total : 0;
+    const arcSweepDeg = Math.min(100, Math.max(40, safeFrac * 180));
+    const arcStartAngle = -arcSweepDeg / 2; // right side
+    const arcEndAngle = arcSweepDeg / 2;
+    const arcR = ring1Radius + 20;
 
-    return { svgW, svgH, cx, cy, center, ring1, ring2, edgesR1, edgesR2, ring1Radius, ring2Radius };
+    const arcStart = polarToXY(cx, cy, arcR, (arcStartAngle * Math.PI) / 180);
+    const arcEnd = polarToXY(cx, cy, arcR, (arcEndAngle * Math.PI) / 180);
+    const large = arcSweepDeg > 180 ? 1 : 0;
+    const safeArcPath = `M ${arcStart.x.toFixed(1)} ${arcStart.y.toFixed(1)} A ${arcR} ${arcR} 0 ${large} 1 ${arcEnd.x.toFixed(1)} ${arcEnd.y.toFixed(1)}`;
+
+    return { svgW, svgH, cx, cy, ring1Radius, ring1, edgesR1, safeArcPath, safeFrac };
   }, [data]);
 
-  const handleHover = useCallback(
-    (e: React.MouseEvent, name: string, details: string[]) => {
-      const rect = (e.currentTarget as SVGElement).closest("svg")?.getBoundingClientRect();
-      if (!rect) return;
-      setTooltip({ x: e.clientX - rect.left, y: e.clientY - rect.top, name, details });
-    },
-    []
-  );
+  const handleHover = useCallback((e: React.MouseEvent, name: string, details: string[]) => {
+    const svg = (e.currentTarget as SVGElement).closest("svg");
+    const rect = svg?.getBoundingClientRect();
+    if (!rect) return;
+    setTooltip({ x: e.clientX - rect.left, y: e.clientY - rect.top, name, details });
+  }, []);
   const clearHover = useCallback(() => setTooltip(null), []);
 
   if (error) {
@@ -298,14 +261,7 @@ export function App() {
   }
   if (!isConnected || !data) {
     return (
-      <div
-        style={{
-          padding: 20,
-          color: theme.textMuted,
-          fontSize: 12,
-          textAlign: "center",
-        }}
-      >
+      <div style={{ padding: 24, color: theme.textMuted, fontSize: 12, textAlign: "center" }}>
         <div style={{ fontSize: 22, marginBottom: 8 }}>◎</div>
         <div>Waiting for blast-radius data…</div>
         <div style={{ marginTop: 8, fontSize: 10, color: theme.textDim }}>
@@ -317,108 +273,22 @@ export function App() {
 
   if (!layout) return null;
 
-  const { svgW, svgH, cx, cy, center, ring1, ring2, edgesR1, edgesR2, ring1Radius, ring2Radius } =
-    layout;
-  const risk = statusRisk(data.status);
+  const { svgW, svgH, cx, cy, ring1, edgesR1, safeArcPath } = layout;
+  const status = statusStyle(data.status);
   const resched = data.rescheduling;
   const reschedFeasible = resched.feasible;
   const reschedColor =
-    reschedFeasible === true ? theme.green : reschedFeasible === false ? theme.red : theme.textMuted;
+    reschedFeasible === true ? theme.greenSoft : reschedFeasible === false ? theme.redSoft : theme.textMuted;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: theme.bg }}>
-      {/* Header */}
-      <div
-        style={{
-          padding: "10px 14px",
-          borderBottom: `1px solid ${theme.border}`,
-          background: "#0d0f14",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: 10,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <span style={{ fontSize: 14 }}>◎</span>
-          <span style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>Blast Radius</span>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              color: theme.cyan,
-              padding: "2px 8px",
-              borderRadius: 10,
-              background: `${theme.cyan}18`,
-              fontFamily: "'JetBrains Mono', monospace",
-              maxWidth: 320,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-            title={data.node}
-          >
-            node: {truncateMiddle(data.node, 34)}
-          </span>
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "4px 10px",
-            borderRadius: 8,
-            background: `${risk.color}15`,
-            border: `1px solid ${risk.color}40`,
-          }}
-        >
-          <span
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              color: theme.textMuted,
-              letterSpacing: "0.05em",
-            }}
-          >
-            STATUS
-          </span>
-          <span
-            style={{
-              fontSize: 13,
-              fontWeight: 800,
-              color: risk.color,
-              fontFamily: "'JetBrains Mono', monospace",
-              letterSpacing: "0.04em",
-            }}
-          >
-            {risk.label}
-          </span>
-        </div>
-      </div>
-
-      {/* KPI row */}
-      <div
-        style={{
-          display: "flex",
-          gap: 0,
-          borderBottom: `1px solid ${theme.border}`,
-          background: "#0a0c10",
-        }}
-      >
-        <Kpi label="Pods at risk" value={String(data.pods_at_risk)} color={theme.red} />
-        <Kpi label="Full outage" value={String(data.full_outage.length)} color={theme.red} />
-        <Kpi label="Degraded" value={String(data.degraded.length)} color={theme.amber} />
-        <Kpi label="Unaffected" value={String(data.unaffected_count)} color={theme.green} />
-      </div>
-
+    <div style={{ padding: "12px 14px", background: theme.bg, position: "relative", maxWidth: svgW + 20 }}>
       {/* SVG diagram */}
-      <div style={{ flex: 1, overflow: "auto", padding: "8px 14px", position: "relative" }}>
+      <div style={{ position: "relative" }}>
         <svg
           width="100%"
           height={svgH}
           viewBox={`0 0 ${svgW} ${svgH}`}
-          style={{ display: "block", margin: "0 auto", maxWidth: svgW }}
+          style={{ display: "block", maxWidth: svgW }}
         >
           <defs>
             <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -437,103 +307,68 @@ export function App() {
             </filter>
           </defs>
 
-          {/* Ring guides */}
+          {/* Ring guide */}
           <circle
             cx={cx}
             cy={cy}
-            r={ring1Radius}
+            r={layout.ring1Radius}
             fill="none"
             stroke={theme.border}
             strokeWidth={1}
             strokeDasharray="4 6"
             opacity={0.4}
           />
-          {ring2.length > 0 && (
-            <circle
-              cx={cx}
-              cy={cy}
-              r={ring2Radius}
-              fill="none"
-              stroke={theme.border}
-              strokeWidth={1}
-              strokeDasharray="4 6"
-              opacity={0.3}
-            />
-          )}
 
-          {/* Edges center -> ring1 */}
+          {/* Safe-zone arc (green, right-side) */}
+          <path
+            d={safeArcPath}
+            fill="none"
+            stroke={theme.greenSoft}
+            strokeWidth={6}
+            strokeLinecap="round"
+            opacity={0.8}
+          />
+          <text
+            x={cx + layout.ring1Radius + 40}
+            y={cy - 4}
+            textAnchor="middle"
+            fill={theme.greenSoft}
+            fontSize={11}
+            fontWeight={600}
+            fontFamily="'JetBrains Mono', monospace"
+          >
+            safe
+          </text>
+          <text
+            x={cx + layout.ring1Radius + 40}
+            y={cy + 10}
+            textAnchor="middle"
+            fill={theme.greenSoft}
+            fontSize={10}
+            fontFamily="'JetBrains Mono', monospace"
+          >
+            {data.unaffected_count} unaffected
+          </text>
+
+          {/* Edges */}
           {edgesR1.map((edge, i) => (
             <line
-              key={`e1-${i}`}
+              key={i}
               x1={edge.x1}
               y1={edge.y1}
               x2={edge.x2}
               y2={edge.y2}
               stroke={edge.outage ? theme.red : theme.amber}
-              strokeWidth={1.5}
+              strokeWidth={1.2}
               strokeDasharray="4 4"
-              opacity={0.5}
-              filter="url(#glow)"
+              opacity={0.45}
             />
           ))}
 
-          {/* Edges ring1 -> ring2 */}
-          {edgesR2.map((edge, i) => (
-            <line
-              key={`e2-${i}`}
-              x1={edge.x1}
-              y1={edge.y1}
-              x2={edge.x2}
-              y2={edge.y2}
-              stroke={theme.blue}
-              strokeWidth={1}
-              strokeDasharray="3 5"
-              opacity={0.3}
-            />
-          ))}
-
-          {/* Ring 2 nodes (downstream namespaces) */}
-          {ring2.map((item, i) => (
-            <g
-              key={`r2-${i}`}
-              onMouseMove={(e) => handleHover(e, item.label, item.details)}
-              onMouseLeave={clearHover}
-              style={{ cursor: "pointer" }}
-            >
-              <circle
-                cx={item.x}
-                cy={item.y}
-                r={item.r + 2}
-                fill="none"
-                stroke={item.color}
-                strokeWidth={1}
-                opacity={0.3}
-              />
-              <circle
-                cx={item.x}
-                cy={item.y}
-                r={item.r}
-                fill={`${item.color}20`}
-                stroke={item.color}
-                strokeWidth={1.5}
-              />
-              <text
-                x={item.x}
-                y={item.y + item.r + 12}
-                textAnchor="middle"
-                fill={theme.textMuted}
-                fontSize={8}
-                fontFamily="'JetBrains Mono', monospace"
-              >
-                {truncate(item.label, 16)}
-              </text>
-            </g>
-          ))}
-
-          {/* Ring 1 nodes (affected deployments) */}
+          {/* Ring 1 nodes */}
           {ring1.map((item, i) => (
             <g
-              key={`r1-${i}`}
+              key={i}
               onMouseMove={(e) => handleHover(e, item.label, item.details)}
               onMouseLeave={clearHover}
               style={{ cursor: "pointer" }}
@@ -546,7 +381,7 @@ export function App() {
                   fill="none"
                   stroke={theme.red}
                   strokeWidth={2}
-                  opacity={0.9}
+                  opacity={0.85}
                 />
               )}
               <circle
@@ -556,17 +391,28 @@ export function App() {
                 fill={`${item.color}25`}
                 stroke={item.color}
                 strokeWidth={2}
+                filter="url(#glow)"
               />
               <text
                 x={item.x}
                 y={item.y + item.r + 12}
                 textAnchor="middle"
-                fill={theme.text}
+                fill={item.outage ? theme.redSoft : theme.amber}
                 fontSize={9}
                 fontWeight={600}
                 fontFamily="'JetBrains Mono', monospace"
               >
-                {truncate(item.label, 16)}
+                {truncate(item.label, 18)}
+              </text>
+              <text
+                x={item.x}
+                y={item.y + item.r + 22}
+                textAnchor="middle"
+                fill={theme.textDim}
+                fontSize={8}
+                fontFamily="'JetBrains Mono', monospace"
+              >
+                {item.outage ? "full outage" : "degraded"}
               </text>
             </g>
           ))}
@@ -575,179 +421,142 @@ export function App() {
           <circle
             cx={cx}
             cy={cy}
-            r={center.r + 5}
-            fill="none"
-            stroke={risk.color}
-            strokeWidth={1}
-            opacity={0.4}
-            filter="url(#centerGlow)"
-          />
-          <circle
-            cx={cx}
-            cy={cy}
-            r={center.r}
-            fill={`${risk.color}25`}
-            stroke={risk.color}
+            r={42}
+            fill={`${status.color}20`}
+            stroke={status.color}
             strokeWidth={2.5}
+            filter="url(#centerGlow)"
           />
           <text
             x={cx}
-            y={cy - 4}
+            y={cy - 6}
             textAnchor="middle"
-            fill="#fff"
-            fontSize={10}
+            fill={theme.text}
+            fontSize={12}
             fontWeight={700}
             fontFamily="'JetBrains Mono', monospace"
           >
-            {truncateMiddle(data.node, 14)}
+            {truncateMiddle(data.node, 12)}
           </text>
           <text
             x={cx}
-            y={cy + 10}
+            y={cy + 8}
             textAnchor="middle"
-            fill={risk.color}
-            fontSize={8}
+            fill={theme.textMuted}
+            fontSize={9}
             fontFamily="'JetBrains Mono', monospace"
           >
             node
           </text>
+          <text
+            x={cx}
+            y={cy + 24}
+            textAnchor="middle"
+            fill={status.color}
+            fontSize={11}
+            fontWeight={700}
+            fontFamily="'JetBrains Mono', monospace"
+            letterSpacing={0.5}
+          >
+            {status.label}
+          </text>
         </svg>
+
+        {/* Floating summary card — top-left */}
+        <div
+          style={{
+            position: "absolute",
+            top: 8,
+            left: 8,
+            background: `${theme.bgSecondary}ee`,
+            border: `1px solid ${theme.borderStrong}`,
+            borderRadius: 6,
+            padding: "10px 12px",
+            minWidth: 220,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: theme.textMuted,
+              textTransform: "uppercase",
+              letterSpacing: 0.8,
+              marginBottom: 8,
+            }}
+          >
+            blast radius summary
+          </div>
+          <SummaryRow color={theme.redSoft} value={data.full_outage.length} label="deployments" sub="full outage" />
+          <SummaryRow color={theme.amber} value={data.degraded.length} label="deployments" sub="degraded" />
+          <SummaryRow color={theme.greenSoft} value={data.unaffected_count} label="deployments" sub="unaffected" />
+          <div style={{ height: 1, background: theme.border, margin: "8px 0" }} />
+          <SummaryRow color={theme.redSoft} value={data.pods_at_risk} label="pods at risk" />
+          <div style={{ marginTop: 8, fontSize: 11, color: theme.textMuted, display: "flex", gap: 6, alignItems: "center" }}>
+            <span>rescheduling:</span>
+            <span style={{ color: reschedColor, fontWeight: 600 }}>
+              {reschedFeasible === true ? "feasible" : reschedFeasible === false ? "infeasible" : "unknown"}
+            </span>
+          </div>
+        </div>
+
         {tooltip && <Tooltip info={tooltip} />}
       </div>
 
-      {/* Legend */}
-      <div
-        style={{
-          padding: "8px 14px",
-          borderTop: `1px solid ${theme.border}`,
-          display: "flex",
-          gap: 14,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        <LegendDot color={theme.red} label="Full outage" />
-        <LegendDot color={theme.amber} label="Degraded" />
-        {ring2.length > 0 && <LegendDot color={theme.blue} label="Downstream ns" />}
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <div
-            style={{
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              border: `2px solid ${theme.red}`,
-              background: "transparent",
-            }}
-          />
-          <span style={{ fontSize: 9, color: theme.textMuted }}>SPOF (single replica)</span>
-        </div>
-      </div>
-
-      {/* Rescheduling footer */}
-      <div
-        style={{
-          padding: "10px 14px",
-          borderTop: `1px solid ${theme.border}`,
-          background: "#0a0c10",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <div>
-          <div
-            style={{
-              fontSize: 9,
-              fontWeight: 700,
-              color: theme.textMuted,
-              marginBottom: 2,
-              letterSpacing: "0.08em",
-            }}
-          >
-            RESCHEDULING
-          </div>
-          <div style={{ fontSize: 11, color: theme.text, fontFamily: "'JetBrains Mono', monospace" }}>
-            {resched.memory_required} required / {resched.memory_available} available across{" "}
-            {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
-          </div>
-        </div>
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            color: reschedColor,
-            padding: "4px 10px",
-            borderRadius: 6,
-            background: `${reschedColor}18`,
-            border: `1px solid ${reschedColor}40`,
-            fontFamily: "'JetBrains Mono', monospace",
-          }}
-        >
-          {reschedFeasible === true
-            ? "✓ FEASIBLE"
-            : reschedFeasible === false
-            ? "✗ INFEASIBLE"
-            : "— unknown"}
-        </div>
+      {/* Rescheduling detail + actions */}
+      <div style={{ marginTop: 12, fontSize: 11, color: theme.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+        {resched.memory_required} required / {resched.memory_available} available across{" "}
+        {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
       </div>
 
       {data.downstream_services_note && (
-        <div
-          style={{
-            padding: "8px 14px",
-            borderTop: `1px solid ${theme.border}`,
-            background: "#0a0c10",
-            fontSize: 10,
-            color: theme.textMuted,
-            lineHeight: 1.5,
-          }}
-        >
+        <div style={{ marginTop: 10, fontSize: 11, color: theme.textMuted, lineHeight: 1.5 }}>
           {data.downstream_services_note}
         </div>
       )}
 
-      <style>{`
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 2px; }
-      `}</style>
+      <div style={{ marginTop: 12 }}>
+        <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+      </div>
     </div>
   );
 }
 
-function Kpi({ label, value, color }: { label: string; value: string; color: string }) {
+function SummaryRow({
+  color,
+  value,
+  label,
+  sub,
+}: {
+  color: string;
+  value: number;
+  label: string;
+  sub?: string;
+}) {
   return (
     <div
       style={{
-        flex: 1,
-        padding: "10px 14px",
-        borderRight: `1px solid ${theme.border}`,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 12,
+        marginBottom: 4,
       }}
     >
-      <div
-        style={{
-          fontSize: 9,
-          fontWeight: 700,
-          color: theme.textMuted,
-          letterSpacing: "0.08em",
-          marginBottom: 2,
-        }}
-      >
-        {label.toUpperCase()}
-      </div>
-      <div
-        style={{
-          fontSize: 18,
-          fontWeight: 800,
-          color,
-          fontFamily: "'JetBrains Mono', monospace",
-          lineHeight: 1.1,
-        }}
+      <span
+        className="mono"
+        style={{ color, fontWeight: 700, minWidth: 28, textAlign: "right" }}
       >
         {value}
-      </div>
+      </span>
+      <span style={{ color: theme.text }}>{label}</span>
+      {sub && (
+        <>
+          <span style={{ color: theme.textDim }}>—</span>
+          <span style={{ color }}>{sub}</span>
+        </>
+      )}
     </div>
   );
 }

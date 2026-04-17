@@ -13,10 +13,119 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import fs from "fs";
-import { mlAnomalyIndicesExist, queryAnomalies } from "../elastic/ml.js";
+import {
+  mlAnomalyIndicesExist,
+  queryAnomalies,
+  type AnomalyQueryResult,
+} from "../elastic/ml.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://anomaly-explainer/mcp-app.html";
+
+type InvestigationAction = { label: string; prompt: string };
+
+interface Enriched extends AnomalyQueryResult {
+  investigation_actions?: InvestigationAction[];
+  detail?: Record<string, unknown>;
+  time_series_title?: string;
+}
+
+function detectUnit(jobId: string, fieldName?: string): "bytes" | "ms" | "pct" | "raw" {
+  const s = `${jobId} ${fieldName || ""}`.toLowerCase();
+  if (s.includes("memory") || s.includes("bytes") || s.includes("working_set")) return "bytes";
+  if (s.includes("latency") || s.includes("duration")) return "ms";
+  if (s.includes("cpu") || s.includes("utilization") || s.includes("pct")) return "pct";
+  return "raw";
+}
+
+function enrichForView(
+  result: AnomalyQueryResult,
+  filters: { entity?: string; jobId?: string; lookback?: string }
+): Enriched {
+  const anomalies = result.anomalies || [];
+  const enriched: Enriched = { ...result };
+
+  // Build investigation actions based on what came back
+  const actions: InvestigationAction[] = [];
+  const top = anomalies[0];
+
+  if (top) {
+    const entityName =
+      top.entity?.split("=").pop() ||
+      Object.values(top.influencers || {}).flat()[0];
+
+    const affectedServices = new Set<string>();
+    for (const a of anomalies) {
+      for (const [field, values] of Object.entries(a.influencers || {})) {
+        const lower = field.toLowerCase();
+        if (lower.includes("service") || lower.includes("pod") || lower.includes("deployment")) {
+          for (const v of values) affectedServices.add(v);
+        }
+      }
+    }
+    const firstService = [...affectedServices][0];
+
+    if (firstService) {
+      actions.push({
+        label: "Service dependencies",
+        prompt: `Use apm-service-dependencies to show upstream/downstream for ${firstService}.`,
+      });
+    }
+    if (entityName) {
+      actions.push({
+        label: "Blast radius",
+        prompt: `Use k8s-blast-radius to assess impact if the node hosting ${entityName} fails.`,
+      });
+    }
+    actions.push({
+      label: "Broaden anomaly search",
+      prompt: `Re-run ml-anomalies with min_score 50 and lookback 6h to find related anomalies.`,
+    });
+
+    if (top.fieldName && typeof firstNum(top.actual) === "number") {
+      const actualVal = firstNum(top.actual)!;
+      actions.push({
+        label: "Create alert rule",
+        prompt: `Use create-alert-rule to create a rule watching ${top.fieldName} > ${Math.round(actualVal * 0.9)} for the affected entity.`,
+      });
+    }
+  }
+
+  if (actions.length) enriched.investigation_actions = actions;
+
+  // Detail metadata — helps the view render contextual labels
+  if (top) {
+    const unit = detectUnit(top.jobId, top.fieldName);
+    const namespaceInfluencer =
+      top.influencers?.["resource.attributes.k8s.namespace.name"]?.[0] ||
+      top.influencers?.["kubernetes.namespace"]?.[0];
+    const entityLabel =
+      top.entity?.split("=").pop() ||
+      Object.values(top.influencers || {}).flat()[0];
+
+    enriched.detail = {
+      entity_label: entityLabel,
+      namespace: namespaceInfluencer,
+      actual_label: unit === "bytes" ? "Actual memory" : unit === "ms" ? "Actual latency" : unit === "pct" ? "Actual utilization" : "Actual",
+      typical_label: unit === "bytes" ? "Typical memory" : unit === "ms" ? "Typical latency" : unit === "pct" ? "Typical utilization" : "Typical",
+      actual_sub: top.fieldName?.split(".").pop(),
+      typical_sub: "learned baseline",
+      unit_format: unit,
+    };
+
+    if (top.fieldName) {
+      const readableField = top.fieldName.split(".").slice(-2).join(".");
+      enriched.time_series_title = `${readableField} — actual vs typical`;
+    }
+  }
+
+  return enriched;
+}
+
+function firstNum(v: number | number[] | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  return Array.isArray(v) ? v[0] : v;
+}
 
 export function registerMlAnomaliesTool(server: McpServer) {
   registerAppTool(
@@ -79,8 +188,10 @@ export function registerMlAnomaliesTool(server: McpServer) {
         limit,
       });
 
+      const enriched = enrichForView(result, { entity, jobId: job_id, lookback });
+
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        content: [{ type: "text" as const, text: JSON.stringify(enriched) }],
       };
     }
   );
