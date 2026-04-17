@@ -78,6 +78,11 @@ Response includes:
 - `rule_id`: the Kibana saved-object ID.
 - `cleanup_hint`: a one-line DELETE command for teardown.
 - `message`: a human summary of what the rule does.
+- `investigation_actions`: next-step prompts (re-check anomalies, confirm cluster health, watch the metric
+  stabilize). The MCP App view surfaces these as click-to-send buttons.
+
+An inline MCP App view renders on success: rule-name header with a live badge, KV rows for condition /
+window / check interval / KQL filter / tags, and the next-step buttons. Use it — don't restate the JSON.
 
 Confirm to the user:
 1. **What was created**: quote the rule name and the condition ("will check avg(k8s.pod.memory.working_set)

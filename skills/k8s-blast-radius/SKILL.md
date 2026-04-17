@@ -64,7 +64,10 @@ Response shape:
 - `rescheduling`: memory required vs available, and whether it's feasible.
 - `downstream_services[]` (only if APM present): user-facing services whose namespace is affected.
 - `downstream_services_note` (only if APM absent): explains the gap.
-- `render_instructions`: HTML render spec — let the UI handle visualization.
+- `investigation_actions`: next-step prompts surfaced as click-to-send buttons in the view (includes a SPOF
+  callout when a single-replica deployment is implicated).
+- `render_instructions`: HTML render spec — let the inline MCP App view handle visualization (floating
+  summary card, radial affected-deployment sweep, safe-zone arc, hover tooltips).
 
 Narrate in this order:
 

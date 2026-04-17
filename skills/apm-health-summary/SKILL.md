@@ -52,6 +52,10 @@ anomaly detection) or `watch` / `create-alert-rule` (both universal).
 
 ## After the tool returns
 
+The tool renders an inline MCP App view — status badge, stat cards, anomaly-severity donut, top memory
+pods, service throughput list, and a next-step button row driven by `investigation_actions`. Use the view
+for the visual rollup; narrate findings below it.
+
 Inspect `data_coverage` first — this tells you which signals contributed.
 
 Then walk the output top-down:
@@ -60,7 +64,8 @@ Then walk the output top-down:
 2. **Degraded services**: name them with reasons (error rate, latency). These are the investigation targets.
 3. **Pods** (if present): top memory consumers — cross-reference with degraded services.
 4. **Anomalies** (if present): by-severity counts + top entities. Drives the ML follow-up.
-5. **Recommendation**: the tool emits a one-liner suggesting the next tool — use it.
+5. **Next-step buttons**: the view surfaces `investigation_actions` as clickable prompts (drill into the
+   top pod, investigate the degraded service, check blast radius). Mention them in chat so the user knows.
 
 Based on what you see, pick the next tool:
 - Degraded service named → `apm-service-dependencies` with `service: <name>` to map the neighborhood.

@@ -34,16 +34,20 @@ Tools are grouped by the backend they require. A logs-or-metrics-only Elastic Ob
 | --- | --- |
 | `k8s-blast-radius` | Assess the impact of a node going offline — full outage, degraded, unaffected, reschedule feasibility. APM is optional — enriches the output with user-facing service impact but is not required. |
 
-Four MCP App views ship in v1, each rendered inline when its tool returns:
+Six MCP App views ship in v1 — one per tool, rendered inline when the tool returns:
 
-- `anomaly-explainer` — severity gauge + timeline for `ml-anomalies`
-- `apm-health-summary` — cluster health badge with service / pod / anomaly rollups
+- `anomaly-explainer` — dual-mode for `ml-anomalies`: overview (severity counts, affected entities, by-job breakdown) or single-anomaly detail (score / actual / typical / deviation, comparison bar, time-series)
+- `apm-health-summary` — cluster health badge, anomaly-severity donut, top memory pods, service throughput
 - `apm-service-dependencies` — layered DAG with call volume, latency, and hover-path highlighting
-- `k8s-blast-radius` — radial node-impact diagram with rescheduling feasibility
+- `k8s-blast-radius` — radial node-impact diagram with floating summary, SPOF detection, safe-zone arc, rescheduling feasibility
+- `watch` — dual-mode for `watch`: metric condition with trend chart and threshold line, or anomaly trigger with hypothesis-ready investigation hints
+- `create-alert-rule` — live rule card with condition, window, check interval, KQL filter, tags, and next-step prompts
+
+Every tool emits an `investigation_actions` list so the UI can surface opinionated next-step prompts — click-to-send without forcing the user to guess the right follow-up tool.
 
 Two Agent Builder workflows ship alongside — for clients that prefer Agent Builder workflows over MCP tools:
 
-- `create-alert-rule` — the workflow form of the alert-rule tool.
+- `create-alert-rule` — workflow form of the alert-rule tool (the MCP App version above is preferred for most clients).
 - `k8s-crashloop-investigation-otel` — automatic CrashLoopBackOff / OOMKilled investigation for clusters on the OTel ingest path (EDOT / kube-stack). Pulls pod context, ML anomalies, upstream health, and recent changes, then synthesizes a root-cause hypothesis.
 
 Six skills ship as separate `.zip` artifacts (one per tool). Upload individually in Claude Desktop via **Customize → Skills → Create Skill → Upload a skill**. Each skill teaches the agent when to reach for the paired tool and how to fill its parameters from natural-language user intent, so users don't need to know tool names or deployment specifics.

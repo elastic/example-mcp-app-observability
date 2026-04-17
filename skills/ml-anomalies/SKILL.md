@@ -62,15 +62,21 @@ You receive:
 - Anomaly records with `recordScore`, `jobId`, `fieldName`, `functionName`, `entity`, `deviationPercent`,
   and the actual vs typical values.
 - A `jobsSummary` of counts per job.
+- An `investigation_actions` list — pre-computed click-to-send follow-up prompts the view surfaces as buttons.
 
-The explainer view renders a severity gauge, timeline, and entity cards. **Use it** — don't restate the JSON
-in chat. Instead, provide a narrative **below** the view:
+The explainer view renders in one of two modes, picked automatically from the result shape:
+
+- **Overview mode** (many anomalies, cross-entity): severity counts, affected-entities list, by-ML-job breakdown.
+- **Detail mode** (one anomaly, or filtered to a single entity): entity header, score / actual / typical /
+  deviation cards, an actual-vs-typical comparison bar, and a time-series when available.
+
+**Use the view** — don't restate the JSON. Provide a narrative **below** it:
 
 1. **Headline the worst offender**: "Top anomaly — `frontend` memory working set anomalous, score 87
    (major), 340% above typical."
-2. **Group by entity**: list the top 3-5 affected entities with one-line summaries.
-3. **Suggest follow-ups**: if APM data exists, recommend `apm-service-dependencies` to map topology; if K8s,
-   `k8s-blast-radius` for node impact.
+2. **Group by entity**: list the top 3-5 affected entities with one-line summaries (overview mode).
+3. **Respect the next-step buttons**: the view shows `investigation_actions` as clickable prompts — call
+   them out in your reply ("…or click Blast radius to see infra impact") so the user knows they're there.
 4. **Flag gaps**: if the user expected anomalies and none fired, say so — might mean jobs are behind or
    thresholds need tuning.
 

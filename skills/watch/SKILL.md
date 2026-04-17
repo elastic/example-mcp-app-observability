@@ -74,12 +74,20 @@ Condition format: `<comparator> <threshold>` — valid comparators: `<`, `<=`, `
 
 ## After the tool returns
 
+The `watch` MCP App view renders inline in one of two modes, picked automatically from the result:
+
+- **Metric mode** — trend bar chart with threshold line; stat cards for current / threshold / peak / baseline.
+- **Anomaly mode** — severity-scored trigger card with affected entities and click-to-send investigation prompts.
+
+Both modes surface an `investigation_actions` list as buttons. Follow up in chat too — don't rely on the buttons alone.
+
 **Anomaly fired (`status: ALERT`)**: the response includes affected entities, affected services, top anomalies,
 and `investigation_hints` naming the next tool to reach for. Follow those hints — don't just report the alert,
 start investigating.
 
 **Metric condition met (`status: CONDITION_MET`)**: confirm to the user and describe the trend from the returned
-history. If this was post-remediation validation, explicitly state the fix has been validated.
+history. If this was post-remediation validation, explicitly state the fix has been validated. Offer to graduate
+the condition into a durable rule via `create-alert-rule`.
 
 **Timeout (`status: TIMEOUT` or `QUIET`)**: tell the user nothing fired. Suggest adjustments — lower `min_score`,
 widen `lookback`, verify ML jobs are running, or re-examine the ES|QL query.
