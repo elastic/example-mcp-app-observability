@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "example-mcp-o11y",
   "display_name": "Elastic Observability",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule creation.",
   "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and create Kibana threshold alerts.",
   "author": {
