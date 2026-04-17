@@ -67,7 +67,7 @@ async function pollMetric(esql: string): Promise<number | null> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface WatchInput {
-  mode?: "anomaly" | "metric";
+  mode?: "anomaly" | "metric" | "now";
   min_score?: number;
   interval?: number;
   max_wait?: number;
@@ -76,6 +76,25 @@ interface WatchInput {
   esql?: string;
   condition?: string;
   description?: string;
+}
+
+async function handleNowMode(args: WatchInput) {
+  const esql = args.esql || "";
+  const description = args.description || "";
+  if (!esql) return { error: "Now mode requires 'esql' parameter with an ES|QL query." };
+
+  const value = await pollMetric(esql);
+  const desc = description || "metric";
+  return {
+    status: "NOW",
+    description: desc,
+    value,
+    evaluated_at_ms: Date.now(),
+    message:
+      value === null
+        ? `${desc}: query returned no numeric value.`
+        : `${desc}: ${value}`,
+  };
 }
 
 async function handleAnomalyMode(args: WatchInput) {
@@ -284,21 +303,26 @@ export function registerWatchTool(server: McpServer) {
     {
       title: "Watch",
       description:
-        "Requires: nothing in metric mode (works on any ES|QL-queryable numeric field); ML anomaly jobs in anomaly mode. " +
-        "Actively polls and blocks until a condition is met — the agent's 'wait-and-see' primitive. Two modes:\n\n" +
+        "Requires: nothing in metric/now mode (works on any ES|QL-queryable numeric field); ML anomaly jobs in anomaly " +
+        "mode. The agent's 'wait-and-see' primitive. Three modes:\n\n" +
         "**Anomaly mode** (default): polls ML anomaly detection jobs and fires when a significant anomaly is detected. " +
         "Returns a structured alert with affected entities, severity, and investigation hints. Starting point for " +
         "autonomous incident investigation.\n\n" +
         "**Metric mode** (mode='metric'): polls an ES|QL query and either (a) fires when a condition is satisfied " +
         "(e.g. 'value < 80000000'), or (b) if no condition is given, live-samples the metric for the full max_wait " +
         "window and returns the trend — use this for 'show me a live chart of X' style prompts. Default interval 5s, " +
-        "max_wait 60s → ~12 samples. Unlike `create-alert-rule`, watch is transient and session-scoped — nothing is " +
-        "persisted to Kibana. Tool returns include a `watch_key` so the UI can accumulate samples across repeated calls.",
+        "max_wait 60s → ~12 samples. Tool returns include a `watch_key` so the UI can accumulate samples across repeated calls.\n\n" +
+        "**Now mode** (mode='now'): runs the ES|QL query once and returns the current value in a compact card — use " +
+        "this for 'what is X right now' style prompts. No polling, no trend. Fast answer when the user just wants a " +
+        "single-instance read.\n\n" +
+        "Unlike `create-alert-rule`, watch is transient and session-scoped — nothing is persisted to Kibana.",
       inputSchema: {
-        mode: z.enum(["anomaly", "metric"]).optional().describe(
+        mode: z.enum(["anomaly", "metric", "now"]).optional().describe(
           "Watch mode. 'anomaly' (default) polls ML anomaly results — use when the user asks 'tell me when anything " +
-          "unusual fires'. 'metric' polls an ES|QL query against a threshold — use when the user names a specific " +
-          "metric and condition ('wait until memory drops below 80MB')."
+          "unusual fires'. 'metric' polls an ES|QL query over time — use when the user names a specific metric " +
+          "and wants a live trend or threshold watch ('wait until memory drops below 80MB', 'show me a live chart'). " +
+          "'now' runs the query once and returns the current value — use when the user asks 'what is X right now', " +
+          "'check X', or wants a single-instance read without a chart."
         ),
         min_score: z.number().optional().describe(
           "[Anomaly mode] Minimum anomaly score 0-100 to trigger. Default 75 (major+). Lower to 50 to include " +
@@ -338,9 +362,12 @@ export function registerWatchTool(server: McpServer) {
     },
     async (args: WatchInput) => {
       const mode = args.mode || "anomaly";
-      const raw = mode === "metric"
-        ? await handleMetricMode(args)
-        : await handleAnomalyMode(args);
+      const raw =
+        mode === "metric"
+          ? await handleMetricMode(args)
+          : mode === "now"
+          ? await handleNowMode(args)
+          : await handleAnomalyMode(args);
       const result = enrichForView(raw, args);
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
@@ -370,6 +397,26 @@ function detectUnit(description: string, esql?: string): "bytes" | "ms" | "pct" 
 function enrichForView(result: Record<string, unknown>, args: WatchInput): Record<string, unknown> {
   const enriched = { ...result };
   const actions: { label: string; prompt: string }[] = [];
+
+  if (result.status === "NOW") {
+    enriched.esql = args.esql;
+    enriched.namespace = args.namespace;
+    enriched.unit = detectUnit(String(result.description || ""), args.esql);
+    actions.push({
+      label: "Re-check now",
+      prompt: `Re-run watch in now mode with the same ESQL "${args.esql}" to refresh the current value.`,
+    });
+    actions.push({
+      label: "Watch live (60s)",
+      prompt: `Switch to a live watch: run watch in metric mode with the same ESQL "${args.esql}" (no condition) to draw a live chart.`,
+    });
+    actions.push({
+      label: "Create alert rule",
+      prompt: `Use create-alert-rule against the same ES|QL target to persist a threshold for this metric.`,
+    });
+    if (actions.length) enriched.investigation_actions = actions;
+    return enriched;
+  }
 
   if (
     result.status === "CONDITION_MET" ||

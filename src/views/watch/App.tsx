@@ -58,6 +58,18 @@ type MetricResult = {
   investigation_actions?: InvestigationAction[];
 };
 
+type NowResult = {
+  status: "NOW";
+  description: string;
+  value: number | null;
+  evaluated_at_ms: number;
+  message: string;
+  esql?: string;
+  namespace?: string;
+  unit?: "bytes" | "ms" | "pct" | "raw";
+  investigation_actions?: InvestigationAction[];
+};
+
 type AnomalyAlert = {
   status: "ALERT" | "QUIET" | "NO_ML_JOBS";
   headline?: string;
@@ -73,10 +85,14 @@ type AnomalyAlert = {
   suggestion?: string;
 };
 
-type WatchResult = MetricResult | AnomalyAlert;
+type WatchResult = MetricResult | AnomalyAlert | NowResult;
 
 function isMetric(r: WatchResult): r is MetricResult {
   return r.status === "CONDITION_MET" || r.status === "TIMEOUT" || r.status === "SAMPLED";
+}
+
+function isNow(r: WatchResult): r is NowResult {
+  return r.status === "NOW";
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -273,6 +289,66 @@ function TrendChart({
 }
 
 // ── Metric mode ────────────────────────────────────────────────────────────
+
+// ── Now mode (single-instance read) ────────────────────────────────────────
+
+function NowView({ data, onSend }: { data: NowResult; onSend: (p: string) => void }) {
+  const unit = data.unit || inferUnit(data.description, data.esql);
+  const hasValue = data.value !== null && data.value !== undefined;
+  const ageSec = Math.max(0, Math.round((Date.now() - data.evaluated_at_ms) / 1000));
+
+  return (
+    <>
+      <SectionCard>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: 12,
+            marginBottom: 14,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
+              {data.description || "Metric"}
+            </div>
+            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
+              {data.esql ? data.esql.split("|")[0]?.trim() : "ES|QL metric"}
+              {data.namespace ? ` · ${data.namespace}` : ""}
+            </div>
+          </div>
+          <StatusBadge tone="ok">now</StatusBadge>
+        </div>
+
+        <div
+          style={{
+            fontSize: 40,
+            fontWeight: 700,
+            color: hasValue ? theme.text : theme.textMuted,
+            fontFamily: "'JetBrains Mono', monospace",
+            lineHeight: 1.1,
+            marginBottom: 4,
+          }}
+        >
+          {hasValue ? fmt(data.value as number, unit) : "—"}
+        </div>
+        <div style={{ fontSize: 11, color: theme.textDim }}>
+          {hasValue
+            ? `evaluated ${ageSec === 0 ? "just now" : `${ageSec}s ago`}`
+            : "query returned no numeric value"}
+        </div>
+      </SectionCard>
+
+      <InvestigationActions
+        title="Next"
+        actions={data.investigation_actions}
+        onSend={onSend}
+      />
+    </>
+  );
+}
 
 function MetricView({
   data,
@@ -577,7 +653,9 @@ export function App() {
 
   return (
     <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-      {isMetric(data) ? (
+      {isNow(data) ? (
+        <NowView data={data} onSend={onSend} />
+      ) : isMetric(data) ? (
         <MetricView data={data} trend={accumulated} onSend={onSend} />
       ) : (
         <AnomalyAlertView data={data} onSend={onSend} />
