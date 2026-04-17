@@ -51,28 +51,15 @@ The `skills/` directory contains [Claude Skills](https://claude.com/docs/skills/
 
 ## Installation
 
-### Claude Desktop
-
-Grab the latest `.mcpb` from [Releases](https://github.com/elastic/example-mcp-app-observability/releases) and double-click it. Claude Desktop will prompt for the four connection settings.
-
-### Cursor / VS Code / Claude Code
-
-```bash
-npm install -g example-mcp-app-observability
-```
-
-Then point your MCP client at `example-mcp-app-observability --stdio` with these env vars:
-
-```bash
-export ELASTICSEARCH_URL="https://<cluster>.es.cloud.example.com"
-export ELASTICSEARCH_API_KEY="<api-key>"
-export KIBANA_URL="https://<cluster>.kb.cloud.example.com"
-export KIBANA_API_KEY="<api-key>"
-```
-
-### HTTP transport
-
-Run without `--stdio` (default port `3001`, POST to `/mcp`).
+| Guide | Description |
+|-------|-------------|
+| [Add to Claude Desktop](docs/setup-claude-desktop.md) | Install the MCP app via one-click `.mcpb` or manual config |
+| [Add to Cursor](docs/setup-cursor.md) | Connect the MCP app via npx or a locally running server |
+| [Add to VS Code](docs/setup-vscode.md) | Connect the MCP app via npx or a locally running server |
+| [Add to Claude Code](docs/setup-claude-code.md) | Register the MCP app via the `claude mcp add` CLI |
+| [Add to Claude.ai](docs/setup-claude-ai.md) | Expose the MCP app via a cloudflared tunnel |
+| [Build and run locally](docs/setup-local.md) | Build the MCP server from source and run it on your machine |
+| [Install skills](docs/setup-skills.md) | Install skills via npx, local clone, or zip upload |
 
 ### Requirements
 
