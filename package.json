@@ -3,7 +3,7 @@
   "version": "0.1.9",
   "description": "MCP App server for Elastic Observability — interactive SRE workflows for Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, remediation, and alert-rule creation",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "Elastic-2.0",
   "main": "dist/main.js",
   "bin": {
     "example-mcp-o11y": "./dist/main.js"
