@@ -197,18 +197,24 @@ function buildAlert(anomalies: Awaited<ReturnType<typeof queryAnomalies>>["anoma
   };
 }
 
+function watchKey(esql: string, condition?: string): string {
+  let h = 0;
+  const s = `${esql}|${condition || ""}`;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return `w_${Math.abs(h).toString(36)}`;
+}
+
 async function handleMetricMode(args: WatchInput) {
   const esql = args.esql || "";
-  const conditionStr = args.condition || "";
-  const interval = args.interval ?? 30;
-  const maxWait = args.max_wait ?? 300;
+  const conditionStr = args.condition;
+  const interval = args.interval ?? 5;
+  const maxWait = args.max_wait ?? 60;
   const description = args.description || "";
 
   if (!esql) return { error: "Metric mode requires 'esql' parameter with an ES|QL query." };
-  if (!conditionStr) return { error: "Metric mode requires 'condition' parameter (e.g. '< 80000000')." };
 
-  const parsed = parseCondition(conditionStr);
-  if (!parsed) {
+  const parsed = conditionStr ? parseCondition(conditionStr) : null;
+  if (conditionStr && !parsed) {
     return {
       error: `Invalid condition '${conditionStr}'. Expected format: '<comparator> <number>' (e.g. '< 80000000', '>= 3').`,
     };
@@ -216,16 +222,18 @@ async function handleMetricMode(args: WatchInput) {
 
   let elapsed = 0;
   let polls = 0;
-  const history: { elapsed_seconds: number; value: number }[] = [];
+  const history: { elapsed_seconds: number; value: number; timestamp_ms: number }[] = [];
+  const key = watchKey(esql, conditionStr);
+  const desc = description || "watched metric";
 
   while (elapsed < maxWait) {
     polls++;
+    const pollStart = Date.now();
     const value = await pollMetric(esql);
 
     if (value !== null) {
-      history.push({ elapsed_seconds: elapsed, value });
-      if (evaluate(value, parsed.comparator, parsed.threshold)) {
-        const desc = description || "watched metric";
+      history.push({ elapsed_seconds: elapsed, value, timestamp_ms: pollStart });
+      if (parsed && evaluate(value, parsed.comparator, parsed.threshold)) {
         return {
           status: "CONDITION_MET",
           description: desc,
@@ -233,7 +241,9 @@ async function handleMetricMode(args: WatchInput) {
           condition: conditionStr,
           detected_after_seconds: elapsed,
           polls,
-          trend: history.slice(-10),
+          poll_interval_seconds: interval,
+          trend: history,
+          watch_key: key,
           message: `${desc} reached ${value.toFixed(2)} (condition: ${conditionStr}) after ${elapsed}s.`,
         };
       }
@@ -247,16 +257,23 @@ async function handleMetricMode(args: WatchInput) {
   }
 
   const lastValue = history.length ? history[history.length - 1].value : null;
-  const desc = description || "watched metric";
+  // Without a condition, "timeout" means we completed a live-sampling window, not a failure.
+  const status = parsed ? "TIMEOUT" : "SAMPLED";
+  const msg = parsed
+    ? `${desc} did not meet condition '${conditionStr}' within ${maxWait}s. Last value: ${lastValue}.`
+    : `${desc}: sampled ${polls} points over ${maxWait}s. Last value: ${lastValue}.`;
+
   return {
-    status: "TIMEOUT",
+    status,
     description: desc,
     condition: conditionStr,
     last_value: lastValue,
     polls,
     elapsed_seconds: elapsed,
-    trend: history.slice(-10),
-    message: `${desc} did not meet condition '${conditionStr}' within ${maxWait}s. Last value: ${lastValue}.`,
+    poll_interval_seconds: interval,
+    trend: history,
+    watch_key: key,
+    message: msg,
   };
 }
 
@@ -272,10 +289,11 @@ export function registerWatchTool(server: McpServer) {
         "**Anomaly mode** (default): polls ML anomaly detection jobs and fires when a significant anomaly is detected. " +
         "Returns a structured alert with affected entities, severity, and investigation hints. Starting point for " +
         "autonomous incident investigation.\n\n" +
-        "**Metric mode** (mode='metric'): polls an ES|QL query and fires when a condition is satisfied " +
-        "(e.g. 'value < 80000000'). Use to watch for stabilization after remediation, or for short-lived " +
-        "monitoring that doesn't warrant a persistent Kibana alert rule. Unlike `create-alert-rule`, this is " +
-        "transient and session-scoped — nothing is persisted to Kibana.",
+        "**Metric mode** (mode='metric'): polls an ES|QL query and either (a) fires when a condition is satisfied " +
+        "(e.g. 'value < 80000000'), or (b) if no condition is given, live-samples the metric for the full max_wait " +
+        "window and returns the trend — use this for 'show me a live chart of X' style prompts. Default interval 5s, " +
+        "max_wait 60s → ~12 samples. Unlike `create-alert-rule`, watch is transient and session-scoped — nothing is " +
+        "persisted to Kibana. Tool returns include a `watch_key` so the UI can accumulate samples across repeated calls.",
       inputSchema: {
         mode: z.enum(["anomaly", "metric"]).optional().describe(
           "Watch mode. 'anomaly' (default) polls ML anomaly results — use when the user asks 'tell me when anything " +
@@ -307,8 +325,9 @@ export function registerWatchTool(server: McpServer) {
           "return a single row with the current value."
         ),
         condition: z.string().optional().describe(
-          "[Metric mode] Condition '<comparator> <threshold>'. Examples: '< 80000000' (watch for memory to drop " +
-          "below 80MB), '>= 3' (watch for count to reach 3), '> 500' (watch for latency over 500ms)."
+          "[Metric mode] Optional condition '<comparator> <threshold>'. Examples: '< 80000000' (watch for memory to " +
+          "drop below 80MB), '>= 3' (watch for count to reach 3), '> 500' (watch for latency over 500ms). Omit for " +
+          "live-sampling — the tool polls for the full max_wait window and returns the trend."
         ),
         description: z.string().optional().describe(
           "[Metric mode] Human-readable description of what's being watched — surfaces in the final alert message. " +
@@ -352,10 +371,20 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
   const enriched = { ...result };
   const actions: { label: string; prompt: string }[] = [];
 
-  if (result.status === "CONDITION_MET" || result.status === "TIMEOUT") {
+  if (
+    result.status === "CONDITION_MET" ||
+    result.status === "TIMEOUT" ||
+    result.status === "SAMPLED"
+  ) {
     enriched.esql = args.esql;
     enriched.namespace = args.namespace;
     enriched.unit = detectUnit(String(result.description || ""), args.esql);
+
+    // "Extend watch" always available — re-runs the same query for another window.
+    const extendPrompt = args.condition
+      ? `Re-run watch in metric mode with the same ESQL "${args.esql}" and condition "${args.condition}" for another ${args.max_wait ?? 60}s.`
+      : `Re-run watch in metric mode with the same ESQL "${args.esql}" (no condition — live sample) for another ${args.max_wait ?? 60}s.`;
+    actions.push({ label: "Extend watch (+60s)", prompt: extendPrompt });
 
     if (result.status === "CONDITION_MET") {
       actions.push({
@@ -366,11 +395,7 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
         label: "Confirm cluster health",
         prompt: "Use apm-health-summary to confirm the rest of the cluster is healthy after this stabilization.",
       });
-      actions.push({
-        label: "Re-check ML anomalies",
-        prompt: "Use ml-anomalies with lookback 1h and min_score 50 to confirm no related anomalies are still firing.",
-      });
-    } else {
+    } else if (result.status === "TIMEOUT") {
       actions.push({
         label: "Check anomalies",
         prompt: "Use ml-anomalies with lookback 1h to see if the metric's failure to stabilize has fired an anomaly.",
@@ -378,6 +403,16 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
       actions.push({
         label: "Persist as alert rule",
         prompt: "Use create-alert-rule to turn this watch into a persistent Kibana rule that will page if the condition ever fires.",
+      });
+    } else {
+      // SAMPLED (no condition) — offer to pivot into a real rule or threshold watch.
+      actions.push({
+        label: "Create alert rule",
+        prompt: `Use create-alert-rule to set a persistent threshold against the same ES|QL target. Pick a threshold informed by the sampled trend.`,
+      });
+      actions.push({
+        label: "Confirm cluster health",
+        prompt: "Use apm-health-summary to put this metric in wider cluster context.",
       });
     }
   } else if (result.status === "ALERT") {

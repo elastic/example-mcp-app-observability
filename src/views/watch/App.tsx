@@ -33,16 +33,20 @@ import {
   InvestigationAction,
 } from "@shared/components";
 
+type TrendPoint = { elapsed_seconds: number; value: number; timestamp_ms?: number };
+
 type MetricResult = {
-  status: "CONDITION_MET" | "TIMEOUT";
+  status: "CONDITION_MET" | "TIMEOUT" | "SAMPLED";
   description: string;
   final_value?: number;
   last_value?: number | null;
-  condition: string;
+  condition?: string;
   detected_after_seconds?: number;
   elapsed_seconds?: number;
   polls: number;
-  trend: { elapsed_seconds: number; value: number }[];
+  poll_interval_seconds?: number;
+  trend: TrendPoint[];
+  watch_key?: string;
   message: string;
   esql?: string;
   namespace?: string;
@@ -72,7 +76,7 @@ type AnomalyAlert = {
 type WatchResult = MetricResult | AnomalyAlert;
 
 function isMetric(r: WatchResult): r is MetricResult {
-  return r.status === "CONDITION_MET" || r.status === "TIMEOUT";
+  return r.status === "CONDITION_MET" || r.status === "TIMEOUT" || r.status === "SAMPLED";
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -106,7 +110,7 @@ function parseThreshold(condition: string): { comparator: string; value: number 
   return { comparator: m[1], value: parseFloat(m[2]) };
 }
 
-// ── Trend bar chart ────────────────────────────────────────────────────────
+// ── Trend line chart ───────────────────────────────────────────────────────
 
 function TrendChart({
   trend,
@@ -115,7 +119,7 @@ function TrendChart({
   unit,
   conditionMet,
 }: {
-  trend: { elapsed_seconds: number; value: number }[];
+  trend: TrendPoint[];
   threshold?: number;
   thresholdLabel?: string;
   unit: "bytes" | "ms" | "pct" | "raw";
@@ -131,19 +135,44 @@ function TrendChart({
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
 
-  const lastT = trend[trend.length - 1].elapsed_seconds;
+  // Use a monotonic x axis — prefer timestamp_ms when available (accumulated samples
+  // come from multiple tool calls and can share elapsed_seconds values).
+  const hasTs = trend.every((p) => typeof p.timestamp_ms === "number");
+  const xVals = hasTs
+    ? trend.map((p) => p.timestamp_ms as number)
+    : trend.map((p) => p.elapsed_seconds);
+  const xMin = Math.min(...xVals);
+  const xMax = Math.max(...xVals);
+  const xRange = xMax - xMin || 1;
+
   const allY = [...trend.map((p) => p.value), threshold ?? 0].filter((v) => Number.isFinite(v));
   const yMax = Math.max(...allY) * 1.15;
   const yMin = Math.min(0, Math.min(...allY) * 0.9);
   const yRange = yMax - yMin || 1;
 
-  const barCount = trend.length;
-  const barGap = 6;
-  const barW = Math.max(8, (plotW - barGap * (barCount - 1)) / Math.max(barCount, 1));
-
+  const xOf = (i: number) => padL + ((xVals[i] - xMin) / xRange) * plotW;
   const yOf = (v: number) => padT + plotH - ((v - yMin) / yRange) * plotH;
 
   const yTicks = [yMin, yMin + yRange / 2, yMax];
+
+  const breached = (v: number) => (threshold !== undefined ? v >= threshold : false);
+  const lineColor = conditionMet ? theme.redSoft : threshold === undefined ? theme.blue : theme.amber;
+
+  const points = trend.map((p, i) => `${xOf(i).toFixed(1)},${yOf(p.value).toFixed(1)}`).join(" ");
+  const areaPath =
+    `M ${xOf(0).toFixed(1)},${yOf(yMin).toFixed(1)} ` +
+    trend.map((p, i) => `L ${xOf(i).toFixed(1)},${yOf(p.value).toFixed(1)}`).join(" ") +
+    ` L ${xOf(trend.length - 1).toFixed(1)},${yOf(yMin).toFixed(1)} Z`;
+
+  // Decide how many x-axis labels to show — aim for ~4 across the range.
+  const tickCount = Math.min(4, trend.length);
+  const tickIndexes = Array.from({ length: tickCount }, (_, k) =>
+    Math.round((k * (trend.length - 1)) / Math.max(1, tickCount - 1))
+  );
+  const lastElapsed = trend[trend.length - 1].elapsed_seconds;
+
+  // Only draw dots when points are sparse enough to not turn the line into a blob.
+  const showDots = trend.length <= 40;
 
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
@@ -170,45 +199,52 @@ function TrendChart({
           </text>
         </g>
       ))}
-      {trend.map((p, i) => {
-        const isLast = i === trend.length - 1;
-        const belowThreshold =
-          threshold !== undefined ? p.value < threshold : true;
-        const isGreen = conditionMet && isLast && belowThreshold;
-        const color = isGreen
-          ? theme.greenSoft
-          : belowThreshold && conditionMet
-          ? theme.amber
-          : theme.redSoft;
-        const x = padL + i * (barW + barGap);
-        const y = yOf(p.value);
-        const barH = padT + plotH - y;
-        const elapsed = lastT - p.elapsed_seconds;
-        return (
-          <g key={i}>
-            <rect
-              x={x}
-              y={y}
-              width={barW}
-              height={Math.max(1, barH)}
-              fill={`${color}55`}
-              stroke={color}
-              strokeWidth={1}
-              rx={2}
+
+      <path d={areaPath} fill={`${lineColor}1a`} stroke="none" />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={lineColor}
+        strokeWidth={1.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+
+      {showDots &&
+        trend.map((p, i) => {
+          const isLast = i === trend.length - 1;
+          const color = breached(p.value) ? theme.redSoft : lineColor;
+          return (
+            <circle
+              key={i}
+              cx={xOf(i)}
+              cy={yOf(p.value)}
+              r={isLast ? 3 : 2}
+              fill={isLast ? color : `${color}aa`}
+              stroke={isLast ? theme.text : "none"}
+              strokeWidth={isLast ? 0.5 : 0}
             />
-            <text
-              x={x + barW / 2}
-              y={h - 8}
-              textAnchor="middle"
-              fill={theme.textDim}
-              fontSize={9}
-              fontFamily="'JetBrains Mono', monospace"
-            >
-              {elapsed === 0 ? "now" : `-${elapsed}s`}
-            </text>
-          </g>
+          );
+        })}
+
+      {tickIndexes.map((i, k) => {
+        const elapsed = lastElapsed - trend[i].elapsed_seconds;
+        const label = elapsed === 0 ? "now" : `-${elapsed}s`;
+        return (
+          <text
+            key={`x-${k}`}
+            x={xOf(i)}
+            y={h - 8}
+            textAnchor="middle"
+            fill={theme.textDim}
+            fontSize={9}
+            fontFamily="'JetBrains Mono', monospace"
+          >
+            {label}
+          </text>
         );
       })}
+
       {threshold !== undefined && (
         <>
           <line
@@ -238,16 +274,41 @@ function TrendChart({
 
 // ── Metric mode ────────────────────────────────────────────────────────────
 
-function MetricView({ data, onSend }: { data: MetricResult; onSend: (p: string) => void }) {
+function MetricView({
+  data,
+  trend,
+  onSend,
+}: {
+  data: MetricResult;
+  trend: TrendPoint[];
+  onSend: (p: string) => void;
+}) {
   const unit = data.unit || inferUnit(data.description, data.esql);
   const currentValue = data.final_value ?? data.last_value ?? undefined;
-  const thresholdInfo = parseThreshold(data.condition);
+  const thresholdInfo = data.condition ? parseThreshold(data.condition) : null;
   const threshold = thresholdInfo?.value;
   const conditionMet = data.status === "CONDITION_MET";
-  const tone: BadgeTone = conditionMet ? "ok" : "major";
-  const badgeText = conditionMet ? "condition met" : "timeout";
+  const sampling = data.status === "SAMPLED";
+
+  const tone: BadgeTone = conditionMet ? "ok" : sampling ? "ok" : "major";
+  const badgeText = conditionMet ? "condition met" : sampling ? "sampling" : "timeout";
 
   const elapsed = data.detected_after_seconds ?? data.elapsed_seconds ?? 0;
+  const pollCount = trend.length || data.polls;
+
+  const subtitle = data.esql
+    ? `${data.esql.split("|")[0]?.trim()}${data.condition ? ` · ${data.condition}` : ""}`
+    : data.condition
+    ? `condition ${data.condition}`
+    : "live sample";
+
+  // Derive peak from accumulated trend when server didn't send one (live mode).
+  const computedPeak =
+    data.peak_value !== undefined
+      ? data.peak_value
+      : trend.length > 1
+      ? Math.max(...trend.map((p) => p.value))
+      : undefined;
 
   return (
     <>
@@ -267,9 +328,7 @@ function MetricView({ data, onSend }: { data: MetricResult; onSend: (p: string) 
               {data.description || "Watched metric"}
             </div>
             <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-              {data.esql
-                ? `${data.esql.split("|")[0]?.trim()} · ${data.condition}`
-                : `condition ${data.condition}`}
+              {subtitle}
               {data.namespace ? ` · ${data.namespace}` : ""}
             </div>
           </div>
@@ -278,9 +337,9 @@ function MetricView({ data, onSend }: { data: MetricResult; onSend: (p: string) 
 
         <StatGrid>
           <StatCard
-            label="Current avg"
+            label="Current"
             value={fmt(currentValue, unit)}
-            tone={conditionMet ? "ok" : "major"}
+            tone={conditionMet ? "ok" : sampling ? undefined : "major"}
           />
           {threshold !== undefined && (
             <StatCard
@@ -288,11 +347,11 @@ function MetricView({ data, onSend }: { data: MetricResult; onSend: (p: string) 
               value={`${thresholdInfo!.comparator} ${fmt(threshold, unit)}`}
             />
           )}
-          {data.peak_value !== undefined && (
+          {computedPeak !== undefined && (
             <StatCard
-              label={data.peak_label || "Peak (earlier)"}
-              value={fmt(data.peak_value, unit)}
-              tone="critical"
+              label={data.peak_label || "Peak"}
+              value={fmt(computedPeak, unit)}
+              tone={conditionMet ? "critical" : undefined}
             />
           )}
           {data.baseline_value !== undefined && (
@@ -301,12 +360,12 @@ function MetricView({ data, onSend }: { data: MetricResult; onSend: (p: string) 
           <StatCard
             label="Elapsed"
             value={`${elapsed}s`}
-            sub={`${data.polls} poll${data.polls === 1 ? "" : "s"}`}
+            sub={`${pollCount} sample${pollCount === 1 ? "" : "s"}`}
           />
         </StatGrid>
 
         <TrendChart
-          trend={data.trend}
+          trend={trend}
           threshold={threshold}
           thresholdLabel={threshold !== undefined ? `${fmt(threshold, unit)} threshold` : undefined}
           unit={unit}
@@ -315,7 +374,7 @@ function MetricView({ data, onSend }: { data: MetricResult; onSend: (p: string) 
       </SectionCard>
 
       <InvestigationActions
-        title="Recommended next steps"
+        title={sampling ? "Keep watching" : "Recommended next steps"}
         actions={data.investigation_actions}
         onSend={onSend}
       />
@@ -448,6 +507,8 @@ function AnomalyAlertView({ data, onSend }: { data: AnomalyAlert; onSend: (p: st
 
 export function App() {
   const [data, setData] = useState<WatchResult | null>(null);
+  const [accumulated, setAccumulated] = useState<TrendPoint[]>([]);
+  const [lastKey, setLastKey] = useState<string | undefined>();
   const [app, setApp] = useState<AppLike | null>(null);
 
   useEffect(() => {
@@ -457,10 +518,43 @@ export function App() {
     return () => style.remove();
   }, []);
 
-  const handleToolResult = useCallback((params: ToolResultParams) => {
-    const d = parseToolResult<WatchResult>(params);
-    if (d?.status) setData(d);
-  }, []);
+  const handleToolResult = useCallback(
+    (params: ToolResultParams) => {
+      const d = parseToolResult<WatchResult>(params);
+      if (!d?.status) return;
+
+      if (isMetric(d)) {
+        const incoming = d.trend || [];
+        // Merge when the watch_key matches a prior run — same ES|QL + condition —
+        // so "Extend watch" invocations build a continuous timeline instead of
+        // resetting. Otherwise treat as a fresh series.
+        if (d.watch_key && d.watch_key === lastKey && accumulated.length > 0) {
+          const seen = new Set(
+            accumulated.map((p) => p.timestamp_ms).filter((t) => t !== undefined) as number[]
+          );
+          const fresh = incoming.filter(
+            (p) => p.timestamp_ms === undefined || !seen.has(p.timestamp_ms)
+          );
+          const merged = [...accumulated, ...fresh].sort((a, b) => {
+            const at = a.timestamp_ms ?? a.elapsed_seconds;
+            const bt = b.timestamp_ms ?? b.elapsed_seconds;
+            return at - bt;
+          });
+          // Cap at 240 points so a long-running watch doesn't overflow the SVG.
+          setAccumulated(merged.slice(-240));
+        } else {
+          setAccumulated(incoming);
+          setLastKey(d.watch_key);
+        }
+      } else {
+        setAccumulated([]);
+        setLastKey(undefined);
+      }
+
+      setData(d);
+    },
+    [accumulated, lastKey]
+  );
 
   useApp({
     appInfo: { name: "Watch", version: "1.0.0" },
@@ -484,7 +578,7 @@ export function App() {
   return (
     <div style={{ padding: "14px 16px", maxWidth: 620 }}>
       {isMetric(data) ? (
-        <MetricView data={data} onSend={onSend} />
+        <MetricView data={data} trend={accumulated} onSend={onSend} />
       ) : (
         <AnomalyAlertView data={data} onSend={onSend} />
       )}
