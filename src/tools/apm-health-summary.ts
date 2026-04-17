@@ -46,6 +46,51 @@ async function queryServiceTransactionRollup(lookback: string): Promise<ServiceR
   }
 }
 
+interface ResolvedNamespace {
+  resolved?: string;
+  note?: string;
+  candidates?: string[];
+}
+
+async function resolveNamespace(
+  requested: string | undefined,
+  lookback: string
+): Promise<ResolvedNamespace> {
+  if (!requested) return {};
+  const esql = `FROM metrics-kubeletstatsreceiver.otel*,traces-generic.otel*,traces-apm* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY resource.attributes.k8s.namespace.name | SORT c DESC | LIMIT 50`;
+  try {
+    const res = await executeEsql(esql);
+    const rows = rowsFromEsql<{ "resource.attributes.k8s.namespace.name"?: string }>(res);
+    const names = rows
+      .map((r) => r["resource.attributes.k8s.namespace.name"])
+      .filter((n): n is string => !!n);
+    if (!names.length) return {};
+    if (names.includes(requested)) return { resolved: requested };
+    const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
+    const target = norm(requested);
+    const prefix = names.find((n) => norm(n).startsWith(target));
+    if (prefix) {
+      return {
+        resolved: prefix,
+        note: `Resolved namespace "${requested}" → "${prefix}" (prefix match).`,
+      };
+    }
+    const substr = names.find((n) => norm(n).includes(target));
+    if (substr) {
+      return {
+        resolved: substr,
+        note: `Resolved namespace "${requested}" → "${substr}" (fuzzy match).`,
+      };
+    }
+    return {
+      note: `Namespace "${requested}" not found in recent telemetry.`,
+      candidates: names.slice(0, 8),
+    };
+  } catch {
+    return {};
+  }
+}
+
 async function queryServiceTraces(namespace: string | undefined, lookback: string): Promise<ServiceRow[]> {
   const nsFilter = namespace
     ? `| WHERE resource.attributes.k8s.namespace.name == "${namespace}" `
@@ -158,7 +203,37 @@ async function queryActiveAnomalies(
           ],
         },
       },
-      top_entities: {
+      top_entities_by_influencer: {
+        nested: { path: "influencers" },
+        aggs: {
+          pods_only: {
+            filter: {
+              terms: {
+                "influencers.influencer_field_name": [
+                  "resource.attributes.k8s.pod.name",
+                  "resource.attributes.service.name",
+                ],
+              },
+            },
+            aggs: {
+              by_value: {
+                terms: {
+                  field: "influencers.influencer_field_values",
+                  size: 5,
+                  order: { "parent>max_score": "desc" },
+                },
+                aggs: {
+                  parent: {
+                    reverse_nested: {},
+                    aggs: { max_score: { max: { field: "record_score" } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      top_entities_by_partition: {
         terms: { field: "partition_field_value", size: 5, order: { max_score: "desc" } },
         aggs: { max_score: { max: { field: "record_score" } } },
       },
@@ -170,7 +245,19 @@ async function queryActiveAnomalies(
       hits: { total: { value: number } | number };
       aggregations?: {
         by_severity?: { buckets: { key: string; doc_count: number }[] };
-        top_entities?: { buckets: { key: string; max_score: { value: number } }[] };
+        top_entities_by_influencer?: {
+          pods_only?: {
+            by_value?: {
+              buckets: {
+                key: string;
+                parent?: { max_score?: { value: number } };
+              }[];
+            };
+          };
+        };
+        top_entities_by_partition?: {
+          buckets: { key: string; max_score: { value: number } }[];
+        };
       };
     };
     const resp = await esRequest<AggResp>("/.ml-anomalies-*/_search", { body });
@@ -178,10 +265,18 @@ async function queryActiveAnomalies(
     const sevBuckets = resp.aggregations?.by_severity?.buckets || [];
     const bySeverity: Record<string, number> = {};
     for (const b of sevBuckets) if (b.doc_count > 0) bySeverity[b.key] = b.doc_count;
-    const topEntities = (resp.aggregations?.top_entities?.buckets || []).map((b) => ({
-      entity: b.key,
-      max_score: Math.round(b.max_score.value * 10) / 10,
-    }));
+
+    const influencerBuckets =
+      resp.aggregations?.top_entities_by_influencer?.pods_only?.by_value?.buckets || [];
+    const partitionBuckets = resp.aggregations?.top_entities_by_partition?.buckets || [];
+    const buckets = influencerBuckets.length ? influencerBuckets : partitionBuckets;
+    const topEntities = buckets.map((b) => {
+      const score =
+        "parent" in b
+          ? b.parent?.max_score?.value ?? 0
+          : (b as { max_score: { value: number } }).max_score.value;
+      return { entity: b.key, max_score: Math.round(score * 10) / 10 };
+    });
     return { total, by_severity: bySeverity, top_entities: topEntities };
   } catch (exc) {
     return {
@@ -249,10 +344,12 @@ export function registerApmHealthSummaryTool(server: McpServer) {
     },
     async ({ namespace, lookback, job_filter, exclude_entities }) => {
       const lb = lookback || "15m";
+      const nsResolution = await resolveNamespace(namespace, lb);
+      const effectiveNs = nsResolution.resolved ?? namespace;
       const [services, pods, anomalies] = await Promise.all([
-        queryServices(namespace, lb),
-        queryPodResources(namespace, lb),
-        queryActiveAnomalies(namespace, job_filter, exclude_entities),
+        queryServices(effectiveNs, lb),
+        queryPodResources(effectiveNs, lb),
+        queryActiveAnomalies(effectiveNs, job_filter, exclude_entities),
       ]);
 
       const { health, degraded } = assessHealth(services, anomalies);
@@ -267,7 +364,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
 
       const result: Record<string, unknown> = {
         overall_health: health,
-        namespace: namespace || "all",
+        namespace: effectiveNs || namespace || "all",
         lookback: lb,
         data_coverage: dataCoverage,
         services: {
@@ -277,6 +374,11 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         },
         degraded_services: degraded,
       };
+      if (namespace && effectiveNs && effectiveNs !== namespace) {
+        result.namespace_requested = namespace;
+      }
+      if (nsResolution.note) result.namespace_note = nsResolution.note;
+      if (nsResolution.candidates) result.namespace_candidates = nsResolution.candidates;
       if (exclude_entities) result.exclude_filter = exclude_entities;
 
       if (pods.length) {

@@ -80,6 +80,9 @@ interface HealthData {
   recommendation?: string;
   warning?: string;
   exclude_filter?: string;
+  namespace_requested?: string;
+  namespace_note?: string;
+  namespace_candidates?: string[];
   investigation_actions?: InvestigationAction[];
 }
 
@@ -270,6 +273,34 @@ export function App() {
 
   return (
     <div style={{ padding: "14px 16px", maxWidth: 620 }}>
+      {data.namespace_candidates?.length ? (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: "8px 12px",
+            background: `${theme.amber}18`,
+            border: `1px solid ${theme.amber}55`,
+            borderRadius: 6,
+            fontSize: 11,
+            color: theme.text,
+          }}
+        >
+          <div style={{ fontWeight: 700, color: theme.amber, marginBottom: 4 }}>
+            Namespace not found
+          </div>
+          <div>
+            "{data.namespace_requested || data.namespace}" did not match. Did you mean:{" "}
+            {data.namespace_candidates.slice(0, 5).map((c, i) => (
+              <span key={c} className="mono">
+                {i > 0 ? ", " : ""}
+                {c}
+              </span>
+            ))}
+            ?
+          </div>
+        </div>
+      ) : null}
+
       {/* Header */}
       <div
         style={{
@@ -298,6 +329,18 @@ export function App() {
             last {data.lookback}
             {data.exclude_filter ? ` · ${data.exclude_filter} excluded` : ""}
           </div>
+          {data.namespace_requested && (
+            <div
+              style={{
+                fontSize: 10,
+                color: theme.amber,
+                marginTop: 4,
+                fontStyle: "italic",
+              }}
+            >
+              resolved from "{data.namespace_requested}"
+            </div>
+          )}
         </div>
         <StatusBadge tone={tone}>{data.overall_health}</StatusBadge>
       </div>
