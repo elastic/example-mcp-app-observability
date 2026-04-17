@@ -49,7 +49,7 @@ export function registerCreateAlertRuleTool(server: McpServer) {
           "(e.g. 'fire if free memory drops below X')."
         ),
         kql_filter: z.string().optional().describe(
-          "Optional KQL filter to scope the rule — e.g. 'kubernetes.namespace: otel-demo AND service.name: frontend'. " +
+          "Optional KQL filter to scope the rule — e.g. 'k8s.namespace.name: otel-demo AND service.name: frontend'. " +
           "Omit to apply across all documents matching the index pattern."
         ),
         check_interval: z.string().optional().describe(

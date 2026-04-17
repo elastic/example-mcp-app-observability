@@ -163,6 +163,7 @@ async function enrichForView(
   if (top) {
     const unit = detectUnit(top.jobId, top.fieldName);
     const namespaceInfluencer =
+      top.influencers?.["k8s.namespace.name"]?.[0] ||
       top.influencers?.["resource.attributes.k8s.namespace.name"]?.[0] ||
       top.influencers?.["kubernetes.namespace"]?.[0];
     const entityLabel =
@@ -260,7 +261,7 @@ export function registerMlAnomaliesTool(server: McpServer) {
               text: JSON.stringify({
                 anomalies: [],
                 total: 0,
-                hint: "No ML anomaly indices found. Configure anomaly detection jobs in Kibana ML for metrics like k8s.pod.memory.working_set, k8s.pod.cpu.utilization, or kubernetes.container.restarts.",
+                hint: "No ML anomaly indices found. Configure anomaly detection jobs in Kibana ML for metrics like k8s.pod.memory.working_set, k8s.pod.cpu.utilization, or k8s.container.restarts.",
               }),
             },
           ],

@@ -34,7 +34,7 @@ interface PodRow {
 }
 
 async function queryServiceTransactionRollup(lookback: string): Promise<ServiceRow[]> {
-  const esql = `FROM metrics-service_transaction* | WHERE @timestamp > NOW() - ${lookback} | STATS total = COUNT(*) BY service.name | SORT total DESC | LIMIT 30`;
+  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS total = COUNT(*) BY service.name | SORT total DESC | LIMIT 30`;
   try {
     const res = await executeEsql(esql);
     const rows = rowsFromEsql<{ "service.name"?: string; total?: number }>(res);
@@ -57,12 +57,12 @@ async function resolveNamespace(
   lookback: string
 ): Promise<ResolvedNamespace> {
   if (!requested) return {};
-  const esql = `FROM metrics-kubeletstatsreceiver.otel*,traces-generic.otel*,traces-apm* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY resource.attributes.k8s.namespace.name | SORT c DESC | LIMIT 50`;
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
   try {
     const res = await executeEsql(esql);
-    const rows = rowsFromEsql<{ "resource.attributes.k8s.namespace.name"?: string }>(res);
+    const rows = rowsFromEsql<{ "k8s.namespace.name"?: string }>(res);
     const names = rows
-      .map((r) => r["resource.attributes.k8s.namespace.name"])
+      .map((r) => r["k8s.namespace.name"])
       .filter((n): n is string => !!n);
     if (!names.length) return {};
     if (names.includes(requested)) return { resolved: requested };
@@ -93,16 +93,16 @@ async function resolveNamespace(
 
 async function queryServiceTraces(namespace: string | undefined, lookback: string): Promise<ServiceRow[]> {
   const nsFilter = namespace
-    ? `| WHERE resource.attributes.k8s.namespace.name == "${namespace}" `
+    ? `| WHERE k8s.namespace.name == "${namespace}" `
     : "";
-  const esql = `FROM traces-generic.otel*,traces-apm* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS total_count = COUNT(*) BY resource.attributes.service.name | SORT total_count DESC | LIMIT 30`;
+  const esql = `FROM traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
   try {
     const res = await executeEsql(esql);
-    const rows = rowsFromEsql<{ "resource.attributes.service.name"?: string; total_count?: number }>(res);
+    const rows = rowsFromEsql<{ "service.name"?: string; total_count?: number }>(res);
     return rows
-      .filter((r) => !!r["resource.attributes.service.name"])
+      .filter((r) => !!r["service.name"])
       .map((r) => ({
-        service: r["resource.attributes.service.name"]!,
+        service: r["service.name"]!,
         throughput: r.total_count || 0,
       }));
   } catch {
@@ -118,20 +118,20 @@ async function queryServices(namespace: string | undefined, lookback: string): P
 
 async function queryPodResources(namespace: string | undefined, lookback: string): Promise<PodRow[]> {
   const nsFilter = namespace
-    ? `| WHERE resource.attributes.k8s.namespace.name == "${namespace}" `
+    ? `| WHERE k8s.namespace.name == "${namespace}" `
     : "";
-  const esql = `FROM metrics-kubeletstatsreceiver.otel* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS avg_mem = AVG(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY resource.attributes.k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS avg_mem = AVG(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
   try {
     const res = await executeEsql(esql);
     const rows = rowsFromEsql<{
-      "resource.attributes.k8s.pod.name"?: string;
+      "k8s.pod.name"?: string;
       avg_mem?: number;
       avg_cpu?: number;
     }>(res);
     return rows
-      .filter((r) => !!r["resource.attributes.k8s.pod.name"])
+      .filter((r) => !!r["k8s.pod.name"])
       .map((r) => ({
-        pod: r["resource.attributes.k8s.pod.name"]!,
+        pod: r["k8s.pod.name"]!,
         avg_memory_mb: Math.round(((r.avg_mem || 0) / (1024 * 1024)) * 10) / 10,
         avg_cpu_cores: Math.round((r.avg_cpu || 0) * 1000) / 1000,
       }));
@@ -169,7 +169,14 @@ async function queryActiveAnomalies(
         query: {
           bool: {
             must: [
-              { term: { "influencers.influencer_field_name": "resource.attributes.k8s.namespace.name" } },
+              {
+                terms: {
+                  "influencers.influencer_field_name": [
+                    "k8s.namespace.name",
+                    "resource.attributes.k8s.namespace.name",
+                  ],
+                },
+              },
               { term: { "influencers.influencer_field_values": namespace } },
             ],
           },
@@ -210,7 +217,9 @@ async function queryActiveAnomalies(
             filter: {
               terms: {
                 "influencers.influencer_field_name": [
+                  "k8s.pod.name",
                   "resource.attributes.k8s.pod.name",
+                  "service.name",
                   "resource.attributes.service.name",
                 ],
               },
@@ -385,7 +394,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         result.pods = { total: pods.length, top_memory: pods.slice(0, 5) };
       } else {
         result.pods_note =
-          "No Kubernetes pod metrics found (metrics-kubeletstatsreceiver.otel-*). " +
+          "No Kubernetes pod metrics found (metrics-kubeletstatsreceiver.otel-* with k8s.pod.name populated). " +
           "Running in APM-only mode — expected if services aren't K8s-deployed or kubeletstats isn't shipping.";
       }
 

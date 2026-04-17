@@ -21,9 +21,10 @@ const RESOURCE_URI = "ui://apm-service-dependencies/mcp-app.html";
 interface EdgeRow {
   "service.name"?: string;
   "span.destination.service.resource"?: string;
-  call_count?: number;
-  total_duration_us?: number;
+  "service.target.name"?: string;
+  "service.target.type"?: string;
   total_count?: number;
+  total_duration_us?: number;
 }
 
 interface HealthRow {
@@ -37,8 +38,8 @@ interface HealthRow {
 interface MetadataRow {
   "service.name"?: string;
   "service.language.name"?: string;
-  "kubernetes.deployment.name"?: string;
-  "kubernetes.namespace"?: string;
+  "k8s.deployment.name"?: string;
+  "k8s.namespace.name"?: string;
 }
 
 function parseDestination(resource: string): {
@@ -79,6 +80,66 @@ async function runEsql<T>(query: string): Promise<T[]> {
   }
 }
 
+async function fetchHealth(lb: string, nsFilter: string): Promise<HealthRow[]> {
+  const summaryQuery = `
+FROM metrics-service_summary.1m.otel-*
+| WHERE @timestamp > NOW() - ${lb}
+  AND service.name IS NOT NULL${nsFilter}
+| STATS
+    span_count = SUM(service_summary)
+  BY service.name
+| LIMIT 200
+`;
+
+  const txnQuery = `
+FROM metrics-service_transaction.1m.otel-*
+| WHERE @timestamp > NOW() - ${lb}
+  AND service.name IS NOT NULL${nsFilter}
+| STATS
+    avg_duration_us = AVG(transaction.duration.summary)
+  BY service.name
+| LIMIT 200
+`;
+
+  const [summaryRows, txnRows] = await Promise.all([
+    runEsql<HealthRow>(summaryQuery),
+    runEsql<HealthRow>(txnQuery),
+  ]);
+
+  if (summaryRows.length || txnRows.length) {
+    const merged = new Map<string, HealthRow>();
+    for (const row of summaryRows) {
+      const name = row["service.name"];
+      if (name) merged.set(name, { "service.name": name, span_count: row.span_count });
+    }
+    for (const row of txnRows) {
+      const name = row["service.name"];
+      if (!name) continue;
+      const existing = merged.get(name) || { "service.name": name };
+      merged.set(name, {
+        ...existing,
+        avg_duration_us: row.avg_duration_us,
+      });
+    }
+    return [...merged.values()];
+  }
+
+  const tracesQuery = `
+FROM traces-*.otel-*
+| WHERE @timestamp > NOW() - ${lb}
+  AND service.name IS NOT NULL${nsFilter}
+| EVAL duration_us = duration / 1000
+| STATS
+    span_count = COUNT(*),
+    avg_duration_us = AVG(duration_us),
+    p99_duration_us = PERCENTILE(duration_us, 99),
+    error_count = COUNT(CASE(status.code == "Error", 1, NULL))
+  BY service.name
+| LIMIT 200
+`;
+  return runEsql<HealthRow>(tracesQuery);
+}
+
 export function registerApmServiceDependenciesTool(server: McpServer) {
   registerAppTool(
     server,
@@ -86,11 +147,12 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
     {
       title: "APM Service Dependencies",
       description:
-        "Requires: Elastic APM (OTel-instrumented services producing span.destination.service.resource). " +
+        "Requires: Elastic APM (OTel-instrumented services producing span.destination.service.resource or service.target.name). " +
         "Returns the service dependency graph from APM telemetry — which services call which, over what protocols, " +
         "with call volume and latency. Use when the user asks 'what calls X', 'what depends on X', 'show me the " +
         "topology', or is doing root-cause investigation and needs to know upstream/downstream neighbors. Optional " +
-        "Kubernetes namespace filter if services are k8s-deployed. Not useful for log-only or metrics-only customers.",
+        "Kubernetes namespace filter (OTel semconv: k8s.namespace.name). Health data comes from pre-aggregated APM " +
+        "service metrics when available, otherwise from raw OTel traces. Not useful for log-only or metrics-only customers.",
       inputSchema: {
         service: z.string().optional().describe(
           "Focal service to center the graph on. Returns only its direct upstream (who calls it) and downstream " +
@@ -98,8 +160,8 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
           "'payment-service'. Omit for the full graph."
         ),
         namespace: z.string().optional().describe(
-          "Kubernetes namespace to scope the query, e.g. 'otel-demo', 'prod'. Only applicable if services are " +
-          "deployed in Kubernetes and the namespace attribute is being captured. Omit for non-K8s or cross-namespace."
+          "Kubernetes namespace to scope the query, e.g. 'otel-demo', 'prod'. Matched against k8s.namespace.name " +
+          "(OTel semconv). Only applicable if services are k8s-deployed and the namespace attribute is being captured."
         ),
         lookback: z.string().optional().describe(
           "How far back to aggregate. Default '1h'. Examples: '15m', '1h', '6h', '24h'. Wider windows smooth out " +
@@ -115,51 +177,39 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
     async ({ service, namespace, lookback, include_health }) => {
       const lb = lookback || "1h";
       const includeHealth = include_health !== false;
-      const nsFilter = namespace ? `\n    | WHERE kubernetes.namespace == "${namespace}"` : "";
-      const nsFilterTrace = namespace ? `\n      AND kubernetes.namespace == "${namespace}"` : "";
+      const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace}"` : "";
 
       const edgesQuery = `
 FROM metrics-service_destination.1m.otel-*
-| WHERE @timestamp > NOW() - ${lb}${nsFilter}
+| WHERE @timestamp > NOW() - ${lb}
+  AND service.name IS NOT NULL
+  AND (span.destination.service.resource IS NOT NULL OR service.target.name IS NOT NULL)${nsFilter}
 | STATS
-    call_count = COUNT(*),
-    total_duration_us = SUM(span.destination.service.response_time.sum.us),
-    total_count = SUM(span.destination.service.response_time.count)
-  BY service.name, span.destination.service.resource
-| WHERE service.name IS NOT NULL
-  AND span.destination.service.resource IS NOT NULL
-| SORT call_count DESC
+    total_count = SUM(span.destination.service.response_time.count),
+    total_duration_us = SUM(span.destination.service.response_time.sum.us)
+  BY service.name,
+     span.destination.service.resource,
+     service.target.name,
+     service.target.type
+| WHERE total_count > 0
+| SORT total_count DESC
 | LIMIT 200
 `;
 
-      const healthQuery = `
-FROM traces-generic.otel-*
-| WHERE service.name IS NOT NULL
-  AND @timestamp > NOW() - ${lb}${nsFilterTrace}
-| STATS
-    span_count = COUNT(*),
-    avg_duration_us = AVG(span.duration.us),
-    p99_duration_us = PERCENTILE(span.duration.us, 99),
-    error_count = COUNT_DISTINCT(CASE(span.status.code == "Error", span.name, NULL))
-  BY service.name
-| SORT span_count DESC
-| LIMIT 100
-`;
-
       const metadataQuery = `
-FROM traces-generic.otel-*
+FROM traces-*.otel-*
 | WHERE service.name IS NOT NULL
-  AND @timestamp > NOW() - ${lb}${nsFilterTrace}
+  AND @timestamp > NOW() - ${lb}${nsFilter}
 | STATS
     trace_count = COUNT(*)
-  BY service.name, service.language.name, kubernetes.deployment.name, kubernetes.namespace
+  BY service.name, service.language.name, k8s.deployment.name, k8s.namespace.name
 | SORT trace_count DESC
 | LIMIT 100
 `;
 
       const [edgeRows, healthRows, metadataRows] = await Promise.all([
         runEsql<EdgeRow>(edgesQuery),
-        includeHealth ? runEsql<HealthRow>(healthQuery) : Promise.resolve([]),
+        includeHealth ? fetchHealth(lb, nsFilter) : Promise.resolve([]),
         runEsql<MetadataRow>(metadataQuery),
       ]);
 
@@ -176,7 +226,7 @@ FROM traces-generic.otel-*
                 data_coverage: { apm: false },
                 hint:
                   `No service dependency data in the last ${lb}. This tool requires Elastic APM traces ` +
-                  `(traces-apm*, traces-generic.otel-*) with span.destination.service.resource populated. ` +
+                  `(traces-*.otel-*) with span.destination.service.resource or service.target.name populated. ` +
                   `If this is a log/metrics-only deployment, this tool does not apply — consider ` +
                   `ml-anomalies, watch, or create-alert-rule instead.`,
               }),
@@ -190,17 +240,31 @@ FROM traces-generic.otel-*
 
       for (const row of edgeRows) {
         const source = row["service.name"];
+        const targetName = row["service.target.name"];
+        const targetType = row["service.target.type"];
         const destResource = row["span.destination.service.resource"];
-        if (!source || !destResource) continue;
-        const parsed = parseDestination(destResource);
-        const target = parsed.target_service;
+        if (!source || (!targetName && !destResource)) continue;
+
+        let target: string;
+        let protocol: string | undefined;
+        let port: string | undefined;
+        if (destResource) {
+          const parsed = parseDestination(destResource);
+          target = targetName || parsed.target_service;
+          protocol = targetType || parsed.protocol;
+          port = parsed.port;
+        } else {
+          target = targetName!;
+          protocol = targetType;
+        }
+
         const edge: Record<string, unknown> = {
           source,
           target,
-          call_count: row.call_count || 0,
+          call_count: row.total_count || 0,
         };
-        if (parsed.protocol) edge.protocol = parsed.protocol;
-        if (parsed.port) edge.port = parsed.port;
+        if (protocol) edge.protocol = protocol;
+        if (port) edge.port = port;
         if (row.total_duration_us && row.total_count && row.total_count > 0) {
           edge.avg_latency_us = Math.round((row.total_duration_us / row.total_count) * 10) / 10;
         }
@@ -228,8 +292,8 @@ FROM traces-generic.otel-*
         if (name && !metaMap.has(name)) {
           const meta: Record<string, unknown> = {};
           if (row["service.language.name"]) meta.language = row["service.language.name"];
-          if (row["kubernetes.deployment.name"]) meta.deployment = row["kubernetes.deployment.name"];
-          if (row["kubernetes.namespace"]) meta.namespace = row["kubernetes.namespace"];
+          if (row["k8s.deployment.name"]) meta.deployment = row["k8s.deployment.name"];
+          if (row["k8s.namespace.name"]) meta.namespace = row["k8s.namespace.name"];
           if (Object.keys(meta).length) metaMap.set(name, meta);
         }
       }
@@ -246,13 +310,16 @@ FROM traces-generic.otel-*
         if (meta) Object.assign(node, meta);
         if (includeHealth && healthMap.has(name)) {
           const h = healthMap.get(name)!;
-          const health: Record<string, unknown> = {
-            span_count: h.span_count || 0,
-            avg_duration_us: Math.round((h.avg_duration_us || 0) * 10) / 10,
-          };
-          if (h.p99_duration_us) health.p99_duration_us = Math.round(h.p99_duration_us * 10) / 10;
-          if (h.error_count) health.error_count = h.error_count;
-          node.health = health;
+          const health: Record<string, unknown> = {};
+          if (h.span_count != null) health.span_count = h.span_count;
+          if (h.avg_duration_us != null) {
+            health.avg_duration_us = Math.round(h.avg_duration_us * 10) / 10;
+          }
+          if (h.p99_duration_us != null) {
+            health.p99_duration_us = Math.round(h.p99_duration_us * 10) / 10;
+          }
+          if (h.error_count != null && h.error_count > 0) health.error_count = h.error_count;
+          if (Object.keys(health).length) node.health = health;
         }
         const hasIncoming = edges.some((e) => e.target === name);
         const hasOutgoing = edges.some((e) => e.source === name);

@@ -55,8 +55,8 @@ interface CapacityRow {
 
 interface ApmRow {
   "service.name"?: string | null;
-  "kubernetes.namespace"?: string | null;
-  "kubernetes.deployment.name"?: string | null;
+  "k8s.namespace.name"?: string | null;
+  "k8s.deployment.name"?: string | null;
 }
 
 export function registerK8sBlastRadiusTool(server: McpServer) {
@@ -76,7 +76,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
         "ring 1 = affected deployments (red=full outage, amber=degraded), ring 2 = downstream namespaces.",
       inputSchema: {
         node: z.string().describe(
-          "Kubernetes node name to analyze. Matched exactly against kubernetes.node.name — e.g. " +
+          "Kubernetes node name to analyze. Matched exactly against k8s.node.name (OTel semconv) — e.g. " +
           "'gke-prod-pool-1-abc123', 'ip-10-0-1-42.ec2.internal'. If the user describes a node ambiguously " +
           "('the noisy node', 'the one running frontend'), confirm the exact node name before calling."
         ),
@@ -85,43 +85,43 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
     },
     async ({ node }) => {
       const podsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE kubernetes.node.name == "${node}"
-  AND kubernetes.pod.name IS NOT NULL
+| WHERE k8s.node.name == "${node}"
+  AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
-    replica_count = COUNT_DISTINCT(kubernetes.pod.name),
+    replica_count = COUNT_DISTINCT(k8s.pod.name),
     memory_bytes = SUM(metrics.k8s.pod.memory.working_set)
-  BY deployment = kubernetes.deployment.name, namespace = kubernetes.namespace
+  BY deployment = k8s.deployment.name, namespace = k8s.namespace.name
 | WHERE deployment IS NOT NULL
 | SORT replica_count DESC`;
 
       const totalsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE kubernetes.pod.name IS NOT NULL
+| WHERE k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
-    total_replicas = COUNT_DISTINCT(kubernetes.pod.name),
+    total_replicas = COUNT_DISTINCT(k8s.pod.name),
     total_memory_bytes = SUM(metrics.k8s.pod.memory.working_set)
-  BY deployment = kubernetes.deployment.name, namespace = kubernetes.namespace
+  BY deployment = k8s.deployment.name, namespace = k8s.namespace.name
 | WHERE deployment IS NOT NULL
 | SORT total_replicas DESC`;
 
       const capacityQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE kubernetes.node.name IS NOT NULL
-  AND kubernetes.node.name != "${node}"
+| WHERE k8s.node.name IS NOT NULL
+  AND k8s.node.name != "${node}"
   AND metrics.k8s.node.memory.available IS NOT NULL
 | STATS
     available_memory_bytes = SUM(metrics.k8s.node.memory.available),
-    node_count = COUNT_DISTINCT(kubernetes.node.name)
-  BY kubernetes.node.name
+    node_count = COUNT_DISTINCT(k8s.node.name)
+  BY k8s.node.name
 | STATS
     total_available_memory_bytes = SUM(available_memory_bytes),
-    remaining_node_count = COUNT(kubernetes.node.name)`;
+    remaining_node_count = COUNT(k8s.node.name)`;
 
-      const apmQuery = `FROM traces-apm*
-| WHERE kubernetes.namespace IS NOT NULL
+      const apmQuery = `FROM traces-*.otel-*
+| WHERE k8s.namespace.name IS NOT NULL
 | STATS service_count = COUNT(*)
-    BY service.name, kubernetes.namespace, kubernetes.deployment.name
-| WHERE kubernetes.deployment.name IS NOT NULL
+    BY service.name, k8s.namespace.name, k8s.deployment.name
+| WHERE k8s.deployment.name IS NOT NULL
 | SORT service_count DESC
 | LIMIT 50`;
 
@@ -204,10 +204,10 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       };
 
       const downstream = apmServices
-        .filter((r) => r["kubernetes.namespace"] && affectedNs.has(r["kubernetes.namespace"]!))
+        .filter((r) => r["k8s.namespace.name"] && affectedNs.has(r["k8s.namespace.name"]!))
         .map((r) => ({
           service: r["service.name"],
-          namespace: r["kubernetes.namespace"],
+          namespace: r["k8s.namespace.name"],
         }));
 
       let status: string;
@@ -233,7 +233,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
         result.downstream_services = downstream;
       } else {
         result.downstream_services_note =
-          "No APM telemetry found (traces-apm*). Node-level impact is reported from kubeletstats; " +
+          "No APM telemetry found (traces-*.otel-*). Node-level impact is reported from kubeletstats; " +
           "downstream user-facing service impact cannot be inferred without APM.";
       }
 
