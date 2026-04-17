@@ -42,6 +42,12 @@ interface MetadataRow {
   "k8s.namespace.name"?: string;
 }
 
+interface ResolutionRow {
+  "rpc.service"?: string;
+  "service.name"?: string;
+  cnt?: number;
+}
+
 function parseDestination(resource: string): {
   raw: string;
   protocol?: string;
@@ -78,6 +84,36 @@ async function runEsql<T>(query: string): Promise<T[]> {
   } catch {
     return [];
   }
+}
+
+// Map gRPC service FQN (e.g. "oteldemo.AdService") to the actual service.name
+// of the receiving service (e.g. "ad"), so edge targets and health data line up.
+async function fetchTargetResolution(lb: string, nsFilter: string): Promise<Map<string, string>> {
+  const query = `
+FROM traces-*.otel-*
+| WHERE @timestamp > NOW() - ${lb}
+  AND rpc.service IS NOT NULL
+  AND service.name IS NOT NULL
+  AND kind IN ("Server", "SERVER")${nsFilter}
+| STATS cnt = COUNT(*) BY rpc.service, service.name
+| SORT cnt DESC
+| LIMIT 500
+`;
+  const rows = await runEsql<ResolutionRow>(query);
+  const best = new Map<string, { serviceName: string; count: number }>();
+  for (const row of rows) {
+    const rpc = row["rpc.service"];
+    const sn = row["service.name"];
+    if (!rpc || !sn) continue;
+    const count = row.cnt ?? 0;
+    const existing = best.get(rpc);
+    if (!existing || count > existing.count) {
+      best.set(rpc, { serviceName: sn, count });
+    }
+  }
+  const out = new Map<string, string>();
+  for (const [rpc, v] of best) out.set(rpc, v.serviceName);
+  return out;
 }
 
 async function fetchHealth(lb: string, nsFilter: string): Promise<HealthRow[]> {
@@ -207,10 +243,11 @@ FROM traces-*.otel-*
 | LIMIT 100
 `;
 
-      const [edgeRows, healthRows, metadataRows] = await Promise.all([
+      const [edgeRows, healthRows, metadataRows, targetResolution] = await Promise.all([
         runEsql<EdgeRow>(edgesQuery),
         includeHealth ? fetchHealth(lb, nsFilter) : Promise.resolve([]),
         runEsql<MetadataRow>(metadataQuery),
+        fetchTargetResolution(lb, nsFilter),
       ]);
 
       if (!edgeRows.length) {
@@ -257,6 +294,9 @@ FROM traces-*.otel-*
           target = targetName!;
           protocol = targetType;
         }
+
+        const resolved = targetResolution.get(target);
+        if (resolved) target = resolved;
 
         const edge: Record<string, unknown> = {
           source,
