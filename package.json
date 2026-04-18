@@ -1,6 +1,6 @@
 {
   "name": "example-mcp-app-observability",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "MCP App server for Elastic Observability — interactive SRE workflows for Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, remediation, and alert-rule creation",
   "type": "module",
   "license": "Elastic-2.0",
