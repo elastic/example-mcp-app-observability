@@ -170,10 +170,12 @@ export function App() {
     const degraded = data.degraded || [];
     const ring1Total = fullOutage.length + degraded.length;
 
-    // Scale radius + canvas when the ring gets crowded. Keep ~30px of angular
-    // slot per item (along the 270° sweep) so labels don't overlap. Above ~20
-    // items this grows the ring; below that we use the original 180.
-    const ring1Radius = Math.max(180, Math.ceil((ring1Total * 30) / ((3 * Math.PI) / 2)));
+    // Scale radius + canvas when the ring gets crowded. Labels like
+    // "chaos-dashboard" are ~110px wide at this font; allow ~60px of angular
+    // slot per item along the 270° sweep to keep most labels legible. The user
+    // can still pan/zoom for dense or long-labeled clusters. Below ~15 items
+    // this stays at the base 180.
+    const ring1Radius = Math.max(180, Math.ceil((ring1Total * 60) / ((3 * Math.PI) / 2)));
     const svgW = Math.max(600, ring1Radius * 2 + 120);
     const svgH = Math.max(520, ring1Radius * 2 + 140);
     const cx = svgW / 2;

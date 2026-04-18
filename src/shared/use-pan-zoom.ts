@@ -30,6 +30,8 @@ interface UsePanZoomOpts {
   baseH: number | null | undefined;
   minZoom?: number;
   maxZoom?: number;
+  /** Wheel sensitivity — lower = slower. Default 0.0015 gives smooth trackpad zoom. */
+  wheelSensitivity?: number;
 }
 
 export interface PanZoom {
@@ -63,6 +65,7 @@ export function usePanZoom({
   baseH,
   minZoom = 0.5,
   maxZoom = 4,
+  wheelSensitivity = 0.0015,
 }: UsePanZoomOpts): PanZoom {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [viewBox, setViewBox] = useState<ViewBox | null>(null);
@@ -117,10 +120,15 @@ export function usePanZoom({
     (e: React.WheelEvent<SVGSVGElement>) => {
       e.preventDefault();
       const focal = screenToViewBox(e.clientX, e.clientY);
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      // Proportional to actual deltaY so trackpad (small deltas, many events)
+      // and mouse wheel (large deltas, few events) feel consistent. Clamp
+      // per-event change so a single hard scroll can't jump more than ~35%.
+      const raw = -e.deltaY * wheelSensitivity;
+      const clamped = clamp(raw, -0.3, 0.3);
+      const factor = Math.exp(clamped);
       applyZoom(factor, focal?.x, focal?.y);
     },
-    [applyZoom, screenToViewBox]
+    [applyZoom, screenToViewBox, wheelSensitivity]
   );
 
   const onBgMouseDown = useCallback(

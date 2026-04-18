@@ -216,6 +216,14 @@ async function fetchHealth(
   nsFilterEcs: string,
   errors: string[]
 ): Promise<HealthRow[]> {
+  // Span counts from pre-aggregated summary metrics are reliable (SUM of a
+  // per-minute gauge across the window). Latency is NOT read from
+  // transaction.duration.summary — it's an aggregate_metric_double where
+  // ES|QL's AVG/SUM/COUNT operate on default_metric components and can't
+  // reproduce the weighted mean (SUM(sum) / SUM(value_count)). Verified
+  // against oteldemo-esyox: the summary-metric AVG inflated some services
+  // by 2–5× (and up to 600s for low-volume services) relative to a raw
+  // traces AVG. We use traces as the authoritative latency source.
   const summaryQuery = `
 FROM metrics-service_summary.1m.otel-*
 | WHERE @timestamp > NOW() - ${lb}
@@ -226,54 +234,46 @@ FROM metrics-service_summary.1m.otel-*
 | LIMIT 200
 `;
 
-  const txnQuery = `
-FROM metrics-service_transaction.1m.otel-*
-| WHERE @timestamp > NOW() - ${lb}
-  AND service.name IS NOT NULL${nsFilter}
-| STATS
-    avg_duration_us = AVG(transaction.duration.summary)
-  BY service.name
-| LIMIT 200
-`;
-
-  const [summaryRows, txnRows] = await Promise.all([
-    safeEsqlRows<HealthRow>(summaryQuery, errors),
-    safeEsqlRows<HealthRow>(txnQuery, errors),
-  ]);
-
-  if (summaryRows.length || txnRows.length) {
-    const merged = new Map<string, HealthRow>();
-    for (const row of summaryRows) {
-      const name = row["service.name"];
-      if (name) merged.set(name, { "service.name": name, span_count: row.span_count });
-    }
-    for (const row of txnRows) {
-      const name = row["service.name"];
-      if (!name) continue;
-      const existing = merged.get(name) || { "service.name": name };
-      merged.set(name, {
-        ...existing,
-        avg_duration_us: row.avg_duration_us,
-      });
-    }
-    return [...merged.values()];
-  }
-
   const tracesQuery = `
 FROM traces-*.otel-*
 | WHERE @timestamp > NOW() - ${lb}
   AND service.name IS NOT NULL${nsFilter}
 | EVAL duration_us = duration / 1000
 | STATS
-    span_count = COUNT(*),
+    traces_span_count = COUNT(*),
     avg_duration_us = AVG(duration_us),
     p99_duration_us = PERCENTILE(duration_us, 99),
     error_count = COUNT(CASE(status.code == "Error", 1, NULL))
   BY service.name
 | LIMIT 200
 `;
-  const tracesRows = await safeEsqlRows<HealthRow>(tracesQuery, errors);
-  if (tracesRows.length) return tracesRows;
+
+  const [summaryRows, tracesRows] = await Promise.all([
+    safeEsqlRows<HealthRow & { traces_span_count?: number }>(summaryQuery, errors),
+    safeEsqlRows<HealthRow & { traces_span_count?: number }>(tracesQuery, errors),
+  ]);
+
+  if (summaryRows.length || tracesRows.length) {
+    const merged = new Map<string, HealthRow>();
+    for (const row of summaryRows) {
+      const name = row["service.name"];
+      if (name) merged.set(name, { "service.name": name, span_count: row.span_count });
+    }
+    for (const row of tracesRows) {
+      const name = row["service.name"];
+      if (!name) continue;
+      const existing = merged.get(name) || { "service.name": name };
+      merged.set(name, {
+        ...existing,
+        // prefer summary-metric span_count when present; fall back to traces count
+        span_count: existing.span_count ?? row.traces_span_count,
+        avg_duration_us: row.avg_duration_us,
+        p99_duration_us: row.p99_duration_us,
+        error_count: row.error_count,
+      });
+    }
+    return [...merged.values()];
+  }
 
   // Tier 3: classic APM agents — traces-apm* with transaction.duration.us and event.outcome.
   // Only queried when both tier-1 metrics and tier-2 OTel traces return nothing, so OTel-native

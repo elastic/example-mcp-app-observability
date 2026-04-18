@@ -157,7 +157,12 @@ async function queryPodResources(
   const nsFilter = namespace
     ? `| WHERE k8s.namespace.name == "${namespace}" `
     : "";
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS avg_mem = AVG(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
+  // MAX instead of AVG for memory: AVG on aggregate_metric_double fields (how
+  // Elastic stores downsampled OTel gauges) can return sum-of-sums rather than
+  // a true mean, inflating the number massively. MAX returns max-of-maxes — a
+  // sound upper bound regardless of the field's storage shape, and operationally
+  // more useful (peak memory usage).
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS avg_mem = MAX(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
   const rows = await safeEsqlRows<{
     "k8s.pod.name"?: string;
     avg_mem?: number;

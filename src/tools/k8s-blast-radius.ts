@@ -83,17 +83,22 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
     },
     async ({ node }) => {
       // Memory queries use a two-level STATS: first collapse each pod / node's
-      // time samples to an AVG (typical usage over the window), then SUM across
-      // pods / nodes. Without this, SUM(working_set) multiplies usage by the
-      // number of ingested samples (kubeletstats emits every ~15s). A 10-minute
-      // time bound keeps the window tight enough that AVG reflects current state.
+      // time samples to a MAX (peak need over the window), then SUM across
+      // pods / nodes. MAX rather than AVG because:
+      //   1. Capacity planning should budget for peak, not average.
+      //   2. AVG on `aggregate_metric_double`-typed fields (how Elastic stores
+      //      downsampled OTel gauges) can return sum-of-sums rather than a
+      //      proper mean, inflating the number by 1000s of ×. MAX returns the
+      //      max-of-maxes — a tight upper bound regardless of storage shape.
+      // A 10-minute time bound keeps the window tight enough that MAX reflects
+      // current state rather than stale peaks.
       const podsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE @timestamp > NOW() - 10 minutes
   AND k8s.node.name == "${node}"
   AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
-    pod_memory_bytes = AVG(metrics.k8s.pod.memory.working_set)
+    pod_memory_bytes = MAX(metrics.k8s.pod.memory.working_set)
   BY k8s.pod.name, deployment = k8s.deployment.name, namespace = k8s.namespace.name
 | STATS
     replica_count = COUNT(k8s.pod.name),
@@ -107,7 +112,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
   AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
-    pod_memory_bytes = AVG(metrics.k8s.pod.memory.working_set)
+    pod_memory_bytes = MAX(metrics.k8s.pod.memory.working_set)
   BY k8s.pod.name, deployment = k8s.deployment.name, namespace = k8s.namespace.name
 | STATS
     total_replicas = COUNT(k8s.pod.name),
@@ -122,7 +127,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
   AND k8s.node.name != "${node}"
   AND metrics.k8s.node.memory.available IS NOT NULL
 | STATS
-    node_memory_bytes = AVG(metrics.k8s.node.memory.available)
+    node_memory_bytes = MAX(metrics.k8s.node.memory.available)
   BY k8s.node.name
 | STATS
     total_available_memory_bytes = SUM(node_memory_bytes),

@@ -370,6 +370,8 @@ function NodeCard({
   node,
   dimmed,
   isHovered,
+  fanIn,
+  fanOut,
   onHover,
   onMove,
   onLeave,
@@ -377,6 +379,8 @@ function NodeCard({
   node: LayoutNode;
   dimmed: boolean;
   isHovered: boolean;
+  fanIn: number;
+  fanOut: number;
   onHover: (e: React.MouseEvent) => void;
   onMove: (e: React.MouseEvent) => void;
   onLeave: () => void;
@@ -433,17 +437,20 @@ function NodeCard({
             {node.name}
           </span>
           <span
+            title={`${fanIn} upstream \u00b7 ${fanOut} downstream`}
             style={{
-              fontSize: 8,
+              fontSize: 9,
               fontWeight: 700,
               padding: "1px 5px",
               borderRadius: 6,
               background: `${color}18`,
               color,
-              letterSpacing: "0.04em",
+              fontFamily: "'JetBrains Mono', monospace",
+              letterSpacing: "0.02em",
+              whiteSpace: "nowrap",
             }}
           >
-            {node.svc.role}
+            {`${fanIn}\u2194${fanOut}`}
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
@@ -550,6 +557,19 @@ export function App() {
   const maxCalls = useMemo(() => {
     if (!data) return 0;
     return Math.max(...data.edges.map((e) => e.call_count), 1);
+  }, [data]);
+
+  const fanMap = useMemo(() => {
+    const m = new Map<string, { in: number; out: number }>();
+    if (!data) return m;
+    for (const s of data.services) m.set(s.name, { in: 0, out: 0 });
+    for (const e of data.edges) {
+      const s = m.get(e.source);
+      if (s) s.out += 1;
+      const t = m.get(e.target);
+      if (t) t.in += 1;
+    }
+    return m;
   }, [data]);
 
   const stats = useMemo(() => {
@@ -743,20 +763,21 @@ export function App() {
         )}
       </div>
 
-      <div style={{ flex: 1, overflow: "hidden", padding: "8px 14px", position: "relative" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "8px 14px", position: "relative" }}>
         <svg
           ref={panZoom.svgRef}
           width="100%"
-          height="100%"
+          height={svgH}
           viewBox={
             panZoom.viewBox
               ? `${panZoom.viewBox.x} ${panZoom.viewBox.y} ${panZoom.viewBox.w} ${panZoom.viewBox.h}`
               : `0 0 ${svgW} ${svgH}`
           }
-          preserveAspectRatio="xMidYMid meet"
           {...panZoom.svgHandlers}
           style={{
             display: "block",
+            margin: "0 auto",
+            maxWidth: svgW,
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",
@@ -814,6 +835,8 @@ export function App() {
                 node={node}
                 dimmed={dim}
                 isHovered={isHov}
+                fanIn={fanMap.get(node.name)?.in ?? 0}
+                fanOut={fanMap.get(node.name)?.out ?? 0}
                 onHover={(e) => {
                   if (isDragging) return;
                   setHovered(node.name);

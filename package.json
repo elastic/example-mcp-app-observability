@@ -37,6 +37,7 @@
     "start:stdio": "node dist/main.js --stdio",
     "dev": "concurrently --raw \"node scripts/build-views.js --watch\" \"tsx watch main.ts\"",
     "typecheck": "tsc --noEmit",
+    "audit:fields": "tsx scripts/audit-fields.ts",
     "mcpb:pack": "bash scripts/build-mcpb.sh",
     "skills:zip": "bash scripts/build-skill-zips.sh",
     "prepublishOnly": "npm run build",
