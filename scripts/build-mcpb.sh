@@ -14,6 +14,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+echo "==> Cleaning stale dist/views..."
+# build-views.js is additive; stale view directories (e.g. after a source
+# rename) linger and get bundled. Clean them so dist/views mirrors src/views.
+rm -rf dist/views
+
 echo "==> Building project..."
 npm run build
 
