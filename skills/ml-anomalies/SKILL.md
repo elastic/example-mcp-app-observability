@@ -48,7 +48,8 @@ Parameter-filling guidance:
   to 25 for a wide audit.
 - **`lookback`**: default `24h`. Use `1h` for acute investigations, `7d` for weekly trend review.
 - **`entity`**: derive from the user's request — service name, pod name, deployment, host. Matches against
-  all influencer fields. Examples: "checkout" → `entity: "checkoutservice"`, "the frontend pod" →
+  all influencer fields. Use the exact OTel `service.name` as deployed; **do not concatenate "X service"
+  into "Xservice"**. Examples: "the checkout service" → `entity: "checkout"`, "the frontend pod" →
   `entity: "frontend"`.
 - **`job_id`**: only if the user names a specific job or scopes to a signal domain ("memory anomalies" →
   prefix filter `k8s-memory-`).

@@ -168,6 +168,12 @@ FROM logs-*
 - When the user names a namespace, match it exactly (e.g. `oteldemo-esyox-default`, not
   `otel-demo`). If unsure, call `apm-health-summary` first — its `namespace_candidates` field
   surfaces fuzzy matches.
+- **Match the aggregation to the field's storage shape.** Most metric fields in
+  `metrics-kubeletstatsreceiver.otel*` are **gauges** (`memory.working_set`, `cpu.usage`,
+  `memory.available`). Use `AVG` / `MAX` / `MIN` on gauges. **Do not `SUM` a gauge** — it will add
+  every ~15s kubelet sample over your window and inflate the value by hundreds or thousands. Reserve
+  `SUM` for pre-aggregated counters (e.g. `service_summary` on `metrics-service_summary.1m.otel-*`
+  is a per-minute rollup designed to sum). If unsure, prefer `AVG` or `MAX`.
 
 ## After the tool returns
 

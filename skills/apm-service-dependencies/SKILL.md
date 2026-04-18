@@ -40,7 +40,7 @@ and downstream neighbors — much easier to reason about than the full graph.
 
 ```json
 {
-  "service": "checkoutservice",
+  "service": "checkout",
   "lookback": "1h",
   "include_health": true
 }
@@ -60,8 +60,11 @@ discovery.
 
 Parameter-filling guidance:
 
-- **`service`**: derive from the user's request. "What calls checkout" → `service: "checkoutservice"`.
-  If the name is ambiguous, ask the user to confirm before calling.
+- **`service`**: the exact OTel `service.name` as deployed — typically lowercase and hyphenated for
+  multi-word services (`frontend`, `checkout`, `product-catalog`). **Do not concatenate spaces** — if
+  the user says "checkout service" pass `checkout`, not `checkoutservice`. If the name is ambiguous,
+  ask the user to confirm before calling. If the tool returns no edges for the named focal service,
+  confirm the name with the user before fuzzy-matching.
 - **`namespace`**: only if the user scopes to a K8s namespace AND services are K8s-deployed.
 - **`lookback`**: default `1h`. Use `15m` for "right now," `24h` to smooth transient topology changes.
 - **`include_health`**: default true. Set false for a topology-only response when you don't need latency/error
@@ -74,6 +77,9 @@ Response shape:
 - `edges`: directed edges with `source`, `target`, `protocol`, `port`, `call_count`, `avg_latency_us`.
 - `focal_service` + `upstream` + `downstream` (focal mode only).
 - `service_count` / `edge_count`.
+- `data_coverage_note` (only on focal mode when the focal service has inbound but zero outbound
+  edges): flags a likely instrumentation gap — don't claim the service is a `leaf`; relay the note
+  to the user as an advisory.
 
 Lead your narrative with:
 

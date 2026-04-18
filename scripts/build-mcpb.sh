@@ -29,6 +29,14 @@ npx esbuild dist/main.js \
 echo "==> Packing MCPB bundle..."
 npx @anthropic-ai/mcpb pack .
 
+# Newer @anthropic-ai/mcpb versions name the output after the repo directory
+# (elastic-o11y-mcp.mcpb) rather than the manifest name. Historical releases
+# used the manifest name (example-mcp-app-observability.mcpb) and the README
+# install steps depend on it, so normalize the filename here.
+if [ -f elastic-o11y-mcp.mcpb ] && [ ! -f example-mcp-app-observability.mcpb ]; then
+  mv elastic-o11y-mcp.mcpb example-mcp-app-observability.mcpb
+fi
+
 VERSION=$(node -e "console.log(require('./package.json').version)")
 echo ""
 echo "==> Done! example-mcp-app-observability.mcpb (v${VERSION}) is ready."
