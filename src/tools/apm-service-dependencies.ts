@@ -48,6 +48,47 @@ interface ResolutionRow {
   cnt?: number;
 }
 
+// Heuristic fallback for gRPC FQN / host:port targets when rpc.service-based resolution
+// didn't find a match (e.g. the receiving service emits no SERVER-kind spans). Strips the
+// common "oteldemo.CartService" → "cart" and "flagd:8013" → "flagd" patterns and matches
+// against the authoritative service.name set we already pulled from metadata + health.
+function fuzzyResolveTarget(target: string, known: Set<string>): string | undefined {
+  if (known.has(target)) return target;
+
+  // HOST:PORT → try the HOST part.
+  const colon = target.lastIndexOf(":");
+  if (colon > 0) {
+    const maybePort = target.slice(colon + 1);
+    if (/^\d+$/.test(maybePort)) {
+      const host = target.slice(0, colon);
+      const hit = matchKnown(host, known);
+      if (hit) return hit;
+    }
+  }
+
+  // gRPC FQN "package.sub.CartService" → last dot-segment → strip trailing "Service".
+  if (target.includes(".")) {
+    const last = target.slice(target.lastIndexOf(".") + 1);
+    const trimmed = last.endsWith("Service") ? last.slice(0, -"Service".length) : last;
+    const hit = matchKnown(trimmed, known);
+    if (hit) return hit;
+  }
+
+  return undefined;
+}
+
+function matchKnown(candidate: string, known: Set<string>): string | undefined {
+  if (!candidate) return undefined;
+  if (known.has(candidate)) return candidate;
+  const lower = candidate.toLowerCase();
+  const kebab = candidate.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+  for (const s of known) {
+    const sl = s.toLowerCase();
+    if (sl === lower || sl === kebab) return s;
+  }
+  return undefined;
+}
+
 function parseDestination(resource: string): {
   raw: string;
   protocol?: string;
@@ -328,7 +369,22 @@ FROM traces-*.otel-*
         };
       }
 
-      let edges: Record<string, unknown>[] = [];
+      // Authoritative service.name set from metadata + health + edge sources. Used as the
+      // match target for gRPC-FQN / host:port fuzzy resolution below.
+      const knownServices = new Set<string>();
+      for (const r of metadataRows) if (r["service.name"]) knownServices.add(r["service.name"]!);
+      for (const r of healthRows) if (r["service.name"]) knownServices.add(r["service.name"]!);
+      for (const r of edgeRows) if (r["service.name"]) knownServices.add(r["service.name"]!);
+
+      type RawEdge = {
+        source: string;
+        target: string;
+        protocol?: string;
+        port?: string;
+        call_count: number;
+        total_duration_us: number;
+      };
+      const rawEdges: RawEdge[] = [];
       const servicesSeen = new Set<string>();
 
       for (const row of edgeRows) {
@@ -351,23 +407,52 @@ FROM traces-*.otel-*
           protocol = targetType;
         }
 
-        const resolved = targetResolution.get(target);
+        // Resolution priority: rpc.service lookup (SERVER-kind spans) first, then fuzzy
+        // match against known services (handles cases where the target emits no server spans).
+        const resolved = targetResolution.get(target) ?? fuzzyResolveTarget(target, knownServices);
         if (resolved) target = resolved;
 
-        const edge: Record<string, unknown> = {
+        rawEdges.push({
           source,
           target,
+          protocol,
+          port,
           call_count: row.total_count || 0,
-        };
-        if (protocol) edge.protocol = protocol;
-        if (port) edge.port = port;
-        if (row.total_duration_us && row.total_count && row.total_count > 0) {
-          edge.avg_latency_us = Math.round((row.total_duration_us / row.total_count) * 10) / 10;
-        }
-        edges.push(edge);
+          total_duration_us: row.total_duration_us || 0,
+        });
         servicesSeen.add(source);
         servicesSeen.add(target);
       }
+
+      // Aggregate edges that collapsed onto the same (source, target, protocol) after
+      // resolution — e.g. "flagd.evaluation.v1.Service" and "flagd:8013" both folding into
+      // "flagd" used to show up as two parallel edges with half the call volume each.
+      const edgeMap = new Map<string, RawEdge>();
+      for (const e of rawEdges) {
+        const key = `${e.source}\u0000${e.target}\u0000${e.protocol ?? ""}`;
+        const existing = edgeMap.get(key);
+        if (existing) {
+          existing.call_count += e.call_count;
+          existing.total_duration_us += e.total_duration_us;
+          if (!existing.port && e.port) existing.port = e.port;
+        } else {
+          edgeMap.set(key, { ...e });
+        }
+      }
+      let edges: Record<string, unknown>[] = [...edgeMap.values()].map((e) => {
+        const edge: Record<string, unknown> = {
+          source: e.source,
+          target: e.target,
+          call_count: e.call_count,
+        };
+        if (e.protocol) edge.protocol = e.protocol;
+        if (e.port) edge.port = e.port;
+        if (e.total_duration_us && e.call_count > 0) {
+          edge.avg_latency_us = Math.round((e.total_duration_us / e.call_count) * 10) / 10;
+        }
+        return edge;
+      });
+      edges.sort((a, b) => (b.call_count as number) - (a.call_count as number));
 
       if (service) {
         const upstream = edges.filter((e) => e.target === service);
@@ -489,18 +574,10 @@ FROM traces-*.otel-*
           prompt: `Use apm-health-summary${namespace ? ` with namespace "${namespace}"` : ""} to see overall service health.`,
         });
       }
-      const namespacesInGraph = new Set<string>();
-      for (const s of services) {
-        const ns = (s as { namespace?: string }).namespace;
-        if (ns) namespacesInGraph.add(ns);
-      }
-      if (namespacesInGraph.size > 0) {
-        const [anyNs] = namespacesInGraph;
-        actions.push({
-          label: `Blast radius for ${anyNs}`,
-          prompt: `Use k8s-blast-radius to assess the impact of a node outage on workloads in namespace "${anyNs}".`,
-        });
-      }
+      // Note: do NOT suggest k8s-blast-radius here. Finding a k8s.namespace.name attribute on
+      // APM spans proves the services are k8s-deployed, but not that the customer's ingest path
+      // includes kubeletstats metrics (which is what blast-radius actually needs). Recommendations
+      // should stay within tools whose data requirements are a subset of what this call proved.
       result.investigation_actions = actions;
 
       const rerunParts = ["lookback \"{lookback}\""];

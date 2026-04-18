@@ -471,12 +471,10 @@ export function registerApmHealthSummaryTool(server: McpServer) {
           prompt: `Use ml-anomalies with entity "${degraded[0].service}" and lookback "1h" to find the root cause.`,
         });
       }
-      if (topEntity) {
-        actions.push({
-          label: "Check blast radius",
-          prompt: `Use k8s-blast-radius to assess impact if the node hosting ${topEntity} fails.`,
-        });
-      }
+      // Note: do NOT suggest k8s-blast-radius here. APM service telemetry proves the services
+      // exist, but not that kubeletstats pod/node metrics are available in the customer's ingest.
+      // Recommendations must stay within tools whose data requirements are a subset of what
+      // this call already proved.
       if (actions.length) result.investigation_actions = actions;
 
       // Rerun context for the view's time-range chip row.

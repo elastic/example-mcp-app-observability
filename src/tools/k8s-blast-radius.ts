@@ -280,10 +280,16 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
           prompt: `Use create-alert-rule to watch cluster memory headroom. Rule name "Cluster headroom below rescheduling need", metric field "k8s.node.memory.available", threshold ${totalMemoryAtRisk}, comparator "<".`,
         });
       }
-      actions.push({
-        label: "Cluster health rollup",
-        prompt: "Use apm-health-summary to see overall namespace health and correlate with this blast radius.",
-      });
+      // Only recommend apm-health-summary when we've proven APM telemetry is actually present
+      // for this cluster — otherwise the follow-up returns an empty rollup and the user
+      // backtracks. Same scope principle: recommended tools must have a data-requirements
+      // subset of what this call already proved.
+      if (apmPresent) {
+        actions.push({
+          label: "Cluster health rollup",
+          prompt: "Use apm-health-summary to see overall namespace health and correlate with this blast radius.",
+        });
+      }
       result.investigation_actions = actions;
       if (queryErrors.length) result._query_errors = queryErrors;
 

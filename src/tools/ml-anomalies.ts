@@ -125,16 +125,18 @@ async function enrichForView(
       top.entity?.split("=").pop() ||
       Object.values(top.influencers || {}).flat()[0];
 
-    const affectedServices = new Set<string>();
+    // Scope service-dependency recommendation to service.name influencers only — pod /
+    // deployment / node are K8s entities, not APM services, and don't resolve in the APM graph.
+    const apmServices = new Set<string>();
     for (const a of anomalies) {
       for (const [field, values] of Object.entries(a.influencers || {})) {
         const lower = field.toLowerCase();
-        if (lower.includes("service") || lower.includes("pod") || lower.includes("deployment")) {
-          for (const v of values) affectedServices.add(v);
+        if (lower.includes("service.name") || lower === "service" || lower.endsWith(".service")) {
+          for (const v of values) apmServices.add(v);
         }
       }
     }
-    const firstService = [...affectedServices][0];
+    const firstService = [...apmServices][0];
 
     if (firstService) {
       actions.push({
@@ -142,12 +144,11 @@ async function enrichForView(
         prompt: `Use apm-service-dependencies to show upstream/downstream for ${firstService}.`,
       });
     }
-    if (entityName) {
-      actions.push({
-        label: "Blast radius",
-        prompt: `Use k8s-blast-radius to assess impact if the node hosting ${entityName} fails.`,
-      });
-    }
+
+    // Note: do NOT suggest k8s-blast-radius unconditionally. ML anomaly jobs can run on any
+    // backend (APM, logs, metrics) — finding an influencer value doesn't prove kubeletstats
+    // pod/node metrics are available. Recommendations must stay within the data shape already
+    // proven by this call.
     actions.push({
       label: "Broaden anomaly search",
       prompt: `Re-run ml-anomalies with min_score 50 and lookback 6h to find related anomalies.`,

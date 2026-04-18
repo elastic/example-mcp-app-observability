@@ -188,13 +188,9 @@ function buildAlert(anomalies: Awaited<ReturnType<typeof queryAnomalies>>["anoma
     reason: "Drill into full anomaly details with broader lookback",
     args: { min_score: 50, lookback: "1h" },
   });
-  if (services.length) {
-    hints.push({
-      tool: "k8s-blast-radius",
-      reason: "Assess K8s node-level impact if a node is implicated (requires Kubernetes)",
-      args: {},
-    });
-  }
+  // Note: do NOT suggest k8s-blast-radius from service-named anomalies. Service influencers
+  // prove APM data, not kubeletstats pod/node metrics. Recommendations stay within the
+  // data shape the current call has already proven exists.
 
   return {
     status: "ALERT",
@@ -438,10 +434,6 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
         label: "Create alert rule",
         prompt: `Now that the metric meets the condition, persist monitoring with create-alert-rule. Use the same ES|QL target and threshold.`,
       });
-      actions.push({
-        label: "Confirm cluster health",
-        prompt: "Use apm-health-summary to confirm the rest of the cluster is healthy after this stabilization.",
-      });
     } else if (result.status === "TIMEOUT") {
       actions.push({
         label: "Check anomalies",
@@ -457,11 +449,10 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
         label: "Create alert rule",
         prompt: `Use create-alert-rule to set a persistent threshold against the same ES|QL target. Pick a threshold informed by the sampled trend.`,
       });
-      actions.push({
-        label: "Confirm cluster health",
-        prompt: "Use apm-health-summary to put this metric in wider cluster context.",
-      });
     }
+    // Note: watch is universal (any ES|QL target). We cannot assume APM is deployed, so
+    // do NOT add "Confirm cluster health → apm-health-summary" here. Recommendations must
+    // stay within tools whose data requirements are a subset of what this call required.
   } else if (result.status === "ALERT") {
     // Anomaly-mode alerts: derive investigation actions from the hints.
     const hints = (result.investigation_hints as { tool: string; reason: string; args: Record<string, unknown> }[]) || [];
