@@ -56,6 +56,7 @@ interface DepData {
   downstream?: string[];
   filters?: { lookback?: string; namespace?: string };
   data_coverage?: { apm: boolean };
+  data_coverage_note?: string;
   hint?: string;
   investigation_actions?: InvestigationAction[];
   rerun_context?: RerunContext;
@@ -112,6 +113,12 @@ function edgeLabel(e: Edge): string {
   if (e.protocol) parts.push(e.protocol);
   if (e.port) parts.push(`:${e.port}`);
   return parts.join("");
+}
+
+function stableHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h * 31) ^ s.charCodeAt(i)) & 0x7fffffff;
+  return h;
 }
 
 interface LayoutNode {
@@ -293,8 +300,16 @@ function EdgePath({
   const w = edgeWidth(edge.call_count, maxCalls);
   const label = edgeLabel(edge);
 
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2;
+  // Labels used to pile up at the chord midpoint when multiple edges crossed similar
+  // screen coordinates (common when several services call the same backend leaf). Stagger
+  // labels along the edge via a stable per-edge hash so each label lands at a distinct
+  // position. Three lanes of horizontal offset + vertical offset spread most collisions.
+  const laneBucket = stableHash(edge.source + "|" + edge.target) % 3;
+  const labelT = 0.42 + laneBucket * 0.08; // 0.42 | 0.50 | 0.58 along the edge
+  const laneYOffset = (laneBucket - 1) * 12; // -12 | 0 | +12 px
+
+  const mx = Math.round((1 - labelT) * x1 + labelT * x2);
+  const my = Math.round((1 - labelT) * y1 + labelT * y2 + laneYOffset);
 
   const latencyStr = edge.avg_latency_us ? formatDuration(edge.avg_latency_us) : "";
 
@@ -637,6 +652,26 @@ export function App() {
             <StatChip label="unhealthy" value={stats.unhealthy} color={theme.red} />
           )}
         </div>
+
+        {data.data_coverage_note && (
+          <div
+            style={{
+              marginTop: 4,
+              padding: "8px 10px",
+              borderRadius: 6,
+              background: `${theme.amber}14`,
+              border: `1px solid ${theme.amber}44`,
+              color: theme.textMuted,
+              fontSize: 11,
+              lineHeight: 1.4,
+            }}
+          >
+            <span style={{ color: theme.amber, fontWeight: 600, marginRight: 6 }}>
+              Data coverage
+            </span>
+            {data.data_coverage_note}
+          </div>
+        )}
       </div>
 
       <div style={{ flex: 1, overflow: "auto", padding: "8px 14px", position: "relative" }}>

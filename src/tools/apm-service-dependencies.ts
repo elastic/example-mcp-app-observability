@@ -52,26 +52,48 @@ interface ResolutionRow {
 // didn't find a match (e.g. the receiving service emits no SERVER-kind spans). Strips the
 // common "oteldemo.CartService" → "cart" and "flagd:8013" → "flagd" patterns and matches
 // against the authoritative service.name set we already pulled from metadata + health.
+//
+// When no known service matches, falls back to a SYNTHETIC canonical name so that multiple
+// aliases for the same backend coalesce into a single graph node. E.g. when flagd emits no
+// spans of its own, `flagd.evaluation.v1.Service` and `flagd:8013` both resolve to the
+// synthetic name "flagd" and collapse into one leaf instead of two parallel leaves.
 function fuzzyResolveTarget(target: string, known: Set<string>): string | undefined {
   if (known.has(target)) return target;
 
-  // HOST:PORT → try the HOST part.
+  // HOST:PORT → try the HOST part. If HOST matches a known service, use it. Otherwise
+  // return HOST as a synthetic canonical (so flagd:8013 and flagd:9000 coalesce).
   const colon = target.lastIndexOf(":");
   if (colon > 0) {
     const maybePort = target.slice(colon + 1);
     if (/^\d+$/.test(maybePort)) {
       const host = target.slice(0, colon);
-      const hit = matchKnown(host, known);
-      if (hit) return hit;
+      return matchKnown(host, known) ?? host;
     }
   }
 
-  // gRPC FQN "package.sub.CartService" → last dot-segment → strip trailing "Service".
+  // gRPC FQN. Two patterns to handle:
+  //   1. `package.XService` (1-dot, e.g. `oteldemo.CartService`) — last segment carries
+  //      the service name; strip "Service" suffix and kebab-case.
+  //   2. `package.sub.vN.Service` (deep namespace ending in bare "Service", e.g.
+  //      `flagd.evaluation.v1.Service`) — first segment carries the service name.
   if (target.includes(".")) {
-    const last = target.slice(target.lastIndexOf(".") + 1);
-    const trimmed = last.endsWith("Service") ? last.slice(0, -"Service".length) : last;
-    const hit = matchKnown(trimmed, known);
-    if (hit) return hit;
+    const lastDot = target.lastIndexOf(".");
+    const last = target.slice(lastDot + 1);
+    const firstDot = target.indexOf(".");
+    const first = target.slice(0, firstDot);
+
+    if (last === "Service") {
+      // Pattern 2: flagd.evaluation.v1.Service → flagd.
+      return matchKnown(first, known) ?? first;
+    }
+    if (last.endsWith("Service")) {
+      // Pattern 1: oteldemo.CartService → cart (or Cart synthetic).
+      const trimmed = last.slice(0, -"Service".length);
+      const hit = matchKnown(trimmed, known);
+      if (hit) return hit;
+      const kebab = trimmed.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+      return kebab || trimmed;
+    }
   }
 
   return undefined;
@@ -287,8 +309,9 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
       inputSchema: {
         service: z.string().optional().describe(
           "Focal service to center the graph on. Returns only its direct upstream (who calls it) and downstream " +
-          "(what it calls) neighbors. Matched against service.name — e.g. 'frontend', 'checkoutservice', " +
-          "'payment-service'. Omit for the full graph."
+          "(what it calls) neighbors. Must be the exact OTel service.name as deployed — typically lowercase and " +
+          "hyphenated for multi-word services, e.g. 'frontend', 'checkout', 'product-catalog'. Do NOT concatenate " +
+          "spaces (user says 'checkout service' → pass 'checkout', not 'checkoutservice'). Omit for the full graph."
         ),
         namespace: z.string().optional().describe(
           "Kubernetes namespace to scope the query, e.g. 'otel-demo', 'prod'. Matched against k8s.namespace.name " +
@@ -519,8 +542,23 @@ FROM traces-*.otel-*
 
       if (service) {
         result.focal_service = service;
-        result.upstream = edges.filter((e) => e.target === service).map((e) => e.source);
-        result.downstream = edges.filter((e) => e.source === service).map((e) => e.target);
+        const upstreamList = edges.filter((e) => e.target === service).map((e) => e.source);
+        const downstreamList = edges.filter((e) => e.source === service).map((e) => e.target);
+        result.upstream = upstreamList;
+        result.downstream = downstreamList;
+
+        // Surface likely-instrumentation-gap cases explicitly. A focal service with inbound
+        // traffic but zero observed outbound calls usually reflects an ingest gap (partial
+        // eBPF auto-instrumentation, client spans dropped, etc.), not a truly terminal
+        // service. The "leaf" role on its own reads as a confident architectural claim —
+        // this note makes the data uncertainty legible to both the view and the LLM.
+        if (upstreamList.length > 0 && downstreamList.length === 0) {
+          result.data_coverage_note =
+            `No downstream edges observed for '${service}' over ${lb}. This usually indicates ` +
+            `an instrumentation gap (e.g. client spans not captured, partial eBPF coverage) ` +
+            `rather than a truly terminal service. Treat the 'leaf' role as 'no outbound spans ` +
+            `seen in this window', not 'definitely makes no outbound calls'.`;
+        }
       }
 
       result.filters = namespace ? { lookback: lb, namespace } : { lookback: lb };
