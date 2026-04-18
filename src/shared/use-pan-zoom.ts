@@ -30,7 +30,7 @@ interface UsePanZoomOpts {
   baseH: number | null | undefined;
   minZoom?: number;
   maxZoom?: number;
-  /** Wheel sensitivity — lower = slower. Default 0.0015 gives smooth trackpad zoom. */
+  /** Wheel sensitivity — lower = slower. Default 0.003 balances trackpad smoothness with mouse-wheel responsiveness. */
   wheelSensitivity?: number;
 }
 
@@ -43,9 +43,9 @@ export interface PanZoom {
   maxZoom: number;
   applyZoom: (factor: number, focusX?: number, focusY?: number) => void;
   resetView: () => void;
-  // Spread these onto the <svg> element.
+  // Spread these onto the <svg> element. (Wheel zoom is attached natively
+  // by the hook — see useEffect above.)
   svgHandlers: {
-    onWheel: (e: React.WheelEvent<SVGSVGElement>) => void;
     onMouseMove: (e: React.MouseEvent) => void;
     onMouseUp: () => void;
     onMouseLeave: () => void;
@@ -65,7 +65,7 @@ export function usePanZoom({
   baseH,
   minZoom = 0.5,
   maxZoom = 4,
-  wheelSensitivity = 0.0015,
+  wheelSensitivity = 0.003,
 }: UsePanZoomOpts): PanZoom {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [viewBox, setViewBox] = useState<ViewBox | null>(null);
@@ -116,8 +116,15 @@ export function usePanZoom({
     [viewBox]
   );
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent<SVGSVGElement>) => {
+  // React attaches `onWheel` as a passive listener since React 17+, which
+  // means `e.preventDefault()` inside a synthetic handler is a no-op — the
+  // page still scrolls. We attach natively with `{ passive: false }` so the
+  // zoom consumes the wheel event and the chat/host scroll doesn't follow
+  // the cursor into the diagram.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handler = (e: WheelEvent) => {
       e.preventDefault();
       const focal = screenToViewBox(e.clientX, e.clientY);
       // Proportional to actual deltaY so trackpad (small deltas, many events)
@@ -127,9 +134,10 @@ export function usePanZoom({
       const clamped = clamp(raw, -0.3, 0.3);
       const factor = Math.exp(clamped);
       applyZoom(factor, focal?.x, focal?.y);
-    },
-    [applyZoom, screenToViewBox, wheelSensitivity]
-  );
+    };
+    svg.addEventListener("wheel", handler, { passive: false });
+    return () => svg.removeEventListener("wheel", handler);
+  }, [applyZoom, screenToViewBox, wheelSensitivity]);
 
   const onBgMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -174,7 +182,6 @@ export function usePanZoom({
     applyZoom,
     resetView,
     svgHandlers: {
-      onWheel,
       onMouseMove: onSvgMouseMove,
       onMouseUp: onSvgMouseUp,
       onMouseLeave: onSvgMouseUp,

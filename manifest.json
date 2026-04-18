@@ -3,8 +3,8 @@
   "name": "example-mcp-app-observability",
   "display_name": "Elastic Observability",
   "version": "1.0.7",
-  "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule creation.",
-  "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and create Kibana threshold alerts.",
+  "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule management.",
+  "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and manage Kibana threshold alert rules (create, list, get, delete).",
   "author": {
     "name": "Elastic",
     "url": "https://www.elastic.co"
@@ -54,8 +54,8 @@
       "description": "Service dependency graph from APM telemetry. Requires: Elastic APM."
     },
     {
-      "name": "create-alert-rule",
-      "description": "Create a persistent Kibana custom-threshold alerting rule. Universal: works on any metric field in any index pattern."
+      "name": "manage-alerts",
+      "description": "CRUD for Kibana alerting rules — create, list, get, or delete custom-threshold rules. Universal: works on any metric field in any index pattern. Registered only when a Kibana URL is configured; leave the Kibana URL blank to disable this tool (and its destructive delete path)."
     }
   ],
   "tools_generated": true,
@@ -76,9 +76,9 @@
     },
     "kibana_url": {
       "type": "string",
-      "title": "Kibana URL",
-      "description": "Kibana URL (e.g. https://your-cluster.kb.cloud.example.com)",
-      "required": true,
+      "title": "Kibana URL (optional — enables manage-alerts)",
+      "description": "Kibana URL (e.g. https://your-cluster.kb.cloud.example.com). Leave blank to disable the manage-alerts tool — useful if you want the server to be strictly read-only (no rule creation or deletion).",
+      "required": false,
       "sensitive": false
     },
     "kibana_api_key": {

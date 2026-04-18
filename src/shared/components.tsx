@@ -685,3 +685,89 @@ function ZoomButton({
     </button>
   );
 }
+
+// ── Density toggle ─────────────────────────────────────────────────────────
+//
+// Pair: `SectionTitleWithToggle` renders a section title with a trailing "Show
+// details" / "Show condensed" pill; `CondensedChips` renders a chip strip that
+// collapses a long HBarRow list into one row of label-value pairs. Used when a
+// section is useful-by-default but gets long enough to crowd the view — e.g.
+// "Top pods by memory", "Related anomalies".
+//
+// Toggle state lives on the parent so clicking does not re-invoke the tool.
+
+export function SectionTitleWithToggle({
+  label,
+  detailed,
+  onToggle,
+}: {
+  label: React.ReactNode;
+  detailed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+      }}
+    >
+      <span>{label}</span>
+      <button
+        onClick={onToggle}
+        style={{
+          background: "transparent",
+          color: theme.textMuted,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 4,
+          padding: "2px 8px",
+          fontSize: 10,
+          fontWeight: 500,
+          letterSpacing: 0.2,
+          cursor: "pointer",
+          textTransform: "none",
+        }}
+      >
+        {detailed ? "Show condensed" : "Show details"}
+      </button>
+    </div>
+  );
+}
+
+export interface CondensedChipItem {
+  key: string;
+  label: string;
+  value: string;
+  color?: string;
+}
+
+export function CondensedChips({ items }: { items: CondensedChipItem[] }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: "4px 10px",
+        fontSize: 11,
+        lineHeight: 1.5,
+      }}
+    >
+      {items.map((it, i) => (
+        <span key={it.key} style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ color: theme.text }}>{it.label}</span>
+          <span
+            className="mono"
+            style={{ color: it.color ?? theme.textMuted, fontSize: 10.5 }}
+          >
+            {it.value}
+          </span>
+          {i < items.length - 1 ? (
+            <span style={{ color: theme.textDim, marginLeft: 4 }}>·</span>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  );
+}

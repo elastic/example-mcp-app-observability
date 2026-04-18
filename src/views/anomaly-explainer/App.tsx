@@ -33,6 +33,8 @@ import {
   InvestigationAction,
   TimeRangeHeader,
   RerunContext,
+  SectionTitleWithToggle,
+  CondensedChips,
 } from "@shared/components";
 
 interface Anomaly {
@@ -298,6 +300,10 @@ function DetailMode({
   onSend: (p: string) => void;
   detailCount: number;
 }) {
+  // "Related anomalies" can balloon with noisy jobs — default condensed, let the
+  // user pop the full HBarRow list if they want it. Local state only; toggling
+  // does not re-invoke the tool.
+  const [relatedDetailed, setRelatedDetailed] = useState(false);
   const tone = severityTone(top.recordScore);
   const actual = firstNum(top.actual);
   const typical = firstNum(top.typical);
@@ -381,17 +387,36 @@ function DetailMode({
       )}
 
       {detailCount > 1 && (
-        <SectionCard title={`Related anomalies (${detailCount - 1})`}>
-          {(data.anomalies || []).slice(1, 6).map((a, i) => (
-            <HBarRow
-              key={i}
-              label={`${entityLabel(a)} · ${a.jobId}`}
-              value={a.recordScore}
-              valueLabel={`${Math.round(a.recordScore)}`}
-              max={100}
-              color={sevColor(a.recordScore)}
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label={`Related anomalies (${detailCount - 1})`}
+              detailed={relatedDetailed}
+              onToggle={() => setRelatedDetailed((v) => !v)}
             />
-          ))}
+          }
+        >
+          {relatedDetailed ? (
+            (data.anomalies || []).slice(1, 6).map((a, i) => (
+              <HBarRow
+                key={i}
+                label={`${entityLabel(a)} · ${a.jobId}`}
+                value={a.recordScore}
+                valueLabel={`${Math.round(a.recordScore)}`}
+                max={100}
+                color={sevColor(a.recordScore)}
+              />
+            ))
+          ) : (
+            <CondensedChips
+              items={(data.anomalies || []).slice(1, 6).map((a, i) => ({
+                key: `${a.jobId}-${i}`,
+                label: entityLabel(a),
+                value: `${Math.round(a.recordScore)}`,
+                color: sevColor(a.recordScore),
+              }))}
+            />
+          )}
         </SectionCard>
       )}
 

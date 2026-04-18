@@ -35,6 +35,8 @@ import {
   InvestigationAction,
   TimeRangeHeader,
   RerunContext,
+  SectionTitleWithToggle,
+  CondensedChips,
 } from "@shared/components";
 
 interface ServiceDetail {
@@ -109,14 +111,18 @@ const HEALTH_TONE: Record<string, BadgeTone> = {
 
 // ── Donut chart ────────────────────────────────────────────────────────────
 
-function Donut({ segments }: { segments: Array<{ label: string; value: number; color: string }> }) {
+// Geometry:
+//   size=120, centerline r=38, strokeWidth=16
+//   → outer edge = 46 (2px margin inside the 120 viewBox), inner hole radius = 30
+//   The previous donut (r=38, strokeWidth=56) had its outer edge at 66, which
+//   exceeded the viewBox on both sides and made the donut look square / clipped.
+function Donut({ segments, size = 120 }: { segments: Array<{ label: string; value: number; color: string }>; size?: number }) {
   const total = segments.reduce((s, x) => s + x.value, 0);
   if (total === 0) return null;
-  const size = 100;
   const cx = size / 2;
   const cy = size / 2;
-  const r = 38;
-  const inner = 22;
+  const strokeWidth = Math.round(size * 0.13);
+  const r = size / 2 - strokeWidth / 2 - 2;
   const circ = 2 * Math.PI * r;
 
   let offset = 0;
@@ -131,7 +137,7 @@ function Donut({ segments }: { segments: Array<{ label: string; value: number; c
         r={r}
         fill="none"
         stroke={s.color}
-        strokeWidth={size - inner * 2}
+        strokeWidth={strokeWidth}
         strokeDasharray={`${length} ${circ}`}
         strokeDashoffset={-offset}
         transform={`rotate(-90 ${cx} ${cy})`}
@@ -143,8 +149,27 @@ function Donut({ segments }: { segments: Array<{ label: string; value: number; c
 
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke={theme.border} strokeWidth={size - inner * 2} />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={theme.border} strokeWidth={strokeWidth} />
       {arcs}
+      <text
+        x={cx}
+        y={cy - 2}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        className="mono"
+        style={{ fontSize: size * 0.22, fontWeight: 700, fill: theme.text }}
+      >
+        {total}
+      </text>
+      <text
+        x={cx}
+        y={cy + size * 0.14}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        style={{ fontSize: size * 0.08, fill: theme.textMuted, textTransform: "lowercase", letterSpacing: 0.3 }}
+      >
+        total
+      </text>
     </svg>
   );
 }
@@ -162,24 +187,37 @@ function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
     );
   }
   return (
-    <div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
         {segments.map((s) => (
           <div
             key={s.label}
             style={{
-              flex: 1,
               background: `${s.color}18`,
               border: `1px solid ${s.color}40`,
               borderRadius: 6,
-              padding: "14px 12px",
-              textAlign: "center",
+              padding: "10px 12px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
             }}
           >
             <div
+              style={{
+                fontSize: 11,
+                color: s.color,
+                textTransform: "lowercase",
+                letterSpacing: 0.3,
+                fontWeight: 600,
+              }}
+            >
+              {s.label}
+            </div>
+            <div
               className="mono"
               style={{
-                fontSize: 26,
+                fontSize: 22,
                 fontWeight: 700,
                 color: s.color,
                 lineHeight: 1,
@@ -187,108 +225,12 @@ function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
             >
               {s.value}
             </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: s.color,
-                marginTop: 6,
-                textTransform: "lowercase",
-              }}
-            >
-              {s.label}
-            </div>
           </div>
         ))}
       </div>
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}>
         <Donut segments={segments} />
       </div>
-      <div style={{ display: "flex", justifyContent: "center", gap: 14, fontSize: 11, color: theme.textMuted }}>
-        {segments.map((s) => (
-          <span key={s.label} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 10, height: 10, background: s.color, borderRadius: 2 }} />
-            {s.label.charAt(0).toUpperCase() + s.label.slice(1)} ({s.value})
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Density toggle ─────────────────────────────────────────────────────────
-//
-// Section title with a trailing "Show details" / "Show condensed" link. Purely
-// local React state on the parent — clicking does not re-invoke the tool.
-
-function SectionTitleWithToggle({
-  label,
-  detailed,
-  onToggle,
-}: {
-  label: React.ReactNode;
-  detailed: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-      }}
-    >
-      <span>{label}</span>
-      <button
-        onClick={onToggle}
-        style={{
-          background: "transparent",
-          color: theme.textMuted,
-          border: `1px solid ${theme.border}`,
-          borderRadius: 4,
-          padding: "2px 8px",
-          fontSize: 10,
-          fontWeight: 500,
-          letterSpacing: 0.2,
-          cursor: "pointer",
-          textTransform: "none",
-        }}
-      >
-        {detailed ? "Show condensed" : "Show details"}
-      </button>
-    </div>
-  );
-}
-
-function CondensedChips({
-  items,
-}: {
-  items: Array<{ key: string; label: string; value: string; color?: string }>;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "4px 10px",
-        fontSize: 11,
-        lineHeight: 1.5,
-      }}
-    >
-      {items.map((it, i) => (
-        <span key={it.key} style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
-          <span style={{ color: theme.text }}>{it.label}</span>
-          <span
-            className="mono"
-            style={{ color: it.color ?? theme.textMuted, fontSize: 10.5 }}
-          >
-            {it.value}
-          </span>
-          {i < items.length - 1 ? (
-            <span style={{ color: theme.textDim, marginLeft: 4 }}>·</span>
-          ) : null}
-        </span>
-      ))}
     </div>
   );
 }
