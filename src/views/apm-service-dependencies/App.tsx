@@ -11,9 +11,15 @@
  */
 
 import React, { useState, useMemo, useCallback } from "react";
-import { useApp } from "@shared/use-app";
+import { useApp, AppLike } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { theme } from "@shared/theme";
+import {
+  InvestigationActions,
+  InvestigationAction,
+  TimeRangeHeader,
+  RerunContext,
+} from "@shared/components";
 
 interface ServiceHealth {
   span_count: number;
@@ -51,6 +57,8 @@ interface DepData {
   filters?: { lookback?: string; namespace?: string };
   data_coverage?: { apm: boolean };
   hint?: string;
+  investigation_actions?: InvestigationAction[];
+  rerun_context?: RerunContext;
 }
 
 const NODE_W = 180;
@@ -487,17 +495,21 @@ export function App() {
   const [data, setData] = useState<DepData | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
+  const [app, setApp] = useState<AppLike | null>(null);
 
   const { isConnected, error } = useApp({
     appInfo: { name: "APM Service Dependencies", version: "1.0.0" },
     capabilities: {},
-    onAppCreated: (app) => {
-      app.ontoolresult = (params) => {
+    onAppCreated: (a) => {
+      a.ontoolresult = (params) => {
         const parsed = parseToolResult<DepData>(params);
         if (parsed?.services && parsed?.edges) setData(parsed);
       };
+      setApp(a);
     },
   });
+
+  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
   const layout = useMemo(() => {
     if (!data) return null;
@@ -581,42 +593,40 @@ export function App() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div
         style={{
-          padding: "10px 14px",
+          padding: "12px 14px 8px",
           borderBottom: `1px solid ${theme.border}`,
           background: "#0d0f14",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <span style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>
-            Service Dependencies
-          </span>
-          {data.focal_service && (
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: theme.cyan,
-                padding: "2px 8px",
-                borderRadius: 10,
-                background: `${theme.cyan}18`,
-                fontFamily: "'JetBrains Mono', monospace",
-              }}
-            >
-              focal: {data.focal_service}
+        <TimeRangeHeader
+          title={
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              Service Dependencies
+              {data.focal_service && (
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: theme.cyan,
+                    padding: "2px 8px",
+                    borderRadius: 10,
+                    background: `${theme.cyan}18`,
+                  }}
+                >
+                  focal: {data.focal_service}
+                </span>
+              )}
             </span>
-          )}
-          {data.filters?.lookback && (
-            <span
-              style={{
-                fontSize: 10,
-                color: theme.textMuted,
-                fontFamily: "'JetBrains Mono', monospace",
-              }}
-            >
-              {data.filters.lookback} window
-            </span>
-          )}
-        </div>
+          }
+          subtitle={
+            data.filters?.namespace ? (
+              <span className="mono">namespace: {data.filters.namespace}</span>
+            ) : undefined
+          }
+          rerunContext={data.rerun_context}
+          onSend={onSend}
+        />
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <StatChip label="services" value={data.service_count} color={theme.blue} />
@@ -710,6 +720,12 @@ export function App() {
           <span style={{ fontSize: 9, color: theme.textMuted }}>Call edge</span>
         </div>
       </div>
+
+      {data.investigation_actions?.length ? (
+        <div style={{ padding: "8px 14px", borderTop: `1px solid ${theme.border}` }}>
+          <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+        </div>
+      ) : null}
 
       <style>{`
         ::-webkit-scrollbar { width: 4px; }

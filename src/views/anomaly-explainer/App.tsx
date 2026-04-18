@@ -26,12 +26,13 @@ import {
   StatCard,
   StatGrid,
   SectionCard,
-  StatusBadge,
   BadgeTone,
   ComparisonBar,
   HBarRow,
   InvestigationActions,
   InvestigationAction,
+  TimeRangeHeader,
+  RerunContext,
 } from "@shared/components";
 
 interface Anomaly {
@@ -66,6 +67,7 @@ interface AnomalyData {
   time_series?: TimePoint[];
   time_series_title?: string;
   investigation_actions?: InvestigationAction[];
+  rerun_context?: RerunContext;
   detail?: {
     entity_label?: string;
     namespace?: string;
@@ -89,6 +91,15 @@ function severityTone(score: number): BadgeTone {
   if (score >= 75) return "major";
   if (score >= 50) return "minor";
   return "ok";
+}
+
+// Okabe-Ito severity palette: vermillion → orange → sky-blue. Strong hue
+// separation under all common color-vision deficiencies. Mirrors the shared
+// StatusBadge / StatCard tones so the whole view reads as a single scale.
+function sevColor(score: number): string {
+  if (score >= 90) return "#D55E00";
+  if (score >= 75) return "#E69F00";
+  return "#56B4E9";
 }
 
 function entityLabel(a: Anomaly): string {
@@ -313,45 +324,19 @@ function DetailMode({
 
   return (
     <>
+      <TimeRangeHeader
+        title={<span className="mono">{label}</span>}
+        subtitle={
+          <>
+            <span>{top.jobId}</span>
+            {contextLine && <span> · {contextLine}</span>}
+          </>
+        }
+        status={{ tone, label: top.severity }}
+        rerunContext={data.rerun_context}
+        onSend={onSend}
+      />
       <SectionCard>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            marginBottom: 10,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div
-              className="mono"
-              style={{ fontSize: 11, color: theme.textMuted, marginBottom: 2 }}
-            >
-              {top.jobId}
-            </div>
-            <div
-              className="mono"
-              style={{
-                fontSize: 15,
-                fontWeight: 700,
-                color: theme.text,
-                marginBottom: 2,
-                wordBreak: "break-all",
-              }}
-            >
-              {label}
-            </div>
-            {contextLine && (
-              <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-                {contextLine}
-              </div>
-            )}
-          </div>
-          <StatusBadge tone={tone}>{top.severity}</StatusBadge>
-        </div>
-
         <StatGrid>
           <StatCard
             label="Anomaly score"
@@ -404,13 +389,7 @@ function DetailMode({
               value={a.recordScore}
               valueLabel={`${Math.round(a.recordScore)}`}
               max={100}
-              color={
-                a.recordScore >= 90
-                  ? theme.red
-                  : a.recordScore >= 75
-                  ? theme.orange
-                  : theme.amber
-              }
+              color={sevColor(a.recordScore)}
             />
           ))}
         </SectionCard>
@@ -444,29 +423,20 @@ function OverviewMode({ data, onSend }: { data: AnomalyData; onSend: (p: string)
 
   return (
     <>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 12,
-          gap: 12,
-          flexWrap: "wrap",
+      <TimeRangeHeader
+        title="Anomaly overview"
+        subtitle={
+          data.filters?.minScore !== undefined
+            ? `score ≥ ${data.filters.minScore}`
+            : undefined
+        }
+        status={{
+          tone: bySev.critical > 0 ? "critical" : bySev.major > 0 ? "major" : "minor",
+          label: `${anomalies.length} firing`,
         }}
-      >
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-            Anomaly overview
-          </div>
-          <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-            {data.filters?.lookback ? `last ${data.filters.lookback}` : "recent"}
-            {data.filters?.minScore !== undefined ? ` · score ≥ ${data.filters.minScore}` : ""}
-          </div>
-        </div>
-        <StatusBadge tone={bySev.critical > 0 ? "critical" : bySev.major > 0 ? "major" : "minor"}>
-          {anomalies.length} firing
-        </StatusBadge>
-      </div>
+        rerunContext={data.rerun_context}
+        onSend={onSend}
+      />
 
       <StatGrid>
         <StatCard label="Critical" value={bySev.critical} tone={bySev.critical > 0 ? "critical" : undefined} sub="score ≥ 90" />
@@ -483,13 +453,7 @@ function OverviewMode({ data, onSend }: { data: AnomalyData; onSend: (p: string)
             value={a.recordScore}
             valueLabel={`${Math.round(a.recordScore)}`}
             max={100}
-            color={
-              a.recordScore >= 90
-                ? theme.red
-                : a.recordScore >= 75
-                ? theme.orange
-                : theme.amber
-            }
+            color={sevColor(a.recordScore)}
           />
         ))}
       </SectionCard>

@@ -58,11 +58,22 @@ async function resolveNamespace(
   errors: string[]
 ): Promise<ResolvedNamespace> {
   if (!requested) return {};
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
-  const rows = await safeEsqlRows<{ "k8s.namespace.name"?: string }>(esql, errors);
-  const names = rows
-    .map((r) => r["k8s.namespace.name"])
-    .filter((n): n is string => !!n);
+  const otelEsql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
+  const ecsEsql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND kubernetes.namespace IS NOT NULL | STATS c = COUNT(*) BY kubernetes.namespace | SORT c DESC | LIMIT 50`;
+  const [otelRows, ecsRows] = await Promise.all([
+    safeEsqlRows<{ "k8s.namespace.name"?: string }>(otelEsql, errors),
+    safeEsqlRows<{ "kubernetes.namespace"?: string }>(ecsEsql, errors),
+  ]);
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const r of otelRows) {
+    const n = r["k8s.namespace.name"];
+    if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+  }
+  for (const r of ecsRows) {
+    const n = r["kubernetes.namespace"];
+    if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+  }
   if (!names.length) return {};
   if (names.includes(requested)) return { resolved: requested };
   const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
@@ -105,6 +116,27 @@ async function queryServiceTraces(
     }));
 }
 
+// Tier 3: classic APM agents — traces-apm* with ECS-style kubernetes.* namespace filter.
+// Only run when tier-1 (pre-agg metrics) and tier-2 (OTel traces) return nothing, so OTel-native
+// deployments don't pay the extra call.
+async function queryServiceTracesClassic(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<ServiceRow[]> {
+  const nsFilter = namespace
+    ? `AND kubernetes.namespace == "${namespace}" `
+    : "";
+  const esql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND processor.event == "transaction" ${nsFilter}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
+  const rows = await safeEsqlRows<{ "service.name"?: string; total_count?: number }>(esql, errors);
+  return rows
+    .filter((r) => !!r["service.name"])
+    .map((r) => ({
+      service: r["service.name"]!,
+      throughput: r.total_count || 0,
+    }));
+}
+
 async function queryServices(
   namespace: string | undefined,
   lookback: string,
@@ -112,7 +144,9 @@ async function queryServices(
 ): Promise<ServiceRow[]> {
   const rollup = await queryServiceTransactionRollup(namespace, lookback, errors);
   if (rollup.length) return rollup;
-  return queryServiceTraces(namespace, lookback, errors);
+  const otel = await queryServiceTraces(namespace, lookback, errors);
+  if (otel.length) return otel;
+  return queryServiceTracesClassic(namespace, lookback, errors);
 }
 
 async function queryPodResources(
@@ -444,6 +478,18 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         });
       }
       if (actions.length) result.investigation_actions = actions;
+
+      // Rerun context for the view's time-range chip row.
+      const rerunParts = ["lookback \"{lookback}\""];
+      if (effectiveNs) rerunParts.push(`namespace "${effectiveNs}"`);
+      if (job_filter) rerunParts.push(`job_filter "${job_filter}"`);
+      if (exclude_entities) rerunParts.push(`exclude_entities "${exclude_entities}"`);
+      result.rerun_context = {
+        tool: "apm-health-summary",
+        current_lookback: lb,
+        prompt_template: `Use apm-health-summary with ${rerunParts.join(" and ")}`,
+      };
+
       if (queryErrors.length) result._query_errors = queryErrors;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };

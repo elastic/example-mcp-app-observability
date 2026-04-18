@@ -24,10 +24,10 @@ import {
   StatCard,
   StatGrid,
   SectionCard,
-  StatusBadge,
   KVRow,
   InvestigationActions,
   InvestigationAction,
+  TimeRangeHeader,
 } from "@shared/components";
 
 interface ContextStat {
@@ -131,18 +131,9 @@ export function App() {
 
   return (
     <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-      <SectionCard>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            marginBottom: 14,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
+      <TimeRangeHeader
+        title={
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
             <span
               style={{
                 width: 10,
@@ -154,18 +145,17 @@ export function App() {
                 flexShrink: 0,
               }}
             />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-                {data.rule_name}
-              </div>
-              <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-                {data.rule_type || "observability.rules.custom_threshold"}
-              </div>
-            </div>
-          </div>
-          <StatusBadge tone="ok">live</StatusBadge>
-        </div>
-
+            {data.rule_name}
+          </span>
+        }
+        subtitle={
+          <span className="mono">
+            {data.rule_type || "observability.rules.custom_threshold"}
+          </span>
+        }
+        status={{ tone: "ok", label: "live" }}
+      />
+      <SectionCard>
         {data.rule_id && <KVRow label="Rule ID" value={data.rule_id} />}
         <KVRow label="Condition" value={conditionStr} />
         <KVRow label="Window" value={windowStr} />

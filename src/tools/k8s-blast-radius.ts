@@ -51,6 +51,12 @@ interface ApmRow {
   "k8s.deployment.name"?: string | null;
 }
 
+interface ApmClassicRow {
+  "service.name"?: string | null;
+  "kubernetes.namespace"?: string | null;
+  "kubernetes.deployment.name"?: string | null;
+}
+
 export function registerK8sBlastRadiusTool(server: McpServer) {
   registerAppTool(
     server,
@@ -118,13 +124,35 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
 | SORT service_count DESC
 | LIMIT 200`;
 
+      // Classic APM fallback (traces-apm* + kubernetes.* fields). Only consulted if the OTel APM
+      // query returns nothing, so OTel-native customers don't pay the extra call.
+      const apmClassicQuery = `FROM traces-apm*
+| WHERE @timestamp > NOW() - 1h
+  AND processor.event == "transaction"
+  AND kubernetes.namespace IS NOT NULL
+| STATS service_count = COUNT(*)
+    BY service.name, kubernetes.namespace, kubernetes.deployment.name
+| WHERE kubernetes.deployment.name IS NOT NULL
+| SORT service_count DESC
+| LIMIT 200`;
+
       const queryErrors: string[] = [];
-      const [podsOnNode, totalReplicas, clusterCapacity, apmServices] = await Promise.all([
+      const [podsOnNode, totalReplicas, clusterCapacity, apmServicesOtel] = await Promise.all([
         safeEsqlRows<PodRow>(podsQuery, queryErrors),
         safeEsqlRows<TotalRow>(totalsQuery, queryErrors),
         safeEsqlRows<CapacityRow>(capacityQuery, queryErrors),
         safeEsqlRows<ApmRow>(apmQuery, queryErrors),
       ]);
+
+      let apmServices: ApmRow[] = apmServicesOtel;
+      if (!apmServicesOtel.length) {
+        const classicRows = await safeEsqlRows<ApmClassicRow>(apmClassicQuery, queryErrors);
+        apmServices = classicRows.map((r) => ({
+          "service.name": r["service.name"],
+          "k8s.namespace.name": r["kubernetes.namespace"],
+          "k8s.deployment.name": r["kubernetes.deployment.name"],
+        }));
+      }
 
       if (!podsOnNode.length) {
         return {

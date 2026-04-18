@@ -15,10 +15,17 @@ import { theme } from "./theme.js";
 
 export type BadgeTone = "critical" | "major" | "minor" | "ok" | "info" | "neutral";
 
+// Severity palette is Okabe-Ito-derived: vermillion / orange / sky-blue. Strong hue
+// separation and a hot-to-cool ramp that stays distinguishable under all common
+// color-vision deficiencies.
+const SEV_CRIT = "#D55E00";
+const SEV_MAJOR = "#E69F00";
+const SEV_MINOR = "#56B4E9";
+
 const badgeColors: Record<BadgeTone, { bg: string; fg: string; border: string }> = {
-  critical: { bg: `${theme.red}20`, fg: theme.redSoft, border: `${theme.red}55` },
-  major: { bg: `${theme.orange}20`, fg: theme.orange, border: `${theme.orange}55` },
-  minor: { bg: `${theme.amber}20`, fg: theme.amber, border: `${theme.amber}55` },
+  critical: { bg: `${SEV_CRIT}20`, fg: SEV_CRIT, border: `${SEV_CRIT}66` },
+  major: { bg: `${SEV_MAJOR}20`, fg: SEV_MAJOR, border: `${SEV_MAJOR}66` },
+  minor: { bg: `${SEV_MINOR}20`, fg: SEV_MINOR, border: `${SEV_MINOR}66` },
   ok: { bg: `${theme.green}18`, fg: theme.greenSoft, border: `${theme.green}55` },
   info: { bg: `${theme.blue}18`, fg: theme.blue, border: `${theme.blue}55` },
   neutral: { bg: `${theme.borderStrong}`, fg: theme.textMuted, border: theme.border },
@@ -63,9 +70,9 @@ export function StatCard({
 }) {
   const valueColor =
     tone === "critical"
-      ? theme.redSoft
+      ? SEV_CRIT
       : tone === "major"
-      ? theme.orange
+      ? SEV_MAJOR
       : tone === "ok"
       ? theme.greenSoft
       : theme.text;
@@ -210,6 +217,176 @@ export function InvestigationActions({
         ))}
       </div>
     </SectionCard>
+  );
+}
+
+// ── Time-range / context header (shared top-of-view block).
+//
+// Consistent across all tool views so users always know where to look for
+// "when am I looking at?" and "how do I change that window?". Structure:
+//
+//   Title                                                [status badge]
+//   subtitle (scope: namespace, focal service, node, …)
+//   ───────────────────────────────────────────────────────────────
+//   Time range  [15m] [1h●] [6h] [24h]
+//
+// Chip row only renders when `rerunContext` is supplied — tools without a
+// user-configurable lookback (k8s-blast-radius, create-alert-rule) still
+// use this component so the title/subtitle/status layout stays consistent.
+//
+// Rerun works by substituting `{lookback}` in the caller-provided
+// `prompt_template` and calling `onSend`, which wires into `app.sendMessage`
+// so Claude re-invokes the tool with the new window.
+
+export interface RerunContext {
+  tool: string;
+  current_lookback: string;
+  prompt_template: string;
+  presets?: string[];
+}
+
+const DEFAULT_PRESETS = ["15m", "1h", "6h", "24h"];
+
+export function TimeRangeHeader({
+  title,
+  subtitle,
+  status,
+  rerunContext,
+  onSend,
+}: {
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  status?: { tone: BadgeTone; label: React.ReactNode };
+  rerunContext?: RerunContext;
+  onSend?: (prompt: string) => void;
+}) {
+  const presets = rerunContext?.presets ?? DEFAULT_PRESETS;
+  const current = rerunContext?.current_lookback;
+  const canRerun = !!(rerunContext && onSend);
+
+  return (
+    <div
+      style={{
+        padding: "12px 16px",
+        background: theme.bgSecondary,
+        border: `1px solid ${theme.border}`,
+        borderRadius: 8,
+        marginBottom: 14,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              color: theme.text,
+              marginBottom: subtitle ? 3 : 0,
+              wordBreak: "break-word",
+            }}
+          >
+            {title}
+          </div>
+          {subtitle && (
+            <div
+              className="mono"
+              style={{
+                fontSize: 11,
+                color: theme.textMuted,
+              }}
+            >
+              {subtitle}
+            </div>
+          )}
+        </div>
+        {status && <StatusBadge tone={status.tone}>{status.label}</StatusBadge>}
+      </div>
+
+      {rerunContext && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginTop: 12,
+            paddingTop: 10,
+            borderTop: `1px solid ${theme.border}`,
+            flexWrap: "wrap",
+          }}
+        >
+          <span
+            style={{
+              fontSize: 10,
+              color: theme.textDim,
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              fontWeight: 600,
+            }}
+          >
+            Time range
+          </span>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {presets.map((p) => {
+              const active = p === current;
+              return (
+                <button
+                  key={p}
+                  disabled={!canRerun || active}
+                  onClick={() => {
+                    if (!canRerun || active) return;
+                    const prompt = rerunContext!.prompt_template.replace(
+                      /\{lookback\}/g,
+                      p
+                    );
+                    onSend!(prompt);
+                  }}
+                  className="mono"
+                  style={{
+                    background: active ? `${theme.blue}22` : theme.bgTertiary,
+                    color: active ? theme.blue : theme.text,
+                    border: `1px solid ${active ? `${theme.blue}88` : theme.border}`,
+                    borderRadius: 5,
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    fontWeight: active ? 700 : 500,
+                    cursor: active || !canRerun ? "default" : "pointer",
+                    transition: "all 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (active || !canRerun) return;
+                    e.currentTarget.style.background = theme.border;
+                    e.currentTarget.style.borderColor = theme.borderStrong;
+                  }}
+                  onMouseLeave={(e) => {
+                    if (active || !canRerun) return;
+                    e.currentTarget.style.background = theme.bgTertiary;
+                    e.currentTarget.style.borderColor = theme.border;
+                  }}
+                >
+                  {p}
+                </button>
+              );
+            })}
+          </div>
+          {current && !presets.includes(current) && (
+            <span
+              className="mono"
+              style={{ fontSize: 10, color: theme.textMuted }}
+            >
+              current: {current}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

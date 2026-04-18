@@ -36,6 +36,11 @@ interface Enriched extends AnomalyQueryResult {
   detail?: Record<string, unknown>;
   time_series_title?: string;
   time_series?: TimePoint[];
+  rerun_context?: {
+    tool: string;
+    current_lookback: string;
+    prompt_template: string;
+  };
 }
 
 interface ModelPlotHit {
@@ -277,6 +282,18 @@ export function registerMlAnomaliesTool(server: McpServer) {
       });
 
       const enriched = await enrichForView(result, { entity, jobId: job_id, lookback });
+
+      const effectiveLb = lookback || "24h";
+      const rerunParts = ['lookback "{lookback}"'];
+      if (entity) rerunParts.push(`entity "${entity}"`);
+      if (job_id) rerunParts.push(`job_id "${job_id}"`);
+      if (min_score !== undefined) rerunParts.push(`min_score ${min_score}`);
+      if (limit !== undefined) rerunParts.push(`limit ${limit}`);
+      enriched.rerun_context = {
+        tool: "ml-anomalies",
+        current_lookback: effectiveLb,
+        prompt_template: `Use ml-anomalies with ${rerunParts.join(" and ")}`,
+      };
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify(enriched) }],

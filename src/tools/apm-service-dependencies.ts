@@ -111,9 +111,46 @@ FROM traces-*.otel-*
   return out;
 }
 
+// Metadata (language, deployment, namespace) — OTel traces first, classic APM (traces-apm*
+// + kubernetes.*) as fallback so classic-agent customers still see language/k8s context.
+async function fetchMetadata(
+  lb: string,
+  nsFilterEcs: string,
+  otelQuery: string,
+  errors: string[]
+): Promise<MetadataRow[]> {
+  const otelRows = await safeEsqlRows<MetadataRow>(otelQuery, errors);
+  if (otelRows.length) return otelRows;
+  const classicQuery = `
+FROM traces-apm*
+| WHERE service.name IS NOT NULL
+  AND @timestamp > NOW() - ${lb}
+  AND processor.event == "transaction"${nsFilterEcs}
+| STATS
+    trace_count = COUNT(*)
+  BY service.name, service.language.name, kubernetes.deployment.name, kubernetes.namespace
+| SORT trace_count DESC
+| LIMIT 100
+`;
+  type ClassicMetaRow = {
+    "service.name"?: string;
+    "service.language.name"?: string;
+    "kubernetes.deployment.name"?: string;
+    "kubernetes.namespace"?: string;
+  };
+  const rows = await safeEsqlRows<ClassicMetaRow>(classicQuery, errors);
+  return rows.map((r) => ({
+    "service.name": r["service.name"],
+    "service.language.name": r["service.language.name"],
+    "k8s.deployment.name": r["kubernetes.deployment.name"],
+    "k8s.namespace.name": r["kubernetes.namespace"],
+  }));
+}
+
 async function fetchHealth(
   lb: string,
   nsFilter: string,
+  nsFilterEcs: string,
   errors: string[]
 ): Promise<HealthRow[]> {
   const summaryQuery = `
@@ -172,7 +209,25 @@ FROM traces-*.otel-*
   BY service.name
 | LIMIT 200
 `;
-  return safeEsqlRows<HealthRow>(tracesQuery, errors);
+  const tracesRows = await safeEsqlRows<HealthRow>(tracesQuery, errors);
+  if (tracesRows.length) return tracesRows;
+
+  // Tier 3: classic APM agents — traces-apm* with transaction.duration.us and event.outcome.
+  // Only queried when both tier-1 metrics and tier-2 OTel traces return nothing, so OTel-native
+  // deployments don't pay the extra call.
+  const classicQuery = `
+FROM traces-apm*
+| WHERE @timestamp > NOW() - ${lb}
+  AND service.name IS NOT NULL
+  AND processor.event == "transaction"${nsFilterEcs}
+| STATS
+    span_count = COUNT(*),
+    avg_duration_us = AVG(transaction.duration.us),
+    error_count = COUNT(CASE(event.outcome == "failure", 1, NULL))
+  BY service.name
+| LIMIT 200
+`;
+  return safeEsqlRows<HealthRow>(classicQuery, errors);
 }
 
 export function registerApmServiceDependenciesTool(server: McpServer) {
@@ -213,6 +268,7 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
       const lb = lookback || "1h";
       const includeHealth = include_health !== false;
       const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace}"` : "";
+      const nsFilterEcs = namespace ? `\n  AND kubernetes.namespace == "${namespace}"` : "";
 
       const edgesQuery = `
 FROM metrics-service_destination.1m.otel-*
@@ -245,8 +301,8 @@ FROM traces-*.otel-*
       const queryErrors: string[] = [];
       const [edgeRows, healthRows, metadataRows, targetResolution] = await Promise.all([
         safeEsqlRows<EdgeRow>(edgesQuery, queryErrors),
-        includeHealth ? fetchHealth(lb, nsFilter, queryErrors) : Promise.resolve([]),
-        safeEsqlRows<MetadataRow>(metadataQuery, queryErrors),
+        includeHealth ? fetchHealth(lb, nsFilter, nsFilterEcs, queryErrors) : Promise.resolve([]),
+        fetchMetadata(lb, nsFilterEcs, metadataQuery, queryErrors),
         fetchTargetResolution(lb, nsFilter, queryErrors),
       ]);
 
@@ -383,6 +439,80 @@ FROM traces-*.otel-*
       }
 
       result.filters = namespace ? { lookback: lb, namespace } : { lookback: lb };
+
+      // Opinionated next-step prompts. Prioritize the most-likely-interesting follow-up given
+      // what we found: unhealthy services → anomaly drill-down, focal service → blast radius,
+      // otherwise cluster rollup.
+      const unhealthy = services
+        .map((s) => {
+          const h = (s as { health?: { error_count?: number; span_count?: number } }).health;
+          if (!h || !h.span_count) return null;
+          const rate = (h.error_count ?? 0) / h.span_count;
+          return rate > 0.02 ? { name: s.name as string, rate } : null;
+        })
+        .filter((x): x is { name: string; rate: number } => x !== null)
+        .sort((a, b) => b.rate - a.rate);
+
+      const actions: { label: string; prompt: string }[] = [];
+      if (unhealthy[0]) {
+        actions.push({
+          label: `Investigate ${unhealthy[0].name}`,
+          prompt: `Use ml-anomalies with entity "${unhealthy[0].name}" and lookback "1h" to find the root cause of elevated errors.`,
+        });
+      }
+      if (unhealthy[1] && unhealthy[1].name !== unhealthy[0]?.name) {
+        actions.push({
+          label: `Investigate ${unhealthy[1].name}`,
+          prompt: `Use ml-anomalies with entity "${unhealthy[1].name}" and lookback "1h" to find the root cause.`,
+        });
+      }
+      if (service) {
+        const upstreamList = edges.filter((e) => e.target === service).map((e) => e.source as string);
+        if (upstreamList[0]) {
+          actions.push({
+            label: `Check upstream ${upstreamList[0]}`,
+            prompt: `Use ml-anomalies with entity "${upstreamList[0]}" and lookback "1h" to see if the caller is the source of any issue.`,
+          });
+        }
+      }
+      const rootService = services.find((s) => (s as { role?: string }).role === "root") as
+        | { name?: string }
+        | undefined;
+      if (rootService?.name) {
+        actions.push({
+          label: "Cluster health rollup",
+          prompt: `Use apm-health-summary${namespace ? ` with namespace "${namespace}"` : ""} to see overall service health alongside this topology.`,
+        });
+      } else if (!actions.length) {
+        actions.push({
+          label: "Cluster health rollup",
+          prompt: `Use apm-health-summary${namespace ? ` with namespace "${namespace}"` : ""} to see overall service health.`,
+        });
+      }
+      const namespacesInGraph = new Set<string>();
+      for (const s of services) {
+        const ns = (s as { namespace?: string }).namespace;
+        if (ns) namespacesInGraph.add(ns);
+      }
+      if (namespacesInGraph.size > 0) {
+        const [anyNs] = namespacesInGraph;
+        actions.push({
+          label: `Blast radius for ${anyNs}`,
+          prompt: `Use k8s-blast-radius to assess the impact of a node outage on workloads in namespace "${anyNs}".`,
+        });
+      }
+      result.investigation_actions = actions;
+
+      const rerunParts = ["lookback \"{lookback}\""];
+      if (service) rerunParts.push(`service "${service}"`);
+      if (namespace) rerunParts.push(`namespace "${namespace}"`);
+      if (include_health === false) rerunParts.push("include_health false");
+      result.rerun_context = {
+        tool: "apm-service-dependencies",
+        current_lookback: lb,
+        prompt_template: `Use apm-service-dependencies with ${rerunParts.join(" and ")}`,
+      };
+
       if (queryErrors.length) result._query_errors = queryErrors;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };

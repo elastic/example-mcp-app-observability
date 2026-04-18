@@ -25,11 +25,12 @@ import {
   StatCard,
   StatGrid,
   SectionCard,
-  StatusBadge,
   BadgeTone,
   HBarRow,
   InvestigationActions,
   InvestigationAction,
+  TimeRangeHeader,
+  RerunContext,
 } from "@shared/components";
 
 interface ServiceDetail {
@@ -84,12 +85,16 @@ interface HealthData {
   namespace_note?: string;
   namespace_candidates?: string[];
   investigation_actions?: InvestigationAction[];
+  rerun_context?: RerunContext;
 }
 
+// Okabe-Ito-derived palette: vermillion / orange / sky-blue. Strong hue separation
+// and a hot-to-cool severity ramp that remains distinguishable under all common
+// color-vision deficiencies (protanopia, deuteranopia, tritanopia).
 const SEV_COLORS: Record<string, string> = {
-  critical: theme.redSoft,
-  major: theme.orange,
-  minor: theme.amber,
+  critical: "#D55E00",
+  major: "#E69F00",
+  minor: "#56B4E9",
 };
 const SEV_ORDER = ["critical", "major", "minor"];
 const HEALTH_TONE: Record<string, BadgeTone> = {
@@ -302,48 +307,28 @@ export function App() {
       ) : null}
 
       {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 12,
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div
-            className="mono"
-            style={{
-              fontSize: 14,
-              fontWeight: 700,
-              color: theme.text,
-              marginBottom: 2,
-              wordBreak: "break-all",
-            }}
-          >
-            {data.namespace}
-          </div>
-          <div style={{ fontSize: 11, color: theme.textMuted }}>
-            last {data.lookback}
-            {data.exclude_filter ? ` · ${data.exclude_filter} excluded` : ""}
-          </div>
-          {data.namespace_requested && (
-            <div
-              style={{
-                fontSize: 10,
-                color: theme.amber,
-                marginTop: 4,
-                fontStyle: "italic",
-              }}
-            >
-              resolved from "{data.namespace_requested}"
-            </div>
-          )}
-        </div>
-        <StatusBadge tone={tone}>{data.overall_health}</StatusBadge>
-      </div>
+      <TimeRangeHeader
+        title={<span className="mono">{data.namespace}</span>}
+        subtitle={
+          <>
+            {data.exclude_filter ? `${data.exclude_filter} excluded` : null}
+            {data.namespace_requested && (
+              <span
+                style={{
+                  marginLeft: data.exclude_filter ? 8 : 0,
+                  color: theme.amber,
+                  fontStyle: "italic",
+                }}
+              >
+                resolved from "{data.namespace_requested}"
+              </span>
+            )}
+          </>
+        }
+        status={{ tone, label: data.overall_health }}
+        rerunContext={data.rerun_context}
+        onSend={onSend}
+      />
 
       {/* Stat grid */}
       <StatGrid>

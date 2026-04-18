@@ -19,7 +19,12 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp, AppLike } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { theme, baseStyles } from "@shared/theme";
-import { InvestigationActions, InvestigationAction } from "@shared/components";
+import {
+  InvestigationActions,
+  InvestigationAction,
+  TimeRangeHeader,
+  BadgeTone,
+} from "@shared/components";
 
 interface Deployment {
   deployment: string;
@@ -77,6 +82,13 @@ function statusStyle(status: string): { color: string; label: string } {
   if (status === "PARTIAL RISK") return { color: theme.amber, label: "PARTIAL" };
   if (status === "SAFE") return { color: theme.green, label: "SAFE" };
   return { color: theme.textMuted, label: status };
+}
+
+function statusTone(status: string): BadgeTone {
+  if (status === "AT RISK") return "critical";
+  if (status === "PARTIAL RISK") return "major";
+  if (status === "SAFE") return "ok";
+  return "neutral";
 }
 
 function clamp(v: number, min: number, max: number) {
@@ -282,6 +294,11 @@ export function App() {
 
   return (
     <div style={{ padding: "12px 14px", background: theme.bg, position: "relative", maxWidth: svgW + 20 }}>
+      <TimeRangeHeader
+        title={<span className="mono">{data.node}</span>}
+        subtitle="K8s blast-radius analysis"
+        status={{ tone: statusTone(data.status), label: status.label }}
+      />
       {/* SVG diagram */}
       <div style={{ position: "relative" }}>
         <svg

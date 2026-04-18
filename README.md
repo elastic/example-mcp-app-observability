@@ -66,6 +66,27 @@ The `skills/` directory contains [Claude Skills](https://claude.com/docs/skills/
 - An Elasticsearch cluster with OpenTelemetry data (EDOT + kube-stack recommended)
 - A Kibana instance with Alerting enabled
 
+### Data schema
+
+The tools primarily target OpenTelemetry-native data in Elastic — EDOT agents or an OTel Collector writing via APM Server is the best-supported ingest path. Classic APM agents and ECS-style Kubernetes deployments are supported via a tiered fallback: tools try the OTel-native path first, and only fall back to classic APM (`traces-apm*`) or ECS-style K8s (`kubernetes.*`) when the OTel path returns nothing. OTel-native deployments don't pay the cost of the extra queries.
+
+**Tiered query strategy:**
+
+| Tier | Where it queries | When it runs |
+|------|-----------------|-------------|
+| 1 — Pre-aggregated APM metrics | `metrics-service_summary.1m.otel-*`, `metrics-service_transaction.1m.otel-*`, `metrics-service_destination.1m.otel-*` | First, for `apm-health-summary` and `apm-service-dependencies`. Emitted by APM Server regardless of agent type, so classic-APM customers are usually covered here already. |
+| 2 — Raw OTel traces | `traces-*.otel-*` (`duration` ns, `status.code`, `kind`, `service.name`, `rpc.service`, `k8s.*` OTel semconv) | Only if tier 1 is empty. |
+| 3 — Classic APM traces | `traces-apm*` (`transaction.duration.us`, `event.outcome`, `processor.event == "transaction"`, `kubernetes.*` ECS fields) | Only if tiers 1 and 2 are empty. |
+
+**Kubernetes attributes:**
+
+- OTel semconv (`k8s.namespace.name`, `k8s.deployment.name`, `k8s.pod.name`, `k8s.node.name`) is the primary path across all tools. `k8s-blast-radius` requires `metrics-kubeletstatsreceiver.otel-*` for pod impact analysis.
+- ECS-style (`kubernetes.namespace`, `kubernetes.deployment.name`) is used as a fallback for downstream service impact and service rollups when no OTel telemetry is present. Not yet wired into the blast-radius pod impact core (kubeletstats OTel is still required for that).
+
+**What's not yet supported:**
+
+- **Direct pod-impact analysis against ECS-style K8s metrics** — `k8s-blast-radius` still requires OTel `metrics-kubeletstatsreceiver.otel-*` for the pod / memory / rescheduling core. ECS `metricbeat`-style K8s metrics could be added if there's demand.
+
 ## Development
 
 ```bash
