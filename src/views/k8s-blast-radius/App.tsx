@@ -11,8 +11,10 @@
  *   Floating summary card (top-left): counts + rescheduling feasibility
  *   Center:   the node under analysis
  *   Ring 1:   full_outage + degraded deployments (direct impact)
+ *   Ring 2:   APM-discovered user-facing services in affected namespaces
+ *             (only rendered when APM telemetry is present)
  *   Safe arc: green arc on the right representing unaffected capacity
- *   Hover:    tooltip with deployment / namespace detail
+ *   Hover:    tooltip with deployment / namespace / service detail
  *
  * Pan / zoom: the diagram supports wheel-zoom (centered on cursor) and
  * click-drag-pan (from empty SVG space — node hover still works). Floating
@@ -176,8 +178,15 @@ export function App() {
     // can still pan/zoom for dense or long-labeled clusters. Below ~15 items
     // this stays at the base 180.
     const ring1Radius = Math.max(180, Math.ceil((ring1Total * 60) / ((3 * Math.PI) / 2)));
-    const svgW = Math.max(600, ring1Radius * 2 + 120);
-    const svgH = Math.max(520, ring1Radius * 2 + 140);
+
+    const downstream = data.downstream_services || [];
+    const hasRing2 = downstream.length > 0;
+    const ring2Gap = 85;
+    const ring2Radius = hasRing2 ? ring1Radius + ring2Gap : ring1Radius;
+    const outerRadius = ring2Radius;
+
+    const svgW = Math.max(600, outerRadius * 2 + 140);
+    const svgH = Math.max(520, outerRadius * 2 + 160);
     const cx = svgW / 2;
     const cy = svgH / 2 + 10;
 
@@ -190,6 +199,17 @@ export function App() {
       isSpof: boolean;
       outage: boolean;
       details: string[];
+      namespace?: string;
+    }
+
+    interface Ring2Item {
+      x: number;
+      y: number;
+      r: number;
+      label: string;
+      namespace: string;
+      angle: number;
+      details: string[];
     }
 
     const ring1: RingItem[] = [];
@@ -199,6 +219,8 @@ export function App() {
     const startAngle = Math.PI / 4; // 45° (bottom-right start)
     const endAngle = 2 * Math.PI - Math.PI / 4; // 315° sweep, skipping right-side arc
     const sweep = endAngle - startAngle;
+
+    const ring1Angles: Array<{ angle: number; namespace: string }> = [];
 
     fullOutage.forEach((dep, i) => {
       const t = ring1Total > 1 ? i / (ring1Total - 1) : 0.5;
@@ -212,6 +234,7 @@ export function App() {
         label: dep.deployment,
         isSpof: dep.pods_total === 1,
         outage: true,
+        namespace: dep.namespace,
         details: [
           `Namespace: ${dep.namespace}`,
           `Pods lost: ${dep.pods_on_node} of ${dep.pods_total}`,
@@ -220,6 +243,7 @@ export function App() {
           dep.pods_total === 1 ? "Single replica — SPOF" : "",
         ].filter(Boolean),
       });
+      ring1Angles.push({ angle, namespace: dep.namespace });
     });
 
     degraded.forEach((dep, i) => {
@@ -235,6 +259,7 @@ export function App() {
         label: dep.deployment,
         isSpof: false,
         outage: false,
+        namespace: dep.namespace,
         details: [
           `Namespace: ${dep.namespace}`,
           `Pods lost: ${dep.pods_on_node} of ${dep.pods_total}`,
@@ -242,6 +267,7 @@ export function App() {
           `Memory: ${dep.memory}`,
         ],
       });
+      ring1Angles.push({ angle, namespace: dep.namespace });
     });
 
     const edgesR1 = ring1.map((item) => ({
@@ -251,6 +277,75 @@ export function App() {
       y2: item.y,
       outage: item.outage,
     }));
+
+    const ring2: Ring2Item[] = [];
+    const edgesR2: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+
+    if (hasRing2) {
+      // Group services by namespace; deduplicate (service, namespace) pairs.
+      const svcByNs = new Map<string, Set<string>>();
+      for (const svc of downstream) {
+        if (!svc.service || !svc.namespace) continue;
+        if (!svcByNs.has(svc.namespace)) svcByNs.set(svc.namespace, new Set());
+        svcByNs.get(svc.namespace)!.add(svc.service);
+      }
+
+      // For each namespace, find centroid angle of its ring1 members and
+      // distribute its services in a small arc on ring 2 around that centroid.
+      // When a namespace has no ring1 member (shouldn't happen but defensive),
+      // fall back to an evenly-distributed slot.
+      const namespaces = Array.from(svcByNs.keys());
+      namespaces.forEach((ns, nsIdx) => {
+        const services = Array.from(svcByNs.get(ns)!);
+        const anglesForNs = ring1Angles.filter((a) => a.namespace === ns).map((a) => a.angle);
+
+        let centroidAngle: number;
+        if (anglesForNs.length) {
+          // Circular mean — avoids the wraparound bug when angles straddle 0/2π.
+          const sinSum = anglesForNs.reduce((s, a) => s + Math.sin(a), 0);
+          const cosSum = anglesForNs.reduce((s, a) => s + Math.cos(a), 0);
+          centroidAngle = Math.atan2(sinSum, cosSum);
+        } else {
+          centroidAngle = startAngle + (nsIdx / Math.max(1, namespaces.length - 1)) * sweep + Math.PI / 2;
+        }
+
+        // Arc width scales with service count but caps at 40° so a service-heavy
+        // namespace doesn't swallow the whole ring.
+        const arcSpan = Math.min((Math.PI / 180) * 40, Math.max((Math.PI / 180) * 6, services.length * 0.06));
+        const arcStart = centroidAngle - arcSpan / 2;
+        const step = services.length > 1 ? arcSpan / (services.length - 1) : 0;
+
+        services.forEach((svc, sIdx) => {
+          const angle = services.length > 1 ? arcStart + sIdx * step : centroidAngle;
+          const pos = polarToXY(cx, cy, ring2Radius, angle);
+          ring2.push({
+            ...pos,
+            r: 5,
+            label: svc,
+            namespace: ns,
+            angle,
+            details: [`Namespace: ${ns}`, "User-facing service (APM)"],
+          });
+        });
+      });
+
+      // Faint connector: each ring1 deployment → its namespace's service cluster
+      // centroid on ring 2. Keeps edge count low and visually ties the two rings
+      // together without fan-out clutter.
+      const ring2CentroidByNs = new Map<string, { x: number; y: number }>();
+      for (const ns of namespaces) {
+        const items = ring2.filter((r) => r.namespace === ns);
+        if (!items.length) continue;
+        const sumX = items.reduce((s, it) => s + it.x, 0);
+        const sumY = items.reduce((s, it) => s + it.y, 0);
+        ring2CentroidByNs.set(ns, { x: sumX / items.length, y: sumY / items.length });
+      }
+      for (const item of ring1) {
+        const centroid = item.namespace ? ring2CentroidByNs.get(item.namespace) : undefined;
+        if (!centroid) continue;
+        edgesR2.push({ x1: item.x, y1: item.y, x2: centroid.x, y2: centroid.y });
+      }
+    }
 
     // Safe-zone arc — a filled green arc on the right side indicating the
     // portion of the cluster that survives this node failure. Width is
@@ -262,14 +357,30 @@ export function App() {
     const arcSweepDeg = Math.min(100, Math.max(40, safeFrac * 180));
     const arcStartAngle = -arcSweepDeg / 2; // right side
     const arcEndAngle = arcSweepDeg / 2;
-    const arcR = ring1Radius + 20;
+    const arcR = outerRadius + 20;
 
     const arcStart = polarToXY(cx, cy, arcR, (arcStartAngle * Math.PI) / 180);
     const arcEnd = polarToXY(cx, cy, arcR, (arcEndAngle * Math.PI) / 180);
     const large = arcSweepDeg > 180 ? 1 : 0;
     const safeArcPath = `M ${arcStart.x.toFixed(1)} ${arcStart.y.toFixed(1)} A ${arcR} ${arcR} 0 ${large} 1 ${arcEnd.x.toFixed(1)} ${arcEnd.y.toFixed(1)}`;
 
-    return { svgW, svgH, cx, cy, ring1Radius, ring1, edgesR1, safeArcPath, safeFrac };
+    return {
+      svgW,
+      svgH,
+      cx,
+      cy,
+      ring1Radius,
+      ring2Radius,
+      hasRing2,
+      ring1,
+      ring2,
+      edgesR1,
+      edgesR2,
+      safeArcPath,
+      safeFrac,
+      arcR,
+      downstreamCount: downstream.length,
+    };
   }, [data]);
 
   const panZoom = usePanZoom({
@@ -304,7 +415,7 @@ export function App() {
 
   if (!layout) return null;
 
-  const { svgW, svgH, cx, cy, ring1, edgesR1, safeArcPath } = layout;
+  const { svgW, svgH, cx, cy, ring1, ring2, edgesR1, edgesR2, safeArcPath, hasRing2, ring2Radius, arcR, downstreamCount } = layout;
   const status = statusStyle(data.status);
   const resched = data.rescheduling;
   const reschedFeasible = resched.feasible;
@@ -369,7 +480,7 @@ export function App() {
             </filter>
           </defs>
 
-          {/* Ring guide */}
+          {/* Ring 1 guide */}
           <circle
             cx={cx}
             cy={cy}
@@ -381,6 +492,20 @@ export function App() {
             opacity={0.4}
           />
 
+          {/* Ring 2 guide (downstream services) */}
+          {hasRing2 && (
+            <circle
+              cx={cx}
+              cy={cy}
+              r={ring2Radius}
+              fill="none"
+              stroke={theme.blue}
+              strokeWidth={1}
+              strokeDasharray="2 6"
+              opacity={0.25}
+            />
+          )}
+
           {/* Safe-zone arc (green, right-side) */}
           <path
             d={safeArcPath}
@@ -391,7 +516,7 @@ export function App() {
             opacity={0.8}
           />
           <text
-            x={cx + layout.ring1Radius + 40}
+            x={cx + arcR + 20}
             y={cy - 4}
             textAnchor="middle"
             fill={theme.greenSoft}
@@ -402,7 +527,7 @@ export function App() {
             safe
           </text>
           <text
-            x={cx + layout.ring1Radius + 40}
+            x={cx + arcR + 20}
             y={cy + 10}
             textAnchor="middle"
             fill={theme.greenSoft}
@@ -412,7 +537,7 @@ export function App() {
             {data.unaffected_count} unaffected
           </text>
 
-          {/* Edges */}
+          {/* Ring 1 edges (center → affected deployment) */}
           {edgesR1.map((edge, i) => (
             <line
               key={i}
@@ -426,6 +551,60 @@ export function App() {
               opacity={0.45}
             />
           ))}
+
+          {/* Ring 2 edges (affected deployment → namespace service cluster) */}
+          {hasRing2 && edgesR2.map((edge, i) => (
+            <line
+              key={`r2-${i}`}
+              x1={edge.x1}
+              y1={edge.y1}
+              x2={edge.x2}
+              y2={edge.y2}
+              stroke={theme.blue}
+              strokeWidth={1}
+              strokeDasharray="2 4"
+              opacity={0.3}
+            />
+          ))}
+
+          {/* Ring 2 nodes (downstream services) */}
+          {hasRing2 && ring2.map((item, i) => {
+            // Label angle: rotate so labels read outward-radially around the
+            // circle. Keep labels upright on the bottom half by flipping >90°.
+            const deg = (item.angle * 180) / Math.PI;
+            const normDeg = ((deg % 360) + 360) % 360;
+            const labelOffset = 10;
+            const labelPos = polarToXY(cx, cy, ring2Radius + labelOffset, item.angle);
+            const textAnchor = normDeg > 90 && normDeg < 270 ? "end" : "start";
+            return (
+              <g
+                key={`r2n-${i}`}
+                onMouseMove={(e) => handleHover(e, item.label, item.details)}
+                onMouseLeave={clearHover}
+                style={{ cursor: "pointer" }}
+              >
+                <circle
+                  cx={item.x}
+                  cy={item.y}
+                  r={item.r}
+                  fill={`${theme.blue}30`}
+                  stroke={theme.blue}
+                  strokeWidth={1.5}
+                />
+                <text
+                  x={labelPos.x}
+                  y={labelPos.y + 3}
+                  textAnchor={textAnchor}
+                  fill={theme.blue}
+                  fontSize={8}
+                  fontFamily="'JetBrains Mono', monospace"
+                  opacity={0.9}
+                >
+                  {truncate(item.label, 14)}
+                </text>
+              </g>
+            );
+          })}
 
           {/* Ring 1 nodes */}
           {ring1.map((item, i) => (
@@ -555,6 +734,9 @@ export function App() {
           <SummaryRow color={theme.greenSoft} value={data.unaffected_count} label="deployments" sub="unaffected" />
           <div style={{ height: 1, background: theme.border, margin: "8px 0" }} />
           <SummaryRow color={theme.redSoft} value={data.pods_at_risk} label="pods at risk" />
+          {hasRing2 && (
+            <SummaryRow color={theme.blue} value={downstreamCount} label="downstream services" sub="user-facing" />
+          )}
           <div style={{ marginTop: 8, fontSize: 11, color: theme.textMuted, display: "flex", gap: 6, alignItems: "center" }}>
             <span>rescheduling:</span>
             <span style={{ color: reschedColor, fontWeight: 600 }}>
