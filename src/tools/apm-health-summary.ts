@@ -13,7 +13,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import fs from "fs";
-import { executeEsql, rowsFromEsql } from "../elastic/esql.js";
+import { safeEsqlRows } from "../elastic/esql.js";
 import { esRequest } from "../elastic/client.js";
 import { mlAnomalyIndicesExist } from "../elastic/ml.js";
 import { resolveViewPath } from "./view-path.js";
@@ -33,17 +33,17 @@ interface PodRow {
   avg_cpu_cores: number;
 }
 
-async function queryServiceTransactionRollup(lookback: string): Promise<ServiceRow[]> {
-  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS total = COUNT(*) BY service.name | SORT total DESC | LIMIT 30`;
-  try {
-    const res = await executeEsql(esql);
-    const rows = rowsFromEsql<{ "service.name"?: string; total?: number }>(res);
-    return rows
-      .filter((r) => !!r["service.name"])
-      .map((r) => ({ service: r["service.name"]!, throughput: r.total || 0 }));
-  } catch {
-    return [];
-  }
+async function queryServiceTransactionRollup(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<ServiceRow[]> {
+  const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS total = COUNT(*) BY service.name | SORT total DESC | LIMIT 30`;
+  const rows = await safeEsqlRows<{ "service.name"?: string; total?: number }>(esql, errors);
+  return rows
+    .filter((r) => !!r["service.name"])
+    .map((r) => ({ service: r["service.name"]!, throughput: r.total || 0 }));
 }
 
 interface ResolvedNamespace {
@@ -54,90 +54,88 @@ interface ResolvedNamespace {
 
 async function resolveNamespace(
   requested: string | undefined,
-  lookback: string
+  lookback: string,
+  errors: string[]
 ): Promise<ResolvedNamespace> {
   if (!requested) return {};
   const esql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
-  try {
-    const res = await executeEsql(esql);
-    const rows = rowsFromEsql<{ "k8s.namespace.name"?: string }>(res);
-    const names = rows
-      .map((r) => r["k8s.namespace.name"])
-      .filter((n): n is string => !!n);
-    if (!names.length) return {};
-    if (names.includes(requested)) return { resolved: requested };
-    const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
-    const target = norm(requested);
-    const prefix = names.find((n) => norm(n).startsWith(target));
-    if (prefix) {
-      return {
-        resolved: prefix,
-        note: `Resolved namespace "${requested}" → "${prefix}" (prefix match).`,
-      };
-    }
-    const substr = names.find((n) => norm(n).includes(target));
-    if (substr) {
-      return {
-        resolved: substr,
-        note: `Resolved namespace "${requested}" → "${substr}" (fuzzy match).`,
-      };
-    }
+  const rows = await safeEsqlRows<{ "k8s.namespace.name"?: string }>(esql, errors);
+  const names = rows
+    .map((r) => r["k8s.namespace.name"])
+    .filter((n): n is string => !!n);
+  if (!names.length) return {};
+  if (names.includes(requested)) return { resolved: requested };
+  const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
+  const target = norm(requested);
+  const prefix = names.find((n) => norm(n).startsWith(target));
+  if (prefix) {
     return {
-      note: `Namespace "${requested}" not found in recent telemetry.`,
-      candidates: names.slice(0, 8),
+      resolved: prefix,
+      note: `Resolved namespace "${requested}" → "${prefix}" (prefix match).`,
     };
-  } catch {
-    return {};
   }
+  const substr = names.find((n) => norm(n).includes(target));
+  if (substr) {
+    return {
+      resolved: substr,
+      note: `Resolved namespace "${requested}" → "${substr}" (fuzzy match).`,
+    };
+  }
+  return {
+    note: `Namespace "${requested}" not found in recent telemetry.`,
+    candidates: names.slice(0, 8),
+  };
 }
 
-async function queryServiceTraces(namespace: string | undefined, lookback: string): Promise<ServiceRow[]> {
+async function queryServiceTraces(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<ServiceRow[]> {
   const nsFilter = namespace
     ? `| WHERE k8s.namespace.name == "${namespace}" `
     : "";
   const esql = `FROM traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
-  try {
-    const res = await executeEsql(esql);
-    const rows = rowsFromEsql<{ "service.name"?: string; total_count?: number }>(res);
-    return rows
-      .filter((r) => !!r["service.name"])
-      .map((r) => ({
-        service: r["service.name"]!,
-        throughput: r.total_count || 0,
-      }));
-  } catch {
-    return [];
-  }
+  const rows = await safeEsqlRows<{ "service.name"?: string; total_count?: number }>(esql, errors);
+  return rows
+    .filter((r) => !!r["service.name"])
+    .map((r) => ({
+      service: r["service.name"]!,
+      throughput: r.total_count || 0,
+    }));
 }
 
-async function queryServices(namespace: string | undefined, lookback: string): Promise<ServiceRow[]> {
-  const rollup = await queryServiceTransactionRollup(lookback);
+async function queryServices(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<ServiceRow[]> {
+  const rollup = await queryServiceTransactionRollup(namespace, lookback, errors);
   if (rollup.length) return rollup;
-  return queryServiceTraces(namespace, lookback);
+  return queryServiceTraces(namespace, lookback, errors);
 }
 
-async function queryPodResources(namespace: string | undefined, lookback: string): Promise<PodRow[]> {
+async function queryPodResources(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<PodRow[]> {
   const nsFilter = namespace
     ? `| WHERE k8s.namespace.name == "${namespace}" `
     : "";
   const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS avg_mem = AVG(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
-  try {
-    const res = await executeEsql(esql);
-    const rows = rowsFromEsql<{
-      "k8s.pod.name"?: string;
-      avg_mem?: number;
-      avg_cpu?: number;
-    }>(res);
-    return rows
-      .filter((r) => !!r["k8s.pod.name"])
-      .map((r) => ({
-        pod: r["k8s.pod.name"]!,
-        avg_memory_mb: Math.round(((r.avg_mem || 0) / (1024 * 1024)) * 10) / 10,
-        avg_cpu_cores: Math.round((r.avg_cpu || 0) * 1000) / 1000,
-      }));
-  } catch {
-    return [];
-  }
+  const rows = await safeEsqlRows<{
+    "k8s.pod.name"?: string;
+    avg_mem?: number;
+    avg_cpu?: number;
+  }>(esql, errors);
+  return rows
+    .filter((r) => !!r["k8s.pod.name"])
+    .map((r) => ({
+      pod: r["k8s.pod.name"]!,
+      avg_memory_mb: Math.round(((r.avg_mem || 0) / (1024 * 1024)) * 10) / 10,
+      avg_cpu_cores: Math.round((r.avg_cpu || 0) * 1000) / 1000,
+    }));
 }
 
 interface AnomalyRollup {
@@ -353,11 +351,12 @@ export function registerApmHealthSummaryTool(server: McpServer) {
     },
     async ({ namespace, lookback, job_filter, exclude_entities }) => {
       const lb = lookback || "15m";
-      const nsResolution = await resolveNamespace(namespace, lb);
+      const queryErrors: string[] = [];
+      const nsResolution = await resolveNamespace(namespace, lb, queryErrors);
       const effectiveNs = nsResolution.resolved ?? namespace;
       const [services, pods, anomalies] = await Promise.all([
-        queryServices(effectiveNs, lb),
-        queryPodResources(effectiveNs, lb),
+        queryServices(effectiveNs, lb, queryErrors),
+        queryPodResources(effectiveNs, lb, queryErrors),
         queryActiveAnomalies(effectiveNs, job_filter, exclude_entities),
       ]);
 
@@ -445,6 +444,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         });
       }
       if (actions.length) result.investigation_actions = actions;
+      if (queryErrors.length) result._query_errors = queryErrors;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

@@ -13,7 +13,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import fs from "fs";
-import { executeEsql, rowsFromEsql } from "../elastic/esql.js";
+import { safeEsqlRows } from "../elastic/esql.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://apm-service-dependencies/mcp-app.html";
@@ -77,18 +77,13 @@ function parseDestination(resource: string): {
   return { raw: resource, protocol, target_service: target, port };
 }
 
-async function runEsql<T>(query: string): Promise<T[]> {
-  try {
-    const res = await executeEsql(query);
-    return rowsFromEsql<T>(res);
-  } catch {
-    return [];
-  }
-}
-
 // Map gRPC service FQN (e.g. "oteldemo.AdService") to the actual service.name
 // of the receiving service (e.g. "ad"), so edge targets and health data line up.
-async function fetchTargetResolution(lb: string, nsFilter: string): Promise<Map<string, string>> {
+async function fetchTargetResolution(
+  lb: string,
+  nsFilter: string,
+  errors: string[]
+): Promise<Map<string, string>> {
   const query = `
 FROM traces-*.otel-*
 | WHERE @timestamp > NOW() - ${lb}
@@ -99,7 +94,7 @@ FROM traces-*.otel-*
 | SORT cnt DESC
 | LIMIT 500
 `;
-  const rows = await runEsql<ResolutionRow>(query);
+  const rows = await safeEsqlRows<ResolutionRow>(query, errors);
   const best = new Map<string, { serviceName: string; count: number }>();
   for (const row of rows) {
     const rpc = row["rpc.service"];
@@ -116,7 +111,11 @@ FROM traces-*.otel-*
   return out;
 }
 
-async function fetchHealth(lb: string, nsFilter: string): Promise<HealthRow[]> {
+async function fetchHealth(
+  lb: string,
+  nsFilter: string,
+  errors: string[]
+): Promise<HealthRow[]> {
   const summaryQuery = `
 FROM metrics-service_summary.1m.otel-*
 | WHERE @timestamp > NOW() - ${lb}
@@ -138,8 +137,8 @@ FROM metrics-service_transaction.1m.otel-*
 `;
 
   const [summaryRows, txnRows] = await Promise.all([
-    runEsql<HealthRow>(summaryQuery),
-    runEsql<HealthRow>(txnQuery),
+    safeEsqlRows<HealthRow>(summaryQuery, errors),
+    safeEsqlRows<HealthRow>(txnQuery, errors),
   ]);
 
   if (summaryRows.length || txnRows.length) {
@@ -173,7 +172,7 @@ FROM traces-*.otel-*
   BY service.name
 | LIMIT 200
 `;
-  return runEsql<HealthRow>(tracesQuery);
+  return safeEsqlRows<HealthRow>(tracesQuery, errors);
 }
 
 export function registerApmServiceDependenciesTool(server: McpServer) {
@@ -243,11 +242,12 @@ FROM traces-*.otel-*
 | LIMIT 100
 `;
 
+      const queryErrors: string[] = [];
       const [edgeRows, healthRows, metadataRows, targetResolution] = await Promise.all([
-        runEsql<EdgeRow>(edgesQuery),
-        includeHealth ? fetchHealth(lb, nsFilter) : Promise.resolve([]),
-        runEsql<MetadataRow>(metadataQuery),
-        fetchTargetResolution(lb, nsFilter),
+        safeEsqlRows<EdgeRow>(edgesQuery, queryErrors),
+        includeHealth ? fetchHealth(lb, nsFilter, queryErrors) : Promise.resolve([]),
+        safeEsqlRows<MetadataRow>(metadataQuery, queryErrors),
+        fetchTargetResolution(lb, nsFilter, queryErrors),
       ]);
 
       if (!edgeRows.length) {
@@ -383,6 +383,7 @@ FROM traces-*.otel-*
       }
 
       result.filters = namespace ? { lookback: lb, namespace } : { lookback: lb };
+      if (queryErrors.length) result._query_errors = queryErrors;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

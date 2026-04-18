@@ -13,7 +13,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import fs from "fs";
-import { executeEsql, rowsFromEsql } from "../elastic/esql.js";
+import { safeEsqlRows } from "../elastic/esql.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://k8s-blast-radius/mcp-app.html";
@@ -25,14 +25,6 @@ function fmtBytes(b: number | null | undefined): string {
   return `${(b / 1_048_576).toFixed(0)} MB`;
 }
 
-async function runEsql<T>(query: string): Promise<T[]> {
-  try {
-    const res = await executeEsql(query);
-    return rowsFromEsql<T>(res);
-  } catch {
-    return [];
-  }
-}
 
 interface PodRow {
   deployment?: string | null;
@@ -118,18 +110,20 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
     remaining_node_count = COUNT(k8s.node.name)`;
 
       const apmQuery = `FROM traces-*.otel-*
-| WHERE k8s.namespace.name IS NOT NULL
+| WHERE @timestamp > NOW() - 1h
+  AND k8s.namespace.name IS NOT NULL
 | STATS service_count = COUNT(*)
     BY service.name, k8s.namespace.name, k8s.deployment.name
 | WHERE k8s.deployment.name IS NOT NULL
 | SORT service_count DESC
-| LIMIT 50`;
+| LIMIT 200`;
 
+      const queryErrors: string[] = [];
       const [podsOnNode, totalReplicas, clusterCapacity, apmServices] = await Promise.all([
-        runEsql<PodRow>(podsQuery),
-        runEsql<TotalRow>(totalsQuery),
-        runEsql<CapacityRow>(capacityQuery),
-        runEsql<ApmRow>(apmQuery),
+        safeEsqlRows<PodRow>(podsQuery, queryErrors),
+        safeEsqlRows<TotalRow>(totalsQuery, queryErrors),
+        safeEsqlRows<CapacityRow>(capacityQuery, queryErrors),
+        safeEsqlRows<ApmRow>(apmQuery, queryErrors),
       ]);
 
       if (!podsOnNode.length) {
@@ -263,6 +257,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
         prompt: "Use apm-health-summary to see overall namespace health and correlate with this blast radius.",
       });
       result.investigation_actions = actions;
+      if (queryErrors.length) result._query_errors = queryErrors;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

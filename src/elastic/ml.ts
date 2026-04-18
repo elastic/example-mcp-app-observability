@@ -143,10 +143,22 @@ export async function queryAnomalies(input: AnomalyQueryInput): Promise<AnomalyQ
 
   if (input.jobId) must.push({ term: { job_id: input.jobId } });
   if (input.entity) {
+    // influencers is a nested mapping — the wildcard must be inside a nested
+    // query or it silently matches nothing. The other three fields are
+    // top-level so they stay outside the nested wrapper.
     must.push({
       bool: {
         should: [
-          { wildcard: { "influencers.influencer_field_values": `*${input.entity}*` } },
+          {
+            nested: {
+              path: "influencers",
+              query: {
+                wildcard: {
+                  "influencers.influencer_field_values": `*${input.entity}*`,
+                },
+              },
+            },
+          },
           { wildcard: { partition_field_value: `*${input.entity}*` } },
           { wildcard: { by_field_value: `*${input.entity}*` } },
           { wildcard: { over_field_value: `*${input.entity}*` } },
