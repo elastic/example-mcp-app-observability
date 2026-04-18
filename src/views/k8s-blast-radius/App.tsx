@@ -13,6 +13,11 @@
  *   Ring 1:   full_outage + degraded deployments (direct impact)
  *   Safe arc: green arc on the right representing unaffected capacity
  *   Hover:    tooltip with deployment / namespace detail
+ *
+ * Pan / zoom: the diagram supports wheel-zoom (centered on cursor) and
+ * click-drag-pan (from empty SVG space — node hover still works). Floating
+ * zoom controls sit at the bottom-right. Pan/zoom state is local React state
+ * and resets on tool re-invocation (e.g. re-running for a different node).
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -24,7 +29,9 @@ import {
   InvestigationAction,
   TimeRangeHeader,
   BadgeTone,
+  ZoomControls,
 } from "@shared/components";
+import { usePanZoom } from "@shared/use-pan-zoom";
 
 interface Deployment {
   deployment: string;
@@ -159,15 +166,18 @@ export function App() {
   const layout = useMemo(() => {
     if (!data) return null;
 
-    const svgW = 600;
-    const svgH = 520;
-    const cx = svgW / 2;
-    const cy = svgH / 2 + 10;
-    const ring1Radius = 180;
-
     const fullOutage = data.full_outage || [];
     const degraded = data.degraded || [];
     const ring1Total = fullOutage.length + degraded.length;
+
+    // Scale radius + canvas when the ring gets crowded. Keep ~30px of angular
+    // slot per item (along the 270° sweep) so labels don't overlap. Above ~20
+    // items this grows the ring; below that we use the original 180.
+    const ring1Radius = Math.max(180, Math.ceil((ring1Total * 30) / ((3 * Math.PI) / 2)));
+    const svgW = Math.max(600, ring1Radius * 2 + 120);
+    const svgH = Math.max(520, ring1Radius * 2 + 140);
+    const cx = svgW / 2;
+    const cy = svgH / 2 + 10;
 
     interface RingItem {
       x: number;
@@ -260,12 +270,19 @@ export function App() {
     return { svgW, svgH, cx, cy, ring1Radius, ring1, edgesR1, safeArcPath, safeFrac };
   }, [data]);
 
+  const panZoom = usePanZoom({
+    baseW: layout?.svgW,
+    baseH: layout?.svgH,
+  });
+  const { viewBox, currentZoom, isDragging, svgRef, minZoom, maxZoom } = panZoom;
+
   const handleHover = useCallback((e: React.MouseEvent, name: string, details: string[]) => {
+    if (isDragging) return; // don't pop a tooltip while the user is panning
     const svg = (e.currentTarget as SVGElement).closest("svg");
     const rect = svg?.getBoundingClientRect();
     if (!rect) return;
     setTooltip({ x: e.clientX - rect.left, y: e.clientY - rect.top, name, details });
-  }, []);
+  }, [isDragging]);
   const clearHover = useCallback(() => setTooltip(null), []);
 
   if (error) {
@@ -302,11 +319,37 @@ export function App() {
       {/* SVG diagram */}
       <div style={{ position: "relative" }}>
         <svg
+          ref={svgRef}
           width="100%"
           height={svgH}
-          viewBox={`0 0 ${svgW} ${svgH}`}
-          style={{ display: "block", maxWidth: svgW }}
+          viewBox={
+            viewBox
+              ? `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`
+              : `0 0 ${svgW} ${svgH}`
+          }
+          style={{
+            display: "block",
+            maxWidth: svgW,
+            cursor: isDragging ? "grabbing" : "grab",
+            userSelect: "none",
+            touchAction: "none",
+          }}
+          {...panZoom.svgHandlers}
         >
+          {/* Transparent background captures pan-drag. Sits behind everything
+              but above the viewBox origin — so click on empty space pans, but
+              node circles receive their own mouse events first. */}
+          <rect
+            x={viewBox?.x ?? 0}
+            y={viewBox?.y ?? 0}
+            width={viewBox?.w ?? svgW}
+            height={viewBox?.h ?? svgH}
+            fill="transparent"
+            onMouseDown={(e) => {
+              setTooltip(null);
+              panZoom.bgHandlers.onMouseDown(e);
+            }}
+          />
           <defs>
             <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
               <feGaussianBlur stdDeviation="2" result="blur" />
@@ -519,6 +562,16 @@ export function App() {
         </div>
 
         {tooltip && <Tooltip info={tooltip} />}
+
+        <ZoomControls
+          currentZoom={currentZoom}
+          minZoom={minZoom}
+          maxZoom={maxZoom}
+          onZoomIn={() => panZoom.applyZoom(1.25)}
+          onZoomOut={() => panZoom.applyZoom(1 / 1.25)}
+          onReset={panZoom.resetView}
+          isDragging={isDragging}
+        />
       </div>
 
       {/* Rescheduling detail + actions */}

@@ -19,7 +19,9 @@ import {
   InvestigationAction,
   TimeRangeHeader,
   RerunContext,
+  ZoomControls,
 } from "@shared/components";
+import { usePanZoom } from "@shared/use-pan-zoom";
 
 interface ServiceHealth {
   span_count: number;
@@ -369,12 +371,14 @@ function NodeCard({
   dimmed,
   isHovered,
   onHover,
+  onMove,
   onLeave,
 }: {
   node: LayoutNode;
   dimmed: boolean;
   isHovered: boolean;
-  onHover: () => void;
+  onHover: (e: React.MouseEvent) => void;
+  onMove: (e: React.MouseEvent) => void;
   onLeave: () => void;
 }) {
   const color = roleColor(node.svc.role);
@@ -386,6 +390,7 @@ function NodeCard({
         // @ts-expect-error xmlns needed for foreignObject
         xmlns="http://www.w3.org/1999/xhtml"
         onMouseEnter={onHover}
+        onMouseMove={onMove}
         onMouseLeave={onLeave}
         style={{
           width: NODE_W,
@@ -510,6 +515,7 @@ export function App() {
   const [data, setData] = useState<DepData | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
+  const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
 
   const { isConnected, error } = useApp({
@@ -530,6 +536,11 @@ export function App() {
     if (!data) return null;
     return computeLayout(data.services, data.edges);
   }, [data]);
+
+  const panZoom = usePanZoom({
+    baseW: layout?.svgW,
+    baseH: layout?.svgH,
+  });
 
   const connected = useMemo(() => {
     if (!hovered || !data) return null;
@@ -555,20 +566,78 @@ export function App() {
     return { roots, leaves, withHealth, unhealthy };
   }, [data]);
 
-  const handleEdgeHover = useCallback((e: React.MouseEvent, edge: Edge) => {
-    const rect = (e.currentTarget as SVGElement).closest("svg")?.getBoundingClientRect();
-    if (!rect) return;
-    const lines = [
-      `${edge.source} \u2192 ${edge.target}`,
-      `${formatCount(edge.call_count)} calls`,
-    ];
-    if (edge.avg_latency_us) lines.push(`Avg latency: ${formatDuration(edge.avg_latency_us)}`);
-    if (edge.protocol) lines.push(`Protocol: ${edge.protocol}`);
-    if (edge.port) lines.push(`Port: ${edge.port}`);
-    setEdgeTooltip({ x: e.clientX - rect.left, y: e.clientY - rect.top, lines });
-  }, []);
+  const isDragging = panZoom.isDragging;
+
+  const handleEdgeHover = useCallback(
+    (e: React.MouseEvent, edge: Edge) => {
+      if (isDragging) return;
+      const rect = (e.currentTarget as SVGElement).closest("svg")?.getBoundingClientRect();
+      if (!rect) return;
+      const lines = [
+        `${edge.source} \u2192 ${edge.target}`,
+        `${formatCount(edge.call_count)} calls`,
+      ];
+      if (edge.avg_latency_us) lines.push(`Avg latency: ${formatDuration(edge.avg_latency_us)}`);
+      if (edge.protocol) lines.push(`Protocol: ${edge.protocol}`);
+      if (edge.port) lines.push(`Port: ${edge.port}`);
+      setEdgeTooltip({ x: e.clientX - rect.left, y: e.clientY - rect.top, lines });
+    },
+    [isDragging]
+  );
 
   const clearEdgeTooltip = useCallback(() => setEdgeTooltip(null), []);
+
+  const handleNodeHover = useCallback(
+    (e: React.MouseEvent, node: LayoutNode) => {
+      if (isDragging) return;
+      const svg = (e.currentTarget as HTMLElement).closest("svg");
+      const rect = svg?.getBoundingClientRect();
+      if (!rect) return;
+
+      const svc = node.svc;
+      const lines: string[] = [svc.name];
+
+      const roleParts: string[] = [svc.role];
+      if (svc.language) roleParts.push(svc.language);
+      lines.push(roleParts.join(" · "));
+
+      if (svc.deployment || svc.namespace) {
+        const k8s: string[] = [];
+        if (svc.deployment) k8s.push(`deploy: ${svc.deployment}`);
+        if (svc.namespace) k8s.push(`ns: ${svc.namespace}`);
+        lines.push(k8s.join(" · "));
+      }
+
+      if (svc.health) {
+        const h = svc.health;
+        const total = h.span_count;
+        const err = h.error_count ?? 0;
+        const rate = total > 0 ? (err / total) * 100 : 0;
+        lines.push(`spans: ${formatCount(total)}`);
+        if (total > 0) {
+          lines.push(`errors: ${formatCount(err)} (${rate.toFixed(2)}%)`);
+        }
+        if (h.avg_duration_us != null) {
+          const durParts = [`avg: ${formatDuration(h.avg_duration_us)}`];
+          if (h.p99_duration_us != null) durParts.push(`p99: ${formatDuration(h.p99_duration_us)}`);
+          lines.push(durParts.join(" · "));
+        }
+      } else {
+        lines.push("no trace data");
+      }
+
+      if (data) {
+        const upstream = data.edges.filter((edg) => edg.target === svc.name);
+        const downstream = data.edges.filter((edg) => edg.source === svc.name);
+        lines.push(`upstream: ${upstream.length} · downstream: ${downstream.length}`);
+      }
+
+      setNodeTooltip({ x: e.clientX - rect.left, y: e.clientY - rect.top, lines });
+    },
+    [isDragging, data]
+  );
+
+  const clearNodeTooltip = useCallback(() => setNodeTooltip(null), []);
 
   if (error) {
     return <div style={{ padding: 16, color: theme.red, fontSize: 12 }}>Error: {error.message}</div>;
@@ -674,12 +743,24 @@ export function App() {
         )}
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "8px 14px", position: "relative" }}>
+      <div style={{ flex: 1, overflow: "hidden", padding: "8px 14px", position: "relative" }}>
         <svg
+          ref={panZoom.svgRef}
           width="100%"
-          height={svgH}
-          viewBox={`0 0 ${svgW} ${svgH}`}
-          style={{ display: "block", margin: "0 auto", maxWidth: svgW }}
+          height="100%"
+          viewBox={
+            panZoom.viewBox
+              ? `${panZoom.viewBox.x} ${panZoom.viewBox.y} ${panZoom.viewBox.w} ${panZoom.viewBox.h}`
+              : `0 0 ${svgW} ${svgH}`
+          }
+          preserveAspectRatio="xMidYMid meet"
+          {...panZoom.svgHandlers}
+          style={{
+            display: "block",
+            cursor: isDragging ? "grabbing" : "grab",
+            userSelect: "none",
+            touchAction: "none",
+          }}
         >
           <defs>
             <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -690,6 +771,20 @@ export function App() {
               </feMerge>
             </filter>
           </defs>
+
+          <rect
+            x={0}
+            y={0}
+            width={svgW}
+            height={svgH}
+            fill="transparent"
+            onMouseDown={(e) => {
+              setEdgeTooltip(null);
+              setNodeTooltip(null);
+              setHovered(null);
+              panZoom.bgHandlers.onMouseDown(e);
+            }}
+          />
 
           {data.edges.map((edge, i) => {
             const src = nodeMap.get(edge.source);
@@ -719,14 +814,35 @@ export function App() {
                 node={node}
                 dimmed={dim}
                 isHovered={isHov}
-                onHover={() => setHovered(node.name)}
-                onLeave={() => setHovered(null)}
+                onHover={(e) => {
+                  if (isDragging) return;
+                  setHovered(node.name);
+                  handleNodeHover(e, node);
+                }}
+                onMove={(e) => {
+                  if (!isDragging) handleNodeHover(e, node);
+                }}
+                onLeave={() => {
+                  setHovered(null);
+                  clearNodeTooltip();
+                }}
               />
             );
           })}
         </svg>
 
         {edgeTooltip && <Tooltip info={edgeTooltip} />}
+        {nodeTooltip && !edgeTooltip && <Tooltip info={nodeTooltip} />}
+
+        <ZoomControls
+          currentZoom={panZoom.currentZoom}
+          minZoom={panZoom.minZoom}
+          maxZoom={panZoom.maxZoom}
+          onZoomIn={() => panZoom.applyZoom(1.25)}
+          onZoomOut={() => panZoom.applyZoom(1 / 1.25)}
+          onReset={panZoom.resetView}
+          isDragging={isDragging}
+        />
       </div>
 
       <div

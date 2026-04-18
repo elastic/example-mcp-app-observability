@@ -569,3 +569,119 @@ export function KVRow({ label, value }: { label: string; value: React.ReactNode 
     </div>
   );
 }
+
+// ── Pan/zoom overlay controls — shared across SVG-diagram views ────────────
+//
+// Usage: pair with `usePanZoom`. Place inside the same `position: relative`
+// wrapper as the <svg>. Renders a compact floating panel (bottom-right) with
+// zoom-in / zoom-out / reset buttons and a current-zoom readout, plus a faint
+// "drag to pan · wheel to zoom" hint in the opposite corner that fades out
+// once the user has interacted.
+
+export function ZoomControls({
+  currentZoom,
+  minZoom,
+  maxZoom,
+  onZoomIn,
+  onZoomOut,
+  onReset,
+  isDragging,
+}: {
+  currentZoom: number;
+  minZoom: number;
+  maxZoom: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onReset: () => void;
+  isDragging: boolean;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          position: "absolute",
+          bottom: 10,
+          right: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          background: `${theme.bgSecondary}ee`,
+          border: `1px solid ${theme.borderStrong}`,
+          borderRadius: 6,
+          padding: 4,
+          backdropFilter: "blur(4px)",
+          zIndex: 10,
+        }}
+      >
+        <ZoomButton onClick={onZoomIn} disabled={currentZoom >= maxZoom - 1e-3} label="+" title="Zoom in" />
+        <ZoomButton onClick={onZoomOut} disabled={currentZoom <= minZoom + 1e-3} label="−" title="Zoom out" />
+        <ZoomButton onClick={onReset} label="⟲" title="Reset view" />
+        <div
+          style={{
+            fontSize: 9,
+            color: theme.textDim,
+            textAlign: "center",
+            fontFamily: "'JetBrains Mono', monospace",
+            marginTop: 2,
+          }}
+        >
+          {currentZoom.toFixed(1)}×
+        </div>
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          bottom: 10,
+          left: 10,
+          fontSize: 10,
+          color: theme.textDim,
+          fontFamily: "'JetBrains Mono', monospace",
+          pointerEvents: "none",
+          opacity: Math.abs(currentZoom - 1) < 0.01 && !isDragging ? 0.6 : 0,
+          transition: "opacity 200ms",
+          zIndex: 10,
+        }}
+      >
+        drag to pan · wheel to zoom
+      </div>
+    </>
+  );
+}
+
+function ZoomButton({
+  onClick,
+  disabled,
+  label,
+  title,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  label: string;
+  title: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        width: 26,
+        height: 26,
+        background: "transparent",
+        color: disabled ? theme.textDim : theme.text,
+        border: `1px solid ${theme.border}`,
+        borderRadius: 4,
+        cursor: disabled ? "default" : "pointer",
+        fontSize: 14,
+        fontWeight: 600,
+        lineHeight: 1,
+        padding: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      {label}
+    </button>
+  );
+}

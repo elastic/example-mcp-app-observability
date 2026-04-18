@@ -342,7 +342,10 @@ export function registerWatchTool(server: McpServer) {
         esql: z.string().optional().describe(
           "[Metric mode] ES|QL query to poll — first numeric column of first row is evaluated. Construct from context, " +
           "e.g. `FROM metrics-* | WHERE host.name == \"foo\" | STATS v = AVG(system.memory.used.bytes)`. Should " +
-          "return a single row with the current value."
+          "return a single row with the current value. IMPORTANT: for sampled gauge metrics (memory, cpu, latency), " +
+          "use AVG/MAX/MIN — NEVER SUM, because SUM multiplies the current value by the number of samples in the " +
+          "window. Reserve SUM for pre-aggregated counters (e.g. transaction counts in 1-minute rollup indices) or " +
+          "when you want a real cumulative total across entities."
         ),
         condition: z.string().optional().describe(
           "[Metric mode] Optional condition '<comparator> <threshold>'. Examples: '< 80000000' (watch for memory to " +

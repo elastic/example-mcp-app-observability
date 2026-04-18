@@ -82,37 +82,50 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
     async ({ node }) => {
+      // Memory queries use a two-level STATS: first collapse each pod / node's
+      // time samples to an AVG (typical usage over the window), then SUM across
+      // pods / nodes. Without this, SUM(working_set) multiplies usage by the
+      // number of ingested samples (kubeletstats emits every ~15s). A 10-minute
+      // time bound keeps the window tight enough that AVG reflects current state.
       const podsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE k8s.node.name == "${node}"
+| WHERE @timestamp > NOW() - 10 minutes
+  AND k8s.node.name == "${node}"
   AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
-    replica_count = COUNT_DISTINCT(k8s.pod.name),
-    memory_bytes = SUM(metrics.k8s.pod.memory.working_set)
-  BY deployment = k8s.deployment.name, namespace = k8s.namespace.name
+    pod_memory_bytes = AVG(metrics.k8s.pod.memory.working_set)
+  BY k8s.pod.name, deployment = k8s.deployment.name, namespace = k8s.namespace.name
+| STATS
+    replica_count = COUNT(k8s.pod.name),
+    memory_bytes = SUM(pod_memory_bytes)
+  BY deployment, namespace
 | WHERE deployment IS NOT NULL
 | SORT replica_count DESC`;
 
       const totalsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE k8s.pod.name IS NOT NULL
+| WHERE @timestamp > NOW() - 10 minutes
+  AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
-    total_replicas = COUNT_DISTINCT(k8s.pod.name),
-    total_memory_bytes = SUM(metrics.k8s.pod.memory.working_set)
-  BY deployment = k8s.deployment.name, namespace = k8s.namespace.name
+    pod_memory_bytes = AVG(metrics.k8s.pod.memory.working_set)
+  BY k8s.pod.name, deployment = k8s.deployment.name, namespace = k8s.namespace.name
+| STATS
+    total_replicas = COUNT(k8s.pod.name),
+    total_memory_bytes = SUM(pod_memory_bytes)
+  BY deployment, namespace
 | WHERE deployment IS NOT NULL
 | SORT total_replicas DESC`;
 
       const capacityQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE k8s.node.name IS NOT NULL
+| WHERE @timestamp > NOW() - 10 minutes
+  AND k8s.node.name IS NOT NULL
   AND k8s.node.name != "${node}"
   AND metrics.k8s.node.memory.available IS NOT NULL
 | STATS
-    available_memory_bytes = SUM(metrics.k8s.node.memory.available),
-    node_count = COUNT_DISTINCT(k8s.node.name)
+    node_memory_bytes = AVG(metrics.k8s.node.memory.available)
   BY k8s.node.name
 | STATS
-    total_available_memory_bytes = SUM(available_memory_bytes),
+    total_available_memory_bytes = SUM(node_memory_bytes),
     remaining_node_count = COUNT(k8s.node.name)`;
 
       const apmQuery = `FROM traces-*.otel-*

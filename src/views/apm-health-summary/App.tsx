@@ -10,11 +10,15 @@
  *   Header:      namespace · lookback · filter   [status badge]
  *   Stat grid:   total pods · services · degraded services · active anomalies
  *   Section:     anomaly breakdown (per-severity count tiles + donut)
- *   Section:     top pods by memory (HBarRow list, MB values)
- *   Section:     service throughput (HBarRow list, rpm values)
+ *   Section:     top pods by memory (condensed chip strip; "Show details" → HBarRow list)
+ *   Section:     service throughput (condensed chip strip; "Show details" → HBarRow list)
  *   Footer:      investigation-action buttons
  *
  * All sections render conditionally — graceful degradation when backends are missing.
+ *
+ * Density toggles on the two row-list sections are pure local React state — no
+ * tool re-invocation on toggle. State resets when the tool is re-run (e.g. the
+ * user clicks a time-range chip); that reset is intentional and acceptable.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -211,6 +215,84 @@ function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
   );
 }
 
+// ── Density toggle ─────────────────────────────────────────────────────────
+//
+// Section title with a trailing "Show details" / "Show condensed" link. Purely
+// local React state on the parent — clicking does not re-invoke the tool.
+
+function SectionTitleWithToggle({
+  label,
+  detailed,
+  onToggle,
+}: {
+  label: React.ReactNode;
+  detailed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+      }}
+    >
+      <span>{label}</span>
+      <button
+        onClick={onToggle}
+        style={{
+          background: "transparent",
+          color: theme.textMuted,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 4,
+          padding: "2px 8px",
+          fontSize: 10,
+          fontWeight: 500,
+          letterSpacing: 0.2,
+          cursor: "pointer",
+          textTransform: "none",
+        }}
+      >
+        {detailed ? "Show condensed" : "Show details"}
+      </button>
+    </div>
+  );
+}
+
+function CondensedChips({
+  items,
+}: {
+  items: Array<{ key: string; label: string; value: string; color?: string }>;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: "4px 10px",
+        fontSize: 11,
+        lineHeight: 1.5,
+      }}
+    >
+      {items.map((it, i) => (
+        <span key={it.key} style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ color: theme.text }}>{it.label}</span>
+          <span
+            className="mono"
+            style={{ color: it.color ?? theme.textMuted, fontSize: 10.5 }}
+          >
+            {it.value}
+          </span>
+          {i < items.length - 1 ? (
+            <span style={{ color: theme.textDim, marginLeft: 4 }}>·</span>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 
 function shortenPod(name: string): string {
@@ -227,6 +309,8 @@ function podMemColor(mb: number, max: number): string {
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const [memDetailed, setMemDetailed] = useState(false);
+  const [svcDetailed, setSvcDetailed] = useState(false);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -375,33 +459,54 @@ export function App() {
         </SectionCard>
       ) : null}
 
-      {/* Top pods by memory */}
+      {/* Top pods by memory — condensed chip strip by default, toggle to HBarRow list */}
       {pods.length ? (
-        <SectionCard title="Top pods by memory">
-          <div
-            style={{
-              display: "flex",
-              fontSize: 10,
-              color: theme.textDim,
-              textTransform: "uppercase",
-              letterSpacing: 0.3,
-              padding: "2px 0 4px",
-            }}
-          >
-            <div style={{ flex: "0 0 35%" }}>pod</div>
-            <div style={{ flex: "0 0 auto", minWidth: 70, textAlign: "right" }}>memory</div>
-            <div style={{ flex: 1, paddingLeft: 10 }}>usage</div>
-          </div>
-          {pods.slice(0, 6).map((p) => (
-            <HBarRow
-              key={p.pod}
-              label={shortenPod(p.pod)}
-              value={p.avg_memory_mb}
-              valueLabel={`${p.avg_memory_mb.toFixed(1)} MB`}
-              max={maxMem}
-              color={podMemColor(p.avg_memory_mb, maxMem)}
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label="Top pods by memory"
+              detailed={memDetailed}
+              onToggle={() => setMemDetailed((v) => !v)}
             />
-          ))}
+          }
+        >
+          {memDetailed ? (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  fontSize: 10,
+                  color: theme.textDim,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.3,
+                  padding: "2px 0 4px",
+                }}
+              >
+                <div style={{ flex: "0 0 35%" }}>pod</div>
+                <div style={{ flex: "0 0 auto", minWidth: 70, textAlign: "right" }}>memory</div>
+                <div style={{ flex: 1, paddingLeft: 10 }}>usage</div>
+              </div>
+              {pods.slice(0, 6).map((p) => (
+                <HBarRow
+                  key={p.pod}
+                  label={shortenPod(p.pod)}
+                  value={p.avg_memory_mb}
+                  valueLabel={`${p.avg_memory_mb.toFixed(1)} MB`}
+                  max={maxMem}
+                  color={podMemColor(p.avg_memory_mb, maxMem)}
+                />
+              ))}
+            </>
+          ) : (
+            <CondensedChips
+              items={pods.slice(0, 6).map((p) => ({
+                key: p.pod,
+                label: shortenPod(p.pod),
+                value: `${p.avg_memory_mb.toFixed(0)} MB`,
+                color: podMemColor(p.avg_memory_mb, maxMem),
+              }))}
+            />
+          )}
         </SectionCard>
       ) : data.pods_note ? (
         <SectionCard title="Pods">
@@ -409,19 +514,38 @@ export function App() {
         </SectionCard>
       ) : null}
 
-      {/* Service throughput */}
+      {/* Service throughput — condensed chip strip by default, toggle to HBarRow list */}
       {services.length > 0 && (
-        <SectionCard title={`Service throughput (rpm, last ${data.lookback})`}>
-          {services.slice(0, 8).map((s) => (
-            <HBarRow
-              key={s.service}
-              label={s.service}
-              value={s.throughput}
-              valueLabel={`${s.throughput} rpm`}
-              max={maxThroughput}
-              color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label={`Service throughput (rpm, last ${data.lookback})`}
+              detailed={svcDetailed}
+              onToggle={() => setSvcDetailed((v) => !v)}
             />
-          ))}
+          }
+        >
+          {svcDetailed ? (
+            services.slice(0, 8).map((s) => (
+              <HBarRow
+                key={s.service}
+                label={s.service}
+                value={s.throughput}
+                valueLabel={`${s.throughput} rpm`}
+                max={maxThroughput}
+                color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
+              />
+            ))
+          ) : (
+            <CondensedChips
+              items={services.slice(0, 8).map((s) => ({
+                key: s.service,
+                label: s.service,
+                value: `${s.throughput} rpm`,
+                color: degradedSet.has(s.service) ? theme.redSoft : theme.textMuted,
+              }))}
+            />
+          )}
         </SectionCard>
       )}
 
