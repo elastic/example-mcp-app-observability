@@ -68,6 +68,9 @@ interface AnomalyData {
   affected_services?: string[];
   time_series?: TimePoint[];
   time_series_title?: string;
+  time_series_note?: string;
+  chart_window?: string;
+  chart_points?: number;
   investigation_actions?: InvestigationAction[];
   rerun_context?: RerunContext;
   detail?: {
@@ -383,6 +386,21 @@ function DetailMode({
             points={data.time_series}
             yFormat={(v) => fmtValue(v, valueHint)}
           />
+          {(data.chart_window || data.time_series_note) && (
+            <div style={{ marginTop: 6, fontSize: 11, color: theme.textMuted }}>
+              {data.chart_window && <span>window: {data.chart_window}</span>}
+              {data.chart_window && data.chart_points !== undefined && <span> · {data.chart_points} points</span>}
+              {data.time_series_note && (
+                <div style={{ marginTop: 4 }}>{data.time_series_note}</div>
+              )}
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {(!data.time_series || data.time_series.length < 2) && data.time_series_note && (
+        <SectionCard title="Baseline chart unavailable">
+          <div style={{ fontSize: 12, color: theme.textMuted }}>{data.time_series_note}</div>
         </SectionCard>
       )}
 
@@ -429,6 +447,12 @@ function DetailMode({
 
 function OverviewMode({ data, onSend }: { data: AnomalyData; onSend: (p: string) => void }) {
   const anomalies = data.anomalies ?? [];
+  const lookback = data.filters?.lookback || "1h";
+
+  // Summary-by-default matches apm-health-summary / cluster-overview. Local state
+  // only — toggling does not re-invoke the tool.
+  const [entityDetailed, setEntityDetailed] = useState(false);
+  const [jobDetailed, setJobDetailed] = useState(false);
 
   // Bucket by severity
   const bySev = { critical: 0, major: 0, minor: 0 };
@@ -442,9 +466,22 @@ function OverviewMode({ data, onSend }: { data: AnomalyData; onSend: (p: string)
     if (!prev || a.recordScore > prev.recordScore) byEntity.set(key, a);
   }
   const entities = [...byEntity.values()].sort((a, b) => b.recordScore - a.recordScore);
+  const topEntities = entities.slice(0, 10);
 
   const jobs = data.jobsSummary || {};
-  const jobCount = Object.keys(jobs).length;
+  const jobEntries = Object.entries(jobs).sort((a, b) => b[1] - a[1]);
+  const jobCount = jobEntries.length;
+  const jobMax = jobCount ? Math.max(...Object.values(jobs)) : 1;
+
+  // Drill-down prompts target a single entity / job with the current lookback.
+  // We quote the value in single quotes inside the prompt so the LLM passes it
+  // through as-is; entity values may contain dots or slashes.
+  const entityDrill = (a: Anomaly) => {
+    const ent = a.entity || entityLabel(a);
+    return `Use ml-anomalies to show details for entity "${ent}" with lookback "${lookback}"`;
+  };
+  const jobDrill = (jobId: string) =>
+    `Use ml-anomalies to show details for job_id "${jobId}" with lookback "${lookback}"`;
 
   return (
     <>
@@ -470,33 +507,77 @@ function OverviewMode({ data, onSend }: { data: AnomalyData; onSend: (p: string)
         <StatCard label="Entities" value={byEntity.size} sub={`${jobCount} job${jobCount === 1 ? "" : "s"}`} />
       </StatGrid>
 
-      <SectionCard title={`Affected entities (${entities.length})`}>
-        {entities.slice(0, 10).map((a, i) => (
-          <HBarRow
-            key={i}
-            label={`${entityLabel(a)} · ${a.jobId}`}
-            value={a.recordScore}
-            valueLabel={`${Math.round(a.recordScore)}`}
-            max={100}
-            color={sevColor(a.recordScore)}
+      <SectionCard
+        title={
+          <SectionTitleWithToggle
+            label={`Affected entities (${entities.length})`}
+            detailed={entityDetailed}
+            onToggle={() => setEntityDetailed((v) => !v)}
           />
-        ))}
+        }
+      >
+        {entityDetailed ? (
+          topEntities.map((a, i) => (
+            <HBarRow
+              key={i}
+              label={`${entityLabel(a)} · ${a.jobId}`}
+              value={a.recordScore}
+              valueLabel={`${Math.round(a.recordScore)}`}
+              max={100}
+              color={sevColor(a.recordScore)}
+              inspect={{
+                onClick: () => onSend(entityDrill(a)),
+                title: `Inspect ${entityLabel(a)}`,
+              }}
+            />
+          ))
+        ) : (
+          <CondensedChips
+            items={topEntities.map((a, i) => ({
+              key: `${a.jobId}-${i}`,
+              label: entityLabel(a),
+              value: `${Math.round(a.recordScore)}`,
+              color: sevColor(a.recordScore),
+            }))}
+          />
+        )}
       </SectionCard>
 
-      {jobCount > 1 && (
-        <SectionCard title="By ML job">
-          {Object.entries(jobs)
-            .sort((a, b) => b[1] - a[1])
-            .map(([job, count]) => (
+      {jobCount >= 1 && (
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label={`By ML job (${jobCount})`}
+              detailed={jobDetailed}
+              onToggle={() => setJobDetailed((v) => !v)}
+            />
+          }
+        >
+          {jobDetailed ? (
+            jobEntries.map(([job, count]) => (
               <HBarRow
                 key={job}
                 label={job}
                 value={count}
                 valueLabel={`${count}`}
-                max={Math.max(...Object.values(jobs))}
+                max={jobMax}
                 color={theme.blue}
+                inspect={{
+                  onClick: () => onSend(jobDrill(job)),
+                  title: `Inspect ${job}`,
+                }}
               />
-            ))}
+            ))
+          ) : (
+            <CondensedChips
+              items={jobEntries.map(([job, count]) => ({
+                key: job,
+                label: job,
+                value: `${count}`,
+                color: theme.blue,
+              }))}
+            />
+          )}
         </SectionCard>
       )}
 

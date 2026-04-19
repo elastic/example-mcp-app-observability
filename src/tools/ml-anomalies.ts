@@ -36,6 +36,9 @@ interface Enriched extends AnomalyQueryResult {
   detail?: Record<string, unknown>;
   time_series_title?: string;
   time_series?: TimePoint[];
+  chart_window?: string;
+  chart_points?: number;
+  time_series_note?: string;
   rerun_context?: {
     tool: string;
     current_lookback: string;
@@ -51,6 +54,44 @@ interface ModelPlotHit {
   };
 }
 
+// Parse a lookback string like "15m", "1h", "6h", "2d" into milliseconds.
+// Malformed input returns 1h as a defensive fallback rather than throwing,
+// so chart-window math never derails a detail response.
+function parseLookbackMs(lookback: string): number {
+  const m = lookback.match(/^(\d+)\s*([mhd])$/i);
+  if (!m) return 60 * 60 * 1000;
+  const n = parseInt(m[1], 10);
+  const unit = m[2].toLowerCase();
+  return n * (unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000);
+}
+
+// Round ms back to the shortest human-friendly lookback unit. <60m stays in
+// minutes; everything else rolls up to whole hours (e.g. 90min → "2h").
+function formatLookback(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.round(ms / 3_600_000)}h`;
+}
+
+const CHART_MIN_WINDOW_MS = 90 * 60 * 1000; // 90min floor so even brand-new anomalies get baseline context.
+const CHART_MAX_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h ceiling so the chart never squashes the spike shape.
+
+// Informed chart window: scale to the top anomaly's age so the spike occupies
+// a reasonable chunk of the plot. A 30-min-old spike wants ≈90min total (zoomed
+// in); a 3h-old spike wants ≈9h (more pre-anomaly baseline). Floor 90min,
+// ceiling 12h, and always at least as wide as the user's own lookback.
+function computeChartWindow(lookback: string, topTimestampMs: number | undefined): string {
+  const ageMs = topTimestampMs ? Math.max(0, Date.now() - topTimestampMs) : 0;
+  const lookbackMs = parseLookbackMs(lookback);
+  const informedMs = Math.max(lookbackMs, 3 * ageMs, CHART_MIN_WINDOW_MS);
+  return formatLookback(Math.min(informedMs, CHART_MAX_WINDOW_MS));
+}
+
+function widenChartWindow(current: string): string {
+  const widened = Math.min(parseLookbackMs(current) * 2, CHART_MAX_WINDOW_MS);
+  return formatLookback(widened);
+}
+
 async function fetchModelPlot(
   top: AnomalyQueryResult["anomalies"][number] & {
     jobId: string;
@@ -58,14 +99,12 @@ async function fetchModelPlot(
     partitionFieldValue?: string;
     overFieldValue?: string;
   },
-  lookback: string
+  chartWindow: string
 ): Promise<TimePoint[]> {
-  // Extend lookback so the chart has enough buckets even when the user asked for a short window.
-  const extended = /^\d+m$/.test(lookback) ? "3h" : lookback;
   const must: unknown[] = [
     { term: { result_type: "model_plot" } },
     { term: { job_id: top.jobId } },
-    { range: { timestamp: { gte: `now-${extended}` } } },
+    { range: { timestamp: { gte: `now-${chartWindow}` } } },
   ];
   if (top.byFieldValue) must.push({ term: { by_field_value: top.byFieldValue } });
   if (top.partitionFieldValue)
@@ -205,11 +244,37 @@ async function enrichForView(
     const hasIdentifier =
       !!top.byFieldValue || !!top.partitionFieldValue || !!top.overFieldValue;
     if (detailLikely && hasIdentifier) {
-      const ts = await fetchModelPlot(
-        top as Parameters<typeof fetchModelPlot>[0],
-        filters.lookback || "6h"
-      );
-      if (ts.length >= 2) enriched.time_series = ts;
+      const topTs = typeof top.timestamp === "number" ? top.timestamp : undefined;
+      let chartWindow = computeChartWindow(filters.lookback || "1h", topTs);
+      let ts = await fetchModelPlot(top as Parameters<typeof fetchModelPlot>[0], chartWindow);
+      let widened = false;
+      // Progressive fallback — one escalation when the informed window yields
+      // too few points for a chart (e.g. job only emits model_plot every 30m
+      // and the zoomed-in window caught a single bucket).
+      if (ts.length < 2 && parseLookbackMs(chartWindow) < CHART_MAX_WINDOW_MS) {
+        const widerWindow = widenChartWindow(chartWindow);
+        const ts2 = await fetchModelPlot(
+          top as Parameters<typeof fetchModelPlot>[0],
+          widerWindow
+        );
+        if (ts2.length > ts.length) {
+          ts = ts2;
+          chartWindow = widerWindow;
+          widened = true;
+        }
+      }
+      enriched.chart_window = chartWindow;
+      enriched.chart_points = ts.length;
+      if (ts.length >= 2) {
+        enriched.time_series = ts;
+        if (widened) {
+          enriched.time_series_note = `Auto-widened chart window to ${chartWindow} — the initial informed window had too few baseline buckets.`;
+        }
+      } else {
+        enriched.time_series_note =
+          `No usable baseline in the last ${chartWindow} for ${top.byFieldValue || top.partitionFieldValue || "this entity"}. ` +
+          `The ML job may not be emitting model_plot for this entity, or the data is outside this window.`;
+      }
     }
   }
 
@@ -249,8 +314,10 @@ export function registerMlAnomaliesTool(server: McpServer) {
           "a cluster-wide scan."
         ),
         lookback: z.string().optional().describe(
-          "How far back to search. Default '24h'. Examples: '1h' (acute), '6h' (shift), '24h' (day-over-day), " +
-          "'7d' (weekly trend)."
+          "How far back to search for anomalies. Default '24h'. Examples: '1h' (acute), '6h' (shift), " +
+          "'24h' (day-over-day). The time-series chart on the detail view uses a separate, anomaly-age-informed " +
+          "window (floor 90min, ceiling 12h, auto-widened once if the initial window is too sparse) — so a narrow " +
+          "lookback is fine for triage without starving the chart of baseline context."
         ),
         limit: z.number().optional().describe(
           "Max anomalies to return. Default 25. Raise for a full audit; lower for 'show me the worst offender'."

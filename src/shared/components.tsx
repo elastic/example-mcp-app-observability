@@ -493,12 +493,14 @@ export function HBarRow({
   valueLabel,
   max,
   color,
+  inspect,
 }: {
   label: string;
   value: number;
   valueLabel?: string;
   max: number;
   color: string;
+  inspect?: { onClick: () => void; title?: string };
 }) {
   const pct = max > 0 ? (value / max) * 100 : 0;
   return (
@@ -545,6 +547,49 @@ export function HBarRow({
           }}
         />
       </div>
+      {inspect && (
+        <button
+          onClick={inspect.onClick}
+          title={inspect.title ?? "Inspect"}
+          aria-label={inspect.title ?? "Inspect"}
+          style={{
+            flex: "0 0 auto",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            padding: 0,
+            background: "transparent",
+            border: "none",
+            borderRadius: 3,
+            cursor: "pointer",
+            color: theme.textMuted,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = theme.text;
+            e.currentTarget.style.background = theme.border;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = theme.textMuted;
+            e.currentTarget.style.background = "transparent";
+          }}
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="M10.5 10.5 L14 14" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
