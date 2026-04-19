@@ -1,12 +1,13 @@
 ---
 name: watch
 description: >
-  The agent's "wait-and-see" primitive. Three modes: wait for an ML anomaly to fire, poll an ES|QL
-  metric (live-sample or wait for a threshold), or read a single-instance current value. Use when
-  the user says "tell me when...", "let me know if...", "wait until X drops below Y",
-  "watch for anything unusual", "monitor for the next N minutes", "poll until stable", "what is X
-  right now", or wants transient (session-scoped) monitoring without creating a persistent Kibana rule.
-  Also trigger for "keep an eye on" and post-remediation validation.
+  The agent's "wait-and-see" primitive. Four modes: wait for an ML anomaly to fire, poll an ES|QL
+  metric (live-sample or wait for a threshold), read a single-instance scalar value, or return a
+  full ES|QL table. Use when the user says "tell me when...", "let me know if...", "wait until X
+  drops below Y", "watch for anything unusual", "monitor for the next N minutes", "poll until
+  stable", "what is X right now", "list …", "which … are …", or wants transient (session-scoped)
+  monitoring or ad-hoc querying without creating a persistent Kibana rule. Also trigger for "keep
+  an eye on" and post-remediation validation.
 ---
 
 # Watch
@@ -21,7 +22,8 @@ object in Kibana), `watch` polls in-process and returns once fired, once its win
 |------|-----------------|---------|
 | `anomaly` (default) | "tell me when anything unusual fires", "watch for anomalies", open-ended monitoring | Until an anomaly fires or `max_wait` elapses |
 | `metric` | user names a specific metric — either with a threshold ("wait until memory drops below 80MB") or without ("show me a live chart of X") | Polls for `max_wait` seconds (default 60s, interval 5s) |
-| `now` | "what is X right now", "check X", "current value of Y" — single-instance read | Returns immediately |
+| `now` | "what is X right now", "check X", "current value of Y" — single-instance **scalar** read | Returns immediately |
+| `table` | "list …", "which … are …", group-by / top-N queries, or any ES\|QL result with mixed-type columns | Returns immediately |
 
 If the user wants durable alerting ("page me whenever..."), use `create-alert-rule` instead.
 
@@ -32,6 +34,7 @@ If the user wants durable alerting ("page me whenever..."), use `create-alert-ru
 | `anomaly` | Elastic ML anomaly detection jobs |
 | `metric` | Any ES\|QL-queryable numeric field |
 | `now` | Any ES\|QL-queryable numeric field |
+| `table` | Any ES\|QL-queryable data |
 
 ## How to call watch
 
@@ -87,6 +90,22 @@ Omit `condition` and the tool live-samples for the full `max_wait` window — us
   "description": "current avg pod memory in oteldemo-esyox-default"
 }
 ```
+
+### Table mode — full ES|QL rows and columns
+
+Use when the query groups, lists, or returns mixed-type rows (strings + numbers + dates). `now` mode
+discards everything except the first numeric cell — `table` mode preserves the whole result.
+
+```json
+{
+  "mode": "table",
+  "esql": "FROM metrics-kubeletstatsreceiver.otel* | WHERE metrics.k8s.pod.memory.working_set IS NOT NULL | STATS avg_mem = AVG(metrics.k8s.pod.memory.working_set) BY resource.attributes.k8s.pod.name, resource.attributes.k8s.namespace.name | SORT avg_mem DESC | LIMIT 10",
+  "description": "top 10 pods by memory"
+}
+```
+
+Rows are capped at 50 by default. Prefer tightening the ES|QL with `LIMIT` / `SORT` over raising
+`row_cap` — very wide tables clog the context window.
 
 ## Common query patterns
 
@@ -161,8 +180,9 @@ FROM logs-*
 
 ### Query-construction rules
 
-- The query must return a single row with a numeric first column. The tool reads the first numeric
-  column of the first row.
+- For `now` and `metric` mode, the query must return a single row with a numeric first column —
+  the tool reads the first numeric cell. For `table` mode this restriction doesn't apply: any
+  shape is fine.
 - Scope with `@timestamp > NOW() - <window>` when the user implies "right now" (default 5m is
   usually fine; let the window match the user's language).
 - When the user names a namespace, match it exactly (e.g. `oteldemo-esyox-default`, not
@@ -177,7 +197,7 @@ FROM logs-*
 
 ## After the tool returns
 
-The watch MCP App view renders inline in one of three modes, picked automatically from the result:
+The watch MCP App view renders inline in one of several modes, picked automatically from the result:
 
 - **Now mode (`status: NOW`)** — compact card: big unit-formatted number, ES|QL subtitle, "evaluated
   Xs ago" stamp, and three follow-up actions (re-check, escalate to live watch, create alert rule).
@@ -185,6 +205,10 @@ The watch MCP App view renders inline in one of three modes, picked automaticall
   current / threshold / peak / baseline. Covers `CONDITION_MET`, `TIMEOUT`, and `SAMPLED`.
 - **Anomaly mode** — severity-scored trigger card with affected entities and click-to-send
   investigation prompts.
+- **Table mode (`status: TABLE`)** — styled HTML table with column headers, type-aware alignment
+  (numeric right, text left), and zebra-striped rows. Row count + truncation notice in the subtitle.
+- **Error (`status: ERROR`)** — red-toned card with the ES|QL failure message verbatim. Surfaces
+  instead of throwing when the query is bad (unknown field, index missing, syntax error).
 
 All modes surface an `investigation_actions` list as buttons. Follow up in chat too — don't rely
 on the buttons alone.
@@ -193,6 +217,11 @@ on the buttons alone.
 
 - **`NOW`** — State the value plainly. Offer to escalate to a live watch if the user seems to want
   ongoing visibility.
+- **`TABLE`** — Summarize what the rows show (top entity, total count, any outliers). Don't just
+  dump the full table back — the user can read the widget. If the result was truncated, say so and
+  offer to tighten the ES|QL.
+- **`ERROR`** — Read the error message, explain what likely went wrong (unknown field, index
+  pattern, syntax), and propose a corrected query. Don't retry blindly.
 - **`ALERT`** (anomaly fired) — The response includes affected entities, affected services, top
   anomalies, and `investigation_hints` naming the next tool to reach for. **Follow those hints
   immediately** — don't just report the alert, start investigating and narrate your reasoning.
@@ -218,7 +247,7 @@ and condition when extending. Capped at 240 points to keep the chart readable.
 
 | Tool | Purpose |
 |------|---------|
-| `watch` | Polls and blocks. Three modes: `anomaly`, `metric`, `now`. |
+| `watch` | Polls and blocks. Four modes: `anomaly`, `metric`, `now`, `table`. |
 | `ml-anomalies` | Follow-up: deeper look at the anomaly that fired. |
 | `apm-service-dependencies` | Follow-up: topology of affected services (if APM available). |
 | `apm-health-summary` | Follow-up: cluster-wide context, and useful for discovering which namespaces actually have data. |
@@ -228,9 +257,11 @@ and condition when extending. Capped at 240 points to keep the chart readable.
 ## Key principles
 
 - **Watch is transient.** Nothing is saved. If the user wants an ongoing rule, use `create-alert-rule`.
-- **Pick the mode from the user's phrasing.** "What is X right now" → `now`. "Show me a live
-  chart of X" or "watch X for 60s" → `metric` (no condition). "Wait until X drops below Y" →
-  `metric` (with condition). "Tell me when anything unusual fires" → `anomaly`.
+- **Pick the mode from the user's phrasing.** "What is X right now" (scalar) → `now`. "Show me a
+  live chart of X" or "watch X for 60s" → `metric` (no condition). "Wait until X drops below Y" →
+  `metric` (with condition). "Tell me when anything unusual fires" → `anomaly`. "List …", "which
+  pods are on node X", "top N by Y" → `table`. If a user asks "what is X" and X is actually a list
+  or grouping (not a single number), pick `table`, not `now`.
 - **Use the known field paths.** Don't probe generic `metrics-*` patterns when the deployment
   indexes under `metrics-kubeletstatsreceiver.otel*`. The cheat sheet above is authoritative for
   this environment.
