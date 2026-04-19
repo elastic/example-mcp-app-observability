@@ -38,8 +38,11 @@ npx @anthropic-ai/mcpb pack .
 # (elastic-o11y-mcp.mcpb) rather than the manifest name. Historical releases
 # used the manifest name (example-mcp-app-observability.mcpb) and the README
 # install steps depend on it, so normalize the filename here.
-if [ -f elastic-o11y-mcp.mcpb ] && [ ! -f example-mcp-app-observability.mcpb ]; then
-  mv elastic-o11y-mcp.mcpb example-mcp-app-observability.mcpb
+# Overwrite unconditionally — a prior release's mcpb can linger in the repo
+# root, and without -f the new bundle would be stranded under the default
+# name while the stale file got picked up on upload.
+if [ -f elastic-o11y-mcp.mcpb ]; then
+  mv -f elastic-o11y-mcp.mcpb example-mcp-app-observability.mcpb
 fi
 
 VERSION=$(node -e "console.log(require('./package.json').version)")
