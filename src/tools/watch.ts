@@ -395,12 +395,18 @@ export function registerWatchTool(server: McpServer) {
           "stale history."
         ),
         esql: z.string().optional().describe(
-          "[Metric mode] ES|QL query to poll — first numeric column of first row is evaluated. Construct from context, " +
-          "e.g. `FROM metrics-* | WHERE host.name == \"foo\" | STATS v = AVG(system.memory.used.bytes)`. Should " +
-          "return a single row with the current value. IMPORTANT: for sampled gauge metrics (memory, cpu, latency), " +
-          "use AVG/MAX/MIN — NEVER SUM, because SUM multiplies the current value by the number of samples in the " +
-          "window. Reserve SUM for pre-aggregated counters (e.g. transaction counts in 1-minute rollup indices) or " +
-          "when you want a real cumulative total across entities."
+          "[Metric/now/table mode] ES|QL query. In metric/now mode the first numeric column of the first row is " +
+          "evaluated; table mode returns the full result. Construct from context, e.g. `FROM metrics-* | WHERE " +
+          "host.name == \"foo\" | STATS v = AVG(system.memory.used.bytes)`. IMPORTANT: **pick the index pattern " +
+          "from the layer the field lives in.** Infrastructure fields (`k8s.node.name`, `k8s.pod.name`, CPU/memory " +
+          "gauges) live in `metrics-*` / `metrics-kubeletstatsreceiver.otel*` — they do NOT exist in `traces-apm*` " +
+          "or `traces-*.otel-*`, which only carry APM-layer fields (`service.name`, `transaction.duration.us`, " +
+          "`event.outcome`). Cross-layer joins like 'which node runs the most services' must query `metrics-*`, " +
+          "because OTel resource attributes propagate both `k8s.node.name` and `service.name` onto metric docs; " +
+          "querying `traces-apm*` with `k8s.node.name` will fail with verification_exception. IMPORTANT: for " +
+          "sampled gauge metrics (memory, cpu, latency), use AVG/MAX/MIN — NEVER SUM, because SUM multiplies the " +
+          "current value by the number of samples in the window. Reserve SUM for pre-aggregated counters (e.g. " +
+          "transaction counts in 1-minute rollup indices) or when you want a real cumulative total across entities."
         ),
         condition: z.string().optional().describe(
           "[Metric mode] Optional condition '<comparator> <threshold>'. Examples: '< 80000000' (watch for memory to " +

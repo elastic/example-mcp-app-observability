@@ -107,6 +107,35 @@ discards everything except the first numeric cell — `table` mode preserves the
 Rows are capped at 50 by default. Prefer tightening the ES|QL with `LIMIT` / `SORT` over raising
 `row_cap` — very wide tables clog the context window.
 
+## Picking the right index pattern
+
+Fields live where the data is emitted — ES|QL rejects queries that reference a field the
+target index doesn't map (`verification_exception`). Before writing the query, match the
+user's question to the right layer:
+
+| User asks about… | Index | Carries |
+|---|---|---|
+| Node / pod / namespace topology, resource usage | `metrics-kubeletstatsreceiver.otel*` or `metrics-*` | `k8s.node.name`, `k8s.pod.name`, `k8s.namespace.name`, `service.name` (via resource attrs), CPU/memory/fs gauges |
+| Service behavior — latency, errors, throughput, spans | `traces-*.otel-*` or `traces-apm*` | `service.name`, `transaction.duration.us`, `event.outcome`, `span.*` |
+| Log rate / log content | `logs-*` | `message`, `log.level`, `service.name` |
+| ML anomalies | `.ml-anomalies-*` | `record_score`, `by_field_value`, `partition_field_value` |
+
+Cross-layer questions ("which **node** runs the most **services**") need the index that
+carries **both** fields — that's almost always `metrics-*`, because OTel resource
+attributes propagate through the Collector, so metrics docs carry `k8s.node.name` *and*
+`service.name`. Trace indices (`traces-apm*`, `traces-*.otel-*`) don't carry infra
+attributes like `k8s.node.name` — don't reach for them when the question is about nodes.
+
+Example: "which node is running the most services"
+
+```
+FROM metrics-*
+| WHERE @timestamp > NOW() - 5m AND k8s.node.name IS NOT NULL AND service.name IS NOT NULL
+| STATS service_count = COUNT_DISTINCT(service.name) BY k8s.node.name
+| SORT service_count DESC
+| LIMIT 20
+```
+
 ## Common query patterns
 
 These are the field paths this deployment's data actually uses — prefer them over guessing.
