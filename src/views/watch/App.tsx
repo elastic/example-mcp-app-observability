@@ -70,6 +70,29 @@ type NowResult = {
   investigation_actions?: InvestigationAction[];
 };
 
+type TableResult = {
+  status: "TABLE";
+  description: string;
+  columns: { name: string; type: string }[];
+  rows: unknown[][];
+  row_count: number;
+  truncated: boolean;
+  row_cap?: number;
+  evaluated_at_ms: number;
+  message: string;
+  esql?: string;
+  namespace?: string;
+  investigation_actions?: InvestigationAction[];
+};
+
+type ErrorResult = {
+  status: "ERROR";
+  description?: string;
+  message: string;
+  evaluated_at_ms: number;
+  esql?: string;
+};
+
 type AnomalyAlert = {
   status: "ALERT" | "QUIET" | "NO_ML_JOBS";
   headline?: string;
@@ -85,7 +108,7 @@ type AnomalyAlert = {
   suggestion?: string;
 };
 
-type WatchResult = MetricResult | AnomalyAlert | NowResult;
+type WatchResult = MetricResult | AnomalyAlert | NowResult | TableResult | ErrorResult;
 
 function isMetric(r: WatchResult): r is MetricResult {
   return r.status === "CONDITION_MET" || r.status === "TIMEOUT" || r.status === "SAMPLED";
@@ -94,6 +117,21 @@ function isMetric(r: WatchResult): r is MetricResult {
 function isNow(r: WatchResult): r is NowResult {
   return r.status === "NOW";
 }
+
+function isTable(r: WatchResult): r is TableResult {
+  return r.status === "TABLE";
+}
+
+function isError(r: WatchResult): r is ErrorResult {
+  return r.status === "ERROR";
+}
+
+const NUMERIC_ES_TYPES = new Set([
+  "long", "integer", "double", "float",
+  "unsigned_long", "half_float", "scaled_float",
+  "short", "byte",
+]);
+const DATE_ES_TYPES = new Set(["date", "date_nanos"]);
 
 // ── Formatting ─────────────────────────────────────────────────────────────
 
@@ -347,6 +385,194 @@ function NowView({ data, onSend }: { data: NowResult; onSend: (p: string) => voi
         onSend={onSend}
       />
     </>
+  );
+}
+
+// ── Table mode (full tabular ES|QL result) ────────────────────────────────
+
+function formatCell(value: unknown, type: string): string {
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return value.map((v) => formatCell(v, type)).join(", ");
+  if (DATE_ES_TYPES.has(type)) {
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return new Date(value).toISOString();
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return String(value);
+    if (Number.isInteger(value)) return value.toLocaleString();
+    if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return value.toPrecision(4).replace(/\.?0+$/, "");
+  }
+  return String(value);
+}
+
+function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) => void }) {
+  const { columns, rows } = data;
+  const ageSec = Math.max(0, Math.round((Date.now() - data.evaluated_at_ms) / 1000));
+
+  const alignments = columns.map((c) =>
+    NUMERIC_ES_TYPES.has(c.type) ? "right" : ("left" as const)
+  );
+
+  return (
+    <>
+      <SectionCard>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: 12,
+            marginBottom: 14,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
+              {data.description || "ES|QL table"}
+            </div>
+            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
+              {data.esql ? data.esql.split("|")[0]?.trim() : "ES|QL table"}
+              {data.namespace ? ` · ${data.namespace}` : ""}
+            </div>
+          </div>
+          <StatusBadge tone="ok">table</StatusBadge>
+        </div>
+
+        <div style={{ fontSize: 11, color: theme.textDim, marginBottom: 10 }}>
+          {data.row_count} row{data.row_count === 1 ? "" : "s"}
+          {data.truncated ? ` (showing first ${rows.length})` : ""}
+          {" · "}
+          {ageSec === 0 ? "evaluated just now" : `evaluated ${ageSec}s ago`}
+        </div>
+
+        {columns.length === 0 || rows.length === 0 ? (
+          <div
+            style={{
+              fontSize: 12,
+              color: theme.textMuted,
+              padding: "14px 0",
+              textAlign: "center",
+            }}
+          >
+            Query returned no rows.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", border: `1px solid ${theme.border}`, borderRadius: 6 }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12,
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            >
+              <thead>
+                <tr style={{ background: theme.bgTertiary }}>
+                  {columns.map((c, i) => (
+                    <th
+                      key={c.name + i}
+                      title={c.type}
+                      style={{
+                        textAlign: alignments[i],
+                        padding: "7px 10px",
+                        borderBottom: `1px solid ${theme.borderStrong}`,
+                        color: theme.textMuted,
+                        fontWeight: 600,
+                        fontSize: 11,
+                        textTransform: "uppercase",
+                        letterSpacing: 0.4,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {c.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, ri) => (
+                  <tr
+                    key={ri}
+                    style={{ background: ri % 2 === 0 ? "transparent" : theme.bgSecondary }}
+                  >
+                    {columns.map((c, ci) => (
+                      <td
+                        key={c.name + ci}
+                        style={{
+                          textAlign: alignments[ci],
+                          padding: "6px 10px",
+                          borderBottom:
+                            ri === rows.length - 1 ? "none" : `1px solid ${theme.border}`,
+                          color: theme.text,
+                          verticalAlign: "top",
+                          whiteSpace: "nowrap",
+                          maxWidth: 320,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {formatCell(row[ci], c.type)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+
+      <InvestigationActions
+        title="Next"
+        actions={data.investigation_actions}
+        onSend={onSend}
+      />
+    </>
+  );
+}
+
+function ErrorView({ data }: { data: ErrorResult }) {
+  return (
+    <SectionCard>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 12,
+          marginBottom: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
+            {data.description || "Query failed"}
+          </div>
+          {data.esql && (
+            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
+              {data.esql.split("|")[0]?.trim()}
+            </div>
+          )}
+        </div>
+        <StatusBadge tone="critical">error</StatusBadge>
+      </div>
+      <div
+        className="mono"
+        style={{
+          fontSize: 11,
+          color: theme.redSoft,
+          background: `${theme.red}12`,
+          border: `1px solid ${theme.red}33`,
+          borderRadius: 4,
+          padding: "8px 10px",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {data.message}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -653,7 +879,11 @@ export function App() {
 
   return (
     <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-      {isNow(data) ? (
+      {isError(data) ? (
+        <ErrorView data={data} />
+      ) : isTable(data) ? (
+        <TableView data={data} onSend={onSend} />
+      ) : isNow(data) ? (
         <NowView data={data} onSend={onSend} />
       ) : isMetric(data) ? (
         <MetricView data={data} trend={accumulated} onSend={onSend} />

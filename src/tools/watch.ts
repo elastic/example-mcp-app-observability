@@ -15,6 +15,7 @@ import { z } from "zod";
 import fs from "fs";
 import { mlAnomalyIndicesExist, queryAnomalies, severityLabel } from "../elastic/ml.js";
 import { executeEsql } from "../elastic/esql.js";
+import type { EsqlResult } from "../shared/types.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://watch/mcp-app.html";
@@ -67,7 +68,7 @@ async function pollMetric(esql: string): Promise<number | null> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface WatchInput {
-  mode?: "anomaly" | "metric" | "now";
+  mode?: "anomaly" | "metric" | "now" | "table";
   min_score?: number;
   interval?: number;
   max_wait?: number;
@@ -76,6 +77,55 @@ interface WatchInput {
   esql?: string;
   condition?: string;
   description?: string;
+  row_cap?: number;
+}
+
+const TABLE_DEFAULT_ROW_CAP = 50;
+
+async function handleTableMode(args: WatchInput) {
+  const esql = args.esql || "";
+  const description = args.description || "";
+  if (!esql) {
+    return {
+      status: "ERROR" as const,
+      message: "Table mode requires 'esql' parameter with an ES|QL query.",
+      evaluated_at_ms: Date.now(),
+    };
+  }
+
+  const cap = Math.max(1, args.row_cap ?? TABLE_DEFAULT_ROW_CAP);
+  let result: EsqlResult;
+  try {
+    result = await executeEsql(esql);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      status: "ERROR" as const,
+      description: description || undefined,
+      message: `ES|QL query failed: ${msg}`,
+      evaluated_at_ms: Date.now(),
+    };
+  }
+
+  const columns = result.columns.map((c) => ({ name: c.name, type: c.type }));
+  const totalRows = result.values.length;
+  const truncated = totalRows > cap;
+  const rows = truncated ? result.values.slice(0, cap) : result.values;
+  const desc = description || "ES|QL table";
+
+  return {
+    status: "TABLE" as const,
+    description: desc,
+    columns,
+    rows,
+    row_count: totalRows,
+    truncated,
+    row_cap: cap,
+    evaluated_at_ms: Date.now(),
+    message: truncated
+      ? `${desc}: ${totalRows} row${totalRows === 1 ? "" : "s"} (showing first ${cap}).`
+      : `${desc}: ${totalRows} row${totalRows === 1 ? "" : "s"}.`,
+  };
 }
 
 async function handleNowMode(args: WatchInput) {
@@ -299,8 +349,8 @@ export function registerWatchTool(server: McpServer) {
     {
       title: "Watch",
       description:
-        "Requires: nothing in metric/now mode (works on any ES|QL-queryable numeric field); ML anomaly jobs in anomaly " +
-        "mode. The agent's 'wait-and-see' primitive. Three modes:\n\n" +
+        "Requires: nothing in metric/now/table mode (works on any ES|QL-queryable data); ML anomaly jobs in anomaly " +
+        "mode. The agent's 'wait-and-see' primitive. Four modes:\n\n" +
         "**Anomaly mode** (default): polls ML anomaly detection jobs and fires when a significant anomaly is detected. " +
         "Returns a structured alert with affected entities, severity, and investigation hints. Starting point for " +
         "autonomous incident investigation.\n\n" +
@@ -308,17 +358,22 @@ export function registerWatchTool(server: McpServer) {
         "(e.g. 'value < 80000000'), or (b) if no condition is given, live-samples the metric for the full max_wait " +
         "window and returns the trend — use this for 'show me a live chart of X' style prompts. Default interval 5s, " +
         "max_wait 60s → ~12 samples. Tool returns include a `watch_key` so the UI can accumulate samples across repeated calls.\n\n" +
-        "**Now mode** (mode='now'): runs the ES|QL query once and returns the current value in a compact card — use " +
-        "this for 'what is X right now' style prompts. No polling, no trend. Fast answer when the user just wants a " +
-        "single-instance read.\n\n" +
+        "**Now mode** (mode='now'): runs the ES|QL query once and returns the current scalar value in a compact card — " +
+        "use this for 'what is X right now' style prompts. Extracts the first numeric value of the first row, so it's " +
+        "only suitable for single-value reads.\n\n" +
+        "**Table mode** (mode='table'): runs the ES|QL query once and returns the full tabular result — all rows, all " +
+        "columns, all types (string, numeric, boolean, date). Use this for 'list', 'group by', 'which …', or any query " +
+        "that returns mixed-type rows (e.g. pod → node mappings, clusters with counts, top-N with labels). Rows are " +
+        "capped (default 50) to keep responses compact; use LIMIT in the ES|QL or raise `row_cap` to get more.\n\n" +
         "Unlike `create-alert-rule`, watch is transient and session-scoped — nothing is persisted to Kibana.",
       inputSchema: {
-        mode: z.enum(["anomaly", "metric", "now"]).optional().describe(
+        mode: z.enum(["anomaly", "metric", "now", "table"]).optional().describe(
           "Watch mode. 'anomaly' (default) polls ML anomaly results — use when the user asks 'tell me when anything " +
           "unusual fires'. 'metric' polls an ES|QL query over time — use when the user names a specific metric " +
           "and wants a live trend or threshold watch ('wait until memory drops below 80MB', 'show me a live chart'). " +
-          "'now' runs the query once and returns the current value — use when the user asks 'what is X right now', " +
-          "'check X', or wants a single-instance read without a chart."
+          "'now' runs the query once and returns a single scalar value — use when the user asks 'what is X right now' " +
+          "and X is a single number. 'table' runs the query once and returns all rows and columns — use when the " +
+          "query groups, lists, or returns mixed-type data ('list pods by node', 'which clusters are reporting')."
         ),
         min_score: z.number().optional().describe(
           "[Anomaly mode] Minimum anomaly score 0-100 to trigger. Default 75 (major+). Lower to 50 to include " +
@@ -353,8 +408,12 @@ export function registerWatchTool(server: McpServer) {
           "live-sampling — the tool polls for the full max_wait window and returns the trend."
         ),
         description: z.string().optional().describe(
-          "[Metric mode] Human-readable description of what's being watched — surfaces in the final alert message. " +
-          "E.g. 'frontend memory working set', 'checkout p99 latency'."
+          "[Metric/now/table mode] Human-readable description of what's being watched — surfaces as the card title. " +
+          "E.g. 'frontend memory working set', 'checkout p99 latency', 'k8s clusters'."
+        ),
+        row_cap: z.number().optional().describe(
+          "[Table mode] Maximum rows to return. Default 50. Prefer tightening the ES|QL with LIMIT/SORT rather " +
+          "than raising this cap — very large tables are hard to read and inflate context."
         ),
       },
       _meta: { ui: { resourceUri: RESOURCE_URI } },
@@ -366,6 +425,8 @@ export function registerWatchTool(server: McpServer) {
           ? await handleMetricMode(args)
           : mode === "now"
           ? await handleNowMode(args)
+          : mode === "table"
+          ? await handleTableMode(args)
           : await handleAnomalyMode(args);
       const result = enrichForView(raw, args);
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
@@ -396,6 +457,22 @@ function detectUnit(description: string, esql?: string): "bytes" | "ms" | "pct" 
 function enrichForView(result: Record<string, unknown>, args: WatchInput): Record<string, unknown> {
   const enriched = { ...result };
   const actions: { label: string; prompt: string }[] = [];
+
+  if (result.status === "TABLE") {
+    enriched.esql = args.esql;
+    enriched.namespace = args.namespace;
+    actions.push({
+      label: "Re-run query",
+      prompt: `Re-run watch in table mode with the same ESQL "${args.esql}" to refresh the result.`,
+    });
+    if (enriched.investigation_actions === undefined) enriched.investigation_actions = actions;
+    return enriched;
+  }
+
+  if (result.status === "ERROR") {
+    enriched.esql = args.esql;
+    return enriched;
+  }
 
   if (result.status === "NOW") {
     enriched.esql = args.esql;
