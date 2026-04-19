@@ -178,7 +178,9 @@ FROM traces-*.otel-*
 // Metadata (language, deployment, namespace) — OTel traces first, classic APM (traces-apm*
 // + kubernetes.*) as fallback so classic-agent customers still see language/k8s context.
 // When a namespace was requested, `serviceFilter` (service.name IN …) has already scoped
-// the service set — no separate namespace clause is needed on either branch.
+// the service set — no separate namespace clause is needed on either branch. Classic
+// branch is `optional` — in pure-OTel envs, traces-apm* can match stub indices without
+// the classic schema, and those verification_exceptions are expected wrong-env signals.
 async function fetchMetadata(
   lb: string,
   serviceFilter: string,
@@ -204,7 +206,7 @@ FROM traces-apm*
     "kubernetes.deployment.name"?: string;
     "kubernetes.namespace"?: string;
   };
-  const rows = await safeEsqlRows<ClassicMetaRow>(classicQuery, errors);
+  const rows = await safeEsqlRows<ClassicMetaRow>(classicQuery, errors, { optional: true });
   return rows.map((r) => ({
     "service.name": r["service.name"],
     "service.language.name": r["service.language.name"],
@@ -284,7 +286,8 @@ FROM traces-*.otel-*
 
   // Tier 3: classic APM agents — traces-apm* with transaction.duration.us and event.outcome.
   // Only queried when both tier-1 metrics and tier-2 OTel traces return nothing, so OTel-native
-  // deployments don't pay the extra call.
+  // deployments don't pay the extra call. Marked `optional` so verification_exceptions in
+  // pure-OTel envs (where traces-apm* may match stubs without classic schema) don't surface.
   const classicQuery = `
 FROM traces-apm*
 | WHERE @timestamp > NOW() - ${lb}
@@ -297,7 +300,7 @@ FROM traces-apm*
   BY service.name
 | LIMIT 200
 `;
-  return safeEsqlRows<HealthRow>(classicQuery, errors);
+  return safeEsqlRows<HealthRow>(classicQuery, errors, { optional: true });
 }
 
 export function registerApmServiceDependenciesTool(server: McpServer) {

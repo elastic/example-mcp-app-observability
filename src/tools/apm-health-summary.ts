@@ -65,9 +65,13 @@ async function resolveNamespace(
   if (!requested) return {};
   const otelEsql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
   const ecsEsql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND kubernetes.namespace IS NOT NULL | STATS c = COUNT(*) BY kubernetes.namespace | SORT c DESC | LIMIT 50`;
+  // ECS branch is `optional` because `traces-apm*` in pure-OTel envs can match
+  // stub indices that lack @timestamp / kubernetes.namespace, raising expected
+  // verification_exception errors. Those aren't schema-drift signals for the
+  // user — they're "this env isn't classic APM," which is fine.
   const [otelRows, ecsRows] = await Promise.all([
     safeEsqlRows<{ "k8s.namespace.name"?: string }>(otelEsql, errors),
-    safeEsqlRows<{ "kubernetes.namespace"?: string }>(ecsEsql, errors),
+    safeEsqlRows<{ "kubernetes.namespace"?: string }>(ecsEsql, errors, { optional: true }),
   ]);
   const seen = new Set<string>();
   const names: string[] = [];
@@ -123,7 +127,9 @@ async function queryServiceTraces(
 // Tier 3: classic APM agents — traces-apm*. Scopes by service.name IN (…) rather
 // than kubernetes.namespace to avoid the "Unknown column [kubernetes.namespace]"
 // error on mappings that don't include the ECS k8s fields. Only run when tier-1
-// (pre-agg metrics) and tier-2 (OTel traces) return nothing.
+// (pre-agg metrics) and tier-2 (OTel traces) return nothing. Marked `optional`
+// so verification_exception failures in pure-OTel envs (where traces-apm* can
+// match stub indices lacking classic APM fields) don't pollute _query_errors.
 async function queryServiceTracesClassic(
   serviceFilter: string,
   lookback: string,
@@ -132,7 +138,9 @@ async function queryServiceTracesClassic(
   const trimmedFilter = serviceFilter.trim();
   const clause = trimmedFilter ? ` ${trimmedFilter} ` : "";
   const esql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND processor.event == "transaction"${clause}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
-  const rows = await safeEsqlRows<{ "service.name"?: string; total_count?: number }>(esql, errors);
+  const rows = await safeEsqlRows<{ "service.name"?: string; total_count?: number }>(esql, errors, {
+    optional: true,
+  });
   return rows
     .filter((r) => !!r["service.name"])
     .map((r) => ({

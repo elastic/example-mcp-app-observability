@@ -29,9 +29,15 @@ export function rowsFromEsql<T>(result: EsqlResult): T[] {
 // always logged to stderr. When an `errors` collector is supplied, the error
 // message is appended so callers can surface it in tool responses — this is
 // how tools avoid the "silent empty result" trap that masks schema drift.
+//
+// `optional: true` means the query is a known-may-fail fallback (e.g. classic
+// APM / ECS probe in a pure-OTel environment). Errors still go to stderr for
+// debugging, but are NOT pushed to the caller's collector — a fallback that
+// doesn't match the env isn't a problem the user needs to see in _query_errors.
 export async function safeEsqlRows<T>(
   query: string,
-  errors?: string[]
+  errors?: string[],
+  opts?: { optional?: boolean }
 ): Promise<T[]> {
   try {
     const res = await executeEsql(query);
@@ -39,7 +45,7 @@ export async function safeEsqlRows<T>(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`[elastic-o11y-mcp] ESQL failed: ${msg}\n`);
-    if (errors) errors.push(msg);
+    if (errors && !opts?.optional) errors.push(msg);
     return [];
   }
 }

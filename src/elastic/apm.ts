@@ -39,6 +39,11 @@ FROM traces-*.otel-*
   for (const r of otelRows) if (r["service.name"]) out.add(r["service.name"]);
   if (out.size) return [...out];
 
+  // Classic APM fallback. `optional: true` because in pure-OTel environments
+  // `traces-apm*` may match stub/bootstrap indices that don't carry the classic
+  // schema (@timestamp, kubernetes.namespace, processor.event), producing
+  // verification_exception errors on every field. Those failures are expected
+  // wrong-env signals — not problems the user should see in _query_errors.
   const classicQuery = `
 FROM traces-apm*
 | WHERE @timestamp > NOW() - ${lookback}
@@ -49,7 +54,9 @@ FROM traces-apm*
 | SORT cnt DESC
 | LIMIT 100
 `;
-  const classicRows = await safeEsqlRows<{ "service.name"?: string }>(classicQuery, errors);
+  const classicRows = await safeEsqlRows<{ "service.name"?: string }>(classicQuery, errors, {
+    optional: true,
+  });
   for (const r of classicRows) if (r["service.name"]) out.add(r["service.name"]);
   return [...out];
 }
