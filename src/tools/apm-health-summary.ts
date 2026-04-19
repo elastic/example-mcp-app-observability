@@ -16,6 +16,7 @@ import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
 import { esRequest } from "../elastic/client.js";
 import { mlAnomalyIndicesExist } from "../elastic/ml.js";
+import { resolveServicesInNamespace, buildServiceFilter } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
@@ -34,12 +35,16 @@ interface PodRow {
 }
 
 async function queryServiceTransactionRollup(
-  namespace: string | undefined,
+  serviceFilter: string,
   lookback: string,
   errors: string[]
 ): Promise<ServiceRow[]> {
-  const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
-  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS total = COUNT(*) BY service.name | SORT total DESC | LIMIT 30`;
+  // Scope by service.name IN (…) instead of k8s.namespace.name directly — the rollup
+  // transform may not carry the namespace as a dimension, which silently drops all
+  // rows even when data is present. See src/elastic/apm.ts for rationale.
+  const trimmedFilter = serviceFilter.trim();
+  const clause = trimmedFilter ? ` ${trimmedFilter} ` : "";
+  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS total = COUNT(*) BY service.name | SORT total DESC | LIMIT 30`;
   const rows = await safeEsqlRows<{ "service.name"?: string; total?: number }>(esql, errors);
   return rows
     .filter((r) => !!r["service.name"])
@@ -99,14 +104,13 @@ async function resolveNamespace(
 }
 
 async function queryServiceTraces(
-  namespace: string | undefined,
+  serviceFilter: string,
   lookback: string,
   errors: string[]
 ): Promise<ServiceRow[]> {
-  const nsFilter = namespace
-    ? `| WHERE k8s.namespace.name == "${namespace}" `
-    : "";
-  const esql = `FROM traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
+  const trimmedFilter = serviceFilter.trim();
+  const clause = trimmedFilter ? ` ${trimmedFilter} ` : "";
+  const esql = `FROM traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
   const rows = await safeEsqlRows<{ "service.name"?: string; total_count?: number }>(esql, errors);
   return rows
     .filter((r) => !!r["service.name"])
@@ -116,18 +120,18 @@ async function queryServiceTraces(
     }));
 }
 
-// Tier 3: classic APM agents — traces-apm* with ECS-style kubernetes.* namespace filter.
-// Only run when tier-1 (pre-agg metrics) and tier-2 (OTel traces) return nothing, so OTel-native
-// deployments don't pay the extra call.
+// Tier 3: classic APM agents — traces-apm*. Scopes by service.name IN (…) rather
+// than kubernetes.namespace to avoid the "Unknown column [kubernetes.namespace]"
+// error on mappings that don't include the ECS k8s fields. Only run when tier-1
+// (pre-agg metrics) and tier-2 (OTel traces) return nothing.
 async function queryServiceTracesClassic(
-  namespace: string | undefined,
+  serviceFilter: string,
   lookback: string,
   errors: string[]
 ): Promise<ServiceRow[]> {
-  const nsFilter = namespace
-    ? `AND kubernetes.namespace == "${namespace}" `
-    : "";
-  const esql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND processor.event == "transaction" ${nsFilter}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
+  const trimmedFilter = serviceFilter.trim();
+  const clause = trimmedFilter ? ` ${trimmedFilter} ` : "";
+  const esql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND processor.event == "transaction"${clause}| STATS total_count = COUNT(*) BY service.name | SORT total_count DESC | LIMIT 30`;
   const rows = await safeEsqlRows<{ "service.name"?: string; total_count?: number }>(esql, errors);
   return rows
     .filter((r) => !!r["service.name"])
@@ -138,15 +142,15 @@ async function queryServiceTracesClassic(
 }
 
 async function queryServices(
-  namespace: string | undefined,
+  serviceFilter: string,
   lookback: string,
   errors: string[]
 ): Promise<ServiceRow[]> {
-  const rollup = await queryServiceTransactionRollup(namespace, lookback, errors);
+  const rollup = await queryServiceTransactionRollup(serviceFilter, lookback, errors);
   if (rollup.length) return rollup;
-  const otel = await queryServiceTraces(namespace, lookback, errors);
+  const otel = await queryServiceTraces(serviceFilter, lookback, errors);
   if (otel.length) return otel;
-  return queryServiceTracesClassic(namespace, lookback, errors);
+  return queryServiceTracesClassic(serviceFilter, lookback, errors);
 }
 
 async function queryPodResources(
@@ -393,8 +397,21 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       const queryErrors: string[] = [];
       const nsResolution = await resolveNamespace(namespace, lb, queryErrors);
       const effectiveNs = nsResolution.resolved ?? namespace;
+
+      // Service tiers scope by service.name IN (…) to dodge schema-drift gotchas
+      // (pre-agg rollups missing k8s.namespace.name as a dimension; traces-apm*
+      // missing kubernetes.namespace in some mappings). Pod resources still scope
+      // by k8s.namespace.name directly — kubeletstats reliably carries it and
+      // pods aren't addressable via service.name anyway.
+      const servicesInNs = effectiveNs
+        ? await resolveServicesInNamespace(effectiveNs, lb, queryErrors)
+        : undefined;
+      const serviceFilter = buildServiceFilter(servicesInNs);
+
       const [services, pods, anomalies] = await Promise.all([
-        queryServices(effectiveNs, lb, queryErrors),
+        effectiveNs && servicesInNs && !servicesInNs.length
+          ? Promise.resolve<ServiceRow[]>([])
+          : queryServices(serviceFilter, lb, queryErrors),
         queryPodResources(effectiveNs, lb, queryErrors),
         queryActiveAnomalies(effectiveNs, job_filter, exclude_entities),
       ]);

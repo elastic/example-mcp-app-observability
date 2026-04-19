@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
+import { resolveServicesInNamespace, buildServiceFilter } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://apm-service-dependencies/mcp-app.html";
@@ -144,7 +145,7 @@ function parseDestination(resource: string): {
 // of the receiving service (e.g. "ad"), so edge targets and health data line up.
 async function fetchTargetResolution(
   lb: string,
-  nsFilter: string,
+  serviceFilter: string,
   errors: string[]
 ): Promise<Map<string, string>> {
   const query = `
@@ -152,7 +153,7 @@ FROM traces-*.otel-*
 | WHERE @timestamp > NOW() - ${lb}
   AND rpc.service IS NOT NULL
   AND service.name IS NOT NULL
-  AND kind IN ("Server", "SERVER")${nsFilter}
+  AND kind IN ("Server", "SERVER")${serviceFilter}
 | STATS cnt = COUNT(*) BY rpc.service, service.name
 | SORT cnt DESC
 | LIMIT 500
@@ -176,9 +177,11 @@ FROM traces-*.otel-*
 
 // Metadata (language, deployment, namespace) — OTel traces first, classic APM (traces-apm*
 // + kubernetes.*) as fallback so classic-agent customers still see language/k8s context.
+// When a namespace was requested, `serviceFilter` (service.name IN …) has already scoped
+// the service set — no separate namespace clause is needed on either branch.
 async function fetchMetadata(
   lb: string,
-  nsFilterEcs: string,
+  serviceFilter: string,
   otelQuery: string,
   errors: string[]
 ): Promise<MetadataRow[]> {
@@ -188,7 +191,7 @@ async function fetchMetadata(
 FROM traces-apm*
 | WHERE service.name IS NOT NULL
   AND @timestamp > NOW() - ${lb}
-  AND processor.event == "transaction"${nsFilterEcs}
+  AND processor.event == "transaction"${serviceFilter}
 | STATS
     trace_count = COUNT(*)
   BY service.name, service.language.name, kubernetes.deployment.name, kubernetes.namespace
@@ -212,8 +215,7 @@ FROM traces-apm*
 
 async function fetchHealth(
   lb: string,
-  nsFilter: string,
-  nsFilterEcs: string,
+  serviceFilter: string,
   errors: string[]
 ): Promise<HealthRow[]> {
   // Span counts from pre-aggregated summary metrics are reliable (SUM of a
@@ -224,10 +226,15 @@ async function fetchHealth(
   // against oteldemo-esyox: the summary-metric AVG inflated some services
   // by 2–5× (and up to 600s for low-volume services) relative to a raw
   // traces AVG. We use traces as the authoritative latency source.
+  //
+  // Scoping note: `serviceFilter` (service.name IN …) is used on every branch.
+  // That's intentional — the service_summary / service_destination transforms
+  // may not carry k8s.namespace.name as a dimension (silent-empty bug the user
+  // hit), so we scope by the universal service.name join key instead.
   const summaryQuery = `
 FROM metrics-service_summary.1m.otel-*
 | WHERE @timestamp > NOW() - ${lb}
-  AND service.name IS NOT NULL${nsFilter}
+  AND service.name IS NOT NULL${serviceFilter}
 | STATS
     span_count = SUM(service_summary)
   BY service.name
@@ -237,7 +244,7 @@ FROM metrics-service_summary.1m.otel-*
   const tracesQuery = `
 FROM traces-*.otel-*
 | WHERE @timestamp > NOW() - ${lb}
-  AND service.name IS NOT NULL${nsFilter}
+  AND service.name IS NOT NULL${serviceFilter}
 | EVAL duration_us = duration / 1000
 | STATS
     traces_span_count = COUNT(*),
@@ -282,7 +289,7 @@ FROM traces-*.otel-*
 FROM traces-apm*
 | WHERE @timestamp > NOW() - ${lb}
   AND service.name IS NOT NULL
-  AND processor.event == "transaction"${nsFilterEcs}
+  AND processor.event == "transaction"${serviceFilter}
 | STATS
     span_count = COUNT(*),
     avg_duration_us = AVG(transaction.duration.us),
@@ -304,8 +311,11 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
         "Returns the service dependency graph from APM telemetry — which services call which, over what protocols, " +
         "with call volume and latency. Use when the user asks 'what calls X', 'what depends on X', 'show me the " +
         "topology', or is doing root-cause investigation and needs to know upstream/downstream neighbors. Optional " +
-        "Kubernetes namespace filter (OTel semconv: k8s.namespace.name). Health data comes from pre-aggregated APM " +
-        "service metrics when available, otherwise from raw OTel traces. Not useful for log-only or metrics-only customers.",
+        "Kubernetes namespace filter — resolved to the set of services observed in that namespace, then used to " +
+        "scope every downstream query by service.name (the pre-aggregated APM summary-metric indices may not carry " +
+        "k8s.namespace.name as a transform dimension, so the resolution step is what makes the filter work reliably). " +
+        "Health data comes from pre-aggregated APM service metrics when available, otherwise from raw OTel traces. " +
+        "Not useful for log-only or metrics-only customers.",
       inputSchema: {
         service: z.string().optional().describe(
           "Focal service to center the graph on. Returns only its direct upstream (who calls it) and downstream " +
@@ -331,14 +341,50 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
     async ({ service, namespace, lookback, include_health }) => {
       const lb = lookback || "1h";
       const includeHealth = include_health !== false;
-      const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace}"` : "";
-      const nsFilterEcs = namespace ? `\n  AND kubernetes.namespace == "${namespace}"` : "";
+      const queryErrors: string[] = [];
+
+      // Namespace scoping goes through service.name resolution rather than a direct
+      // `k8s.namespace.name == X` clause. Rationale: the pre-aggregated APM summary
+      // metrics (`metrics-service_*.1m.otel-*`) may not carry k8s.namespace.name as a
+      // transform dimension, so a direct clause silently returns zero rows even when
+      // the namespace is populated. service.name is the universal join key across
+      // OTel rollups, OTel traces, and classic APM — scoping by it works everywhere.
+      let resolvedServices: string[] | undefined;
+      if (namespace) {
+        resolvedServices = await resolveServicesInNamespace(namespace, lb, queryErrors);
+        if (!resolvedServices.length) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  services: [],
+                  edges: [],
+                  service_count: 0,
+                  edge_count: 0,
+                  data_coverage: { apm: false },
+                  filters: { lookback: lb, namespace },
+                  hint:
+                    `No APM services observed in namespace "${namespace}" over the last ${lb}. ` +
+                    `Possible causes: (1) the namespace doesn't exist in this environment, ` +
+                    `(2) services in this namespace aren't APM-instrumented, or (3) the ` +
+                    `k8s.namespace.name resource attribute isn't being propagated to spans ` +
+                    `by the collector pipeline. Use apm-health-summary (without a namespace ` +
+                    `filter) to discover which namespaces are currently reporting services.`,
+                  ...(queryErrors.length ? { _query_errors: queryErrors } : {}),
+                }),
+              },
+            ],
+          };
+        }
+      }
+      const serviceFilter = buildServiceFilter(resolvedServices);
 
       const edgesQuery = `
 FROM metrics-service_destination.1m.otel-*
 | WHERE @timestamp > NOW() - ${lb}
   AND service.name IS NOT NULL
-  AND (span.destination.service.resource IS NOT NULL OR service.target.name IS NOT NULL)${nsFilter}
+  AND (span.destination.service.resource IS NOT NULL OR service.target.name IS NOT NULL)${serviceFilter}
 | STATS
     total_count = SUM(span.destination.service.response_time.count),
     total_duration_us = SUM(span.destination.service.response_time.sum.us)
@@ -354,7 +400,7 @@ FROM metrics-service_destination.1m.otel-*
       const metadataQuery = `
 FROM traces-*.otel-*
 | WHERE service.name IS NOT NULL
-  AND @timestamp > NOW() - ${lb}${nsFilter}
+  AND @timestamp > NOW() - ${lb}${serviceFilter}
 | STATS
     trace_count = COUNT(*)
   BY service.name, service.language.name, k8s.deployment.name, k8s.namespace.name
@@ -362,12 +408,11 @@ FROM traces-*.otel-*
 | LIMIT 100
 `;
 
-      const queryErrors: string[] = [];
       const [edgeRows, healthRows, metadataRows, targetResolution] = await Promise.all([
         safeEsqlRows<EdgeRow>(edgesQuery, queryErrors),
-        includeHealth ? fetchHealth(lb, nsFilter, nsFilterEcs, queryErrors) : Promise.resolve([]),
-        fetchMetadata(lb, nsFilterEcs, metadataQuery, queryErrors),
-        fetchTargetResolution(lb, nsFilter, queryErrors),
+        includeHealth ? fetchHealth(lb, serviceFilter, queryErrors) : Promise.resolve([]),
+        fetchMetadata(lb, serviceFilter, metadataQuery, queryErrors),
+        fetchTargetResolution(lb, serviceFilter, queryErrors),
       ]);
 
       if (!edgeRows.length) {
@@ -561,7 +606,14 @@ FROM traces-*.otel-*
         }
       }
 
-      result.filters = namespace ? { lookback: lb, namespace } : { lookback: lb };
+      result.filters =
+        namespace && resolvedServices
+          ? {
+              lookback: lb,
+              namespace,
+              resolved_service_count: resolvedServices.length,
+            }
+          : { lookback: lb };
 
       // Opinionated next-step prompts. Prioritize the most-likely-interesting follow-up given
       // what we found: unhealthy services → anomaly drill-down, focal service → blast radius,
