@@ -14,7 +14,11 @@ import {
 import { z } from "zod";
 import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
-import { resolveServicesInNamespace, buildServiceFilter } from "../elastic/apm.js";
+import {
+  resolveServicesInNamespace,
+  buildServiceFilter,
+  resolveNamespace,
+} from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://apm-service-dependencies/mcp-app.html";
@@ -352,9 +356,17 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
       // transform dimension, so a direct clause silently returns zero rows even when
       // the namespace is populated. service.name is the universal join key across
       // OTel rollups, OTel traces, and classic APM — scoping by it works everywhere.
+      //
+      // Fuzzy-resolve the user-supplied name first so that "otel-demo" matches
+      // "oteldemo-esyox-default" (common demo-env pattern). Without this step,
+      // exact-match resolution returns zero services and we short-circuit with
+      // a misleading "namespace has no APM services" hint.
       let resolvedServices: string[] | undefined;
+      let nsResolution: Awaited<ReturnType<typeof resolveNamespace>> = {};
       if (namespace) {
-        resolvedServices = await resolveServicesInNamespace(namespace, lb, queryErrors);
+        nsResolution = await resolveNamespace(namespace, lb, queryErrors);
+        const effectiveNs = nsResolution.resolved ?? namespace;
+        resolvedServices = await resolveServicesInNamespace(effectiveNs, lb, queryErrors);
         if (!resolvedServices.length) {
           return {
             content: [
@@ -366,9 +378,19 @@ export function registerApmServiceDependenciesTool(server: McpServer) {
                   service_count: 0,
                   edge_count: 0,
                   data_coverage: { apm: false },
-                  filters: { lookback: lb, namespace },
+                  filters: {
+                    lookback: lb,
+                    namespace,
+                    ...(nsResolution.resolved && nsResolution.resolved !== namespace
+                      ? { namespace_resolved: nsResolution.resolved }
+                      : {}),
+                  },
+                  ...(nsResolution.note ? { namespace_note: nsResolution.note } : {}),
+                  ...(nsResolution.candidates
+                    ? { namespace_candidates: nsResolution.candidates }
+                    : {}),
                   hint:
-                    `No APM services observed in namespace "${namespace}" over the last ${lb}. ` +
+                    `No APM services observed in namespace "${effectiveNs}" over the last ${lb}. ` +
                     `Possible causes: (1) the namespace doesn't exist in this environment, ` +
                     `(2) services in this namespace aren't APM-instrumented, or (3) the ` +
                     `k8s.namespace.name resource attribute isn't being propagated to spans ` +
@@ -614,9 +636,13 @@ FROM traces-*.otel-*
           ? {
               lookback: lb,
               namespace,
+              ...(nsResolution.resolved && nsResolution.resolved !== namespace
+                ? { namespace_resolved: nsResolution.resolved }
+                : {}),
               resolved_service_count: resolvedServices.length,
             }
           : { lookback: lb };
+      if (nsResolution.note) result.namespace_note = nsResolution.note;
 
       // Opinionated next-step prompts. Prioritize the most-likely-interesting follow-up given
       // what we found: unhealthy services → anomaly drill-down, focal service → blast radius,

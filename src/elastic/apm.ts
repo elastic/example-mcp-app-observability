@@ -70,3 +70,71 @@ export function buildServiceFilter(services: string[] | undefined): string {
   const escaped = services.map((s) => `"${s.replace(/"/g, '\\"')}"`).join(", ");
   return `\n  AND service.name IN (${escaped})`;
 }
+
+export interface ResolvedNamespace {
+  resolved?: string;
+  note?: string;
+  candidates?: string[];
+}
+
+// Fuzzy-resolve a user-supplied namespace string against the set actually
+// present in recent telemetry. Users commonly say "otel-demo" when the real
+// namespace is "oteldemo-esyox-default" (Elastic demo-env naming convention)
+// or "prod" when it's "production-gke-us-east". Exact match → prefix match
+// (after normalizing case and stripping -_) → substring match. When no match,
+// returns up to 8 candidate names so the caller can surface them to the user.
+//
+// ECS branch is `optional` because `traces-apm*` in pure-OTel envs can match
+// stub indices without kubernetes.namespace — the verification_exception
+// isn't a schema-drift signal the user needs to see.
+export async function resolveNamespace(
+  requested: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<ResolvedNamespace> {
+  if (!requested) return {};
+  const otelEsql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
+  const ecsEsql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND kubernetes.namespace IS NOT NULL | STATS c = COUNT(*) BY kubernetes.namespace | SORT c DESC | LIMIT 50`;
+  const [otelRows, ecsRows] = await Promise.all([
+    safeEsqlRows<{ "k8s.namespace.name"?: string }>(otelEsql, errors),
+    safeEsqlRows<{ "kubernetes.namespace"?: string }>(ecsEsql, errors, { optional: true }),
+  ]);
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const r of otelRows) {
+    const n = r["k8s.namespace.name"];
+    if (n && !seen.has(n)) {
+      seen.add(n);
+      names.push(n);
+    }
+  }
+  for (const r of ecsRows) {
+    const n = r["kubernetes.namespace"];
+    if (n && !seen.has(n)) {
+      seen.add(n);
+      names.push(n);
+    }
+  }
+  if (!names.length) return {};
+  if (names.includes(requested)) return { resolved: requested };
+  const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
+  const target = norm(requested);
+  const prefix = names.find((n) => norm(n).startsWith(target));
+  if (prefix) {
+    return {
+      resolved: prefix,
+      note: `Resolved namespace "${requested}" → "${prefix}" (prefix match).`,
+    };
+  }
+  const substr = names.find((n) => norm(n).includes(target));
+  if (substr) {
+    return {
+      resolved: substr,
+      note: `Resolved namespace "${requested}" → "${substr}" (fuzzy match).`,
+    };
+  }
+  return {
+    note: `Namespace "${requested}" not found in recent telemetry.`,
+    candidates: names.slice(0, 8),
+  };
+}

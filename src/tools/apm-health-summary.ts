@@ -16,7 +16,11 @@ import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
 import { esRequest } from "../elastic/client.js";
 import { mlAnomalyIndicesExist } from "../elastic/ml.js";
-import { resolveServicesInNamespace, buildServiceFilter } from "../elastic/apm.js";
+import {
+  resolveServicesInNamespace,
+  buildServiceFilter,
+  resolveNamespace,
+} from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
@@ -49,62 +53,6 @@ async function queryServiceTransactionRollup(
   return rows
     .filter((r) => !!r["service.name"])
     .map((r) => ({ service: r["service.name"]!, throughput: r.total || 0 }));
-}
-
-interface ResolvedNamespace {
-  resolved?: string;
-  note?: string;
-  candidates?: string[];
-}
-
-async function resolveNamespace(
-  requested: string | undefined,
-  lookback: string,
-  errors: string[]
-): Promise<ResolvedNamespace> {
-  if (!requested) return {};
-  const otelEsql = `FROM metrics-kubeletstatsreceiver.otel-*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
-  const ecsEsql = `FROM traces-apm* | WHERE @timestamp > NOW() - ${lookback} AND kubernetes.namespace IS NOT NULL | STATS c = COUNT(*) BY kubernetes.namespace | SORT c DESC | LIMIT 50`;
-  // ECS branch is `optional` because `traces-apm*` in pure-OTel envs can match
-  // stub indices that lack @timestamp / kubernetes.namespace, raising expected
-  // verification_exception errors. Those aren't schema-drift signals for the
-  // user — they're "this env isn't classic APM," which is fine.
-  const [otelRows, ecsRows] = await Promise.all([
-    safeEsqlRows<{ "k8s.namespace.name"?: string }>(otelEsql, errors),
-    safeEsqlRows<{ "kubernetes.namespace"?: string }>(ecsEsql, errors, { optional: true }),
-  ]);
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const r of otelRows) {
-    const n = r["k8s.namespace.name"];
-    if (n && !seen.has(n)) { seen.add(n); names.push(n); }
-  }
-  for (const r of ecsRows) {
-    const n = r["kubernetes.namespace"];
-    if (n && !seen.has(n)) { seen.add(n); names.push(n); }
-  }
-  if (!names.length) return {};
-  if (names.includes(requested)) return { resolved: requested };
-  const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
-  const target = norm(requested);
-  const prefix = names.find((n) => norm(n).startsWith(target));
-  if (prefix) {
-    return {
-      resolved: prefix,
-      note: `Resolved namespace "${requested}" → "${prefix}" (prefix match).`,
-    };
-  }
-  const substr = names.find((n) => norm(n).includes(target));
-  if (substr) {
-    return {
-      resolved: substr,
-      note: `Resolved namespace "${requested}" → "${substr}" (fuzzy match).`,
-    };
-  }
-  return {
-    note: `Namespace "${requested}" not found in recent telemetry.`,
-    candidates: names.slice(0, 8),
-  };
 }
 
 async function queryServiceTraces(
