@@ -62,7 +62,7 @@ export function registerManageAlertsTool(server: McpServer) {
         "(logs, metrics, APM, custom). CRUD for Kibana alert rules (custom-threshold rule type). Supports four operations:\n" +
         "  • operation='create' — create a new persistent custom-threshold alerting rule. Real, live rule — not a simulation. " +
         "Tagged 'elastic-o11y-mcp' by default for easy cleanup. Use when the user wants durable alerting ('page me if X', " +
-        "'create a rule for Y'). For transient session-scoped monitoring use `watch` instead.\n" +
+        "'create a rule for Y'). For transient session-scoped monitoring use `observe` instead.\n" +
         "  • operation='list' — list existing rules, optionally filtered by tags, name search, or rule_type_ids. Defaults to " +
         "tags=['elastic-o11y-mcp'] so you see the rules this MCP created. Pass tags=[] to see every rule in Kibana.\n" +
         "  • operation='get' — fetch a single rule by rule_id, including execution status and last-run outcome.\n" +
@@ -235,8 +235,8 @@ async function handleCreate(input: ManageAlertsInput, kibanaUrl: string) {
       prompt: "Use manage-alerts with operation='list' to show all rules this MCP created.",
     },
     {
-      label: "Watch metric stabilize",
-      prompt: `Use watch in metric mode with the same condition (${comparator} ${input.threshold}) to verify the metric now stays in the healthy range.`,
+      label: "Observe metric stabilize",
+      prompt: `Use observe in metric mode with the same condition (${comparator} ${input.threshold}) to verify the metric now stays in the healthy range.`,
     },
     {
       label: "Delete this rule",

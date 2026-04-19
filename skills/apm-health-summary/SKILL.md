@@ -19,12 +19,12 @@ I look?" It gives you a one-shot rollup: degraded services, top resource consume
 
 | Signal | Required? | What happens without it |
 |--------|-----------|--------------------------|
-| Elastic APM | **Required** | Tool returns a warning and suggests `ml-anomalies`/`watch`/`create-alert-rule` instead. |
+| Elastic APM | **Required** | Tool returns a warning and suggests `ml-anomalies`/`observe`/`manage-alerts` instead. |
 | Kubernetes (kubeletstats) | Optional | `pods` section is replaced by a note; service health still reported. |
 | ML anomaly jobs | Optional | `anomalies` section is replaced by a note; service health still reported. |
 
 If the user is log-only or metrics-only (no APM), do not call this tool. Suggest `ml-anomalies` (for ML-backed
-anomaly detection) or `watch` / `create-alert-rule` (both universal).
+anomaly detection) or `observe` / `manage-alerts` (both universal).
 
 ## Tools
 
@@ -34,7 +34,7 @@ anomaly detection) or `watch` / `create-alert-rule` (both universal).
 | `ml-anomalies` | Drill into anomalies flagged in the summary. |
 | `apm-service-dependencies` | Map topology around any degraded service. |
 | `k8s-blast-radius` | If the summary implicates a node (pod resource pressure), assess node impact. |
-| `watch` | Post-investigation: watch for stabilization or follow-on anomalies. |
+| `observe` | Post-investigation: observe for stabilization or follow-on anomalies. |
 
 ## How to call apm-health-summary
 

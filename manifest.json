@@ -4,7 +4,7 @@
   "display_name": "Elastic Observability",
   "version": "1.0.14",
   "description": "Interactive SRE workflows for Elastic Observability — Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, and alert-rule management.",
-  "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: watch for ML anomalies, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and manage Kibana threshold alert rules (create, list, get, delete).",
+  "long_description": "An MCP App server that brings agentic SRE workflows directly into Claude Desktop and other MCP clients. Purpose-built for investigating Kubernetes incidents against live OpenTelemetry data in Elastic: observe ML anomalies firing, explain them with an inline severity gauge, roll up cluster health, assess node blast-radius, map service dependencies, and manage Kibana threshold alert rules (create, list, get, delete).",
   "author": {
     "name": "Elastic",
     "url": "https://www.elastic.co"
@@ -34,8 +34,8 @@
   },
   "tools": [
     {
-      "name": "watch",
-      "description": "Transient watcher — blocks until an ML anomaly fires or an ES|QL metric condition is met. Universal: metric mode needs no specific backend."
+      "name": "observe",
+      "description": "Transient ES|QL / ML-anomaly access primitive — run once (now/table), live-sample, or block until a condition fires. Universal: most modes need no specific backend."
     },
     {
       "name": "ml-anomalies",

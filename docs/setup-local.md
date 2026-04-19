@@ -6,7 +6,7 @@ Build from source and run the MCP server on your machine.
 
 - **Node.js 22+**
 - **Elasticsearch 8.x or 9.x** with OpenTelemetry data (EDOT + kube-stack recommended)
-- **Kibana 8.x or 9.x** with Alerting enabled (for the `create-alert-rule` tool)
+- **Kibana 8.x or 9.x** with Alerting enabled (for the `manage-alerts` tool)
 - **API keys** for both Elasticsearch and Kibana
 
 ## Steps

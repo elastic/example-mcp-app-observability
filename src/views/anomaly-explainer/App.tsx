@@ -636,7 +636,7 @@ export function App() {
     return (
       <div style={{ padding: 24, textAlign: "center", color: theme.textMuted }}>
         <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for anomaly data…</div>
-        <div style={{ fontSize: 11 }}>Call ml-anomalies or watch to populate this view.</div>
+        <div style={{ fontSize: 11 }}>Call ml-anomalies or observe to populate this view.</div>
       </div>
     );
   }

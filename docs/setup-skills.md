@@ -22,8 +22,8 @@ npx skills add elastic/example-mcp-app-observability --all
 
 Download the skill zips from the [latest GitHub release](https://github.com/elastic/example-mcp-app-observability/releases/latest):
 
-- `watch.zip`
-- `create-alert-rule.zip`
+- `observe.zip`
+- `manage-alerts.zip`
 - `ml-anomalies.zip`
 - `apm-health-summary.zip`
 - `apm-service-dependencies.zip`

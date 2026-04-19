@@ -7,7 +7,7 @@ Thank you for your interest in contributing to the Elastic Observability MCP App
 - **Node.js 22+**
 - **npm** (included with Node.js)
 - **Elasticsearch 8.x or 9.x** with OpenTelemetry data (EDOT + kube-stack recommended for runtime testing)
-- **Kibana 8.x or 9.x** with Alerting enabled (for the `create-alert-rule` tool)
+- **Kibana 8.x or 9.x** with Alerting enabled (for the `manage-alerts` tool)
 
 ## Getting Started
 
@@ -98,7 +98,7 @@ Each skill in `skills/` is packaged as an individual `.zip` for upload to Claude
 npm run skills:zip
 ```
 
-This script (`scripts/build-skill-zips.sh`) iterates over `skills/*/`, zipping each directory that contains a `SKILL.md`. The resulting files are written to `dist/skills/` (e.g. `dist/skills/watch.zip`).
+This script (`scripts/build-skill-zips.sh`) iterates over `skills/*/`, zipping each directory that contains a `SKILL.md`. The resulting files are written to `dist/skills/` (e.g. `dist/skills/observe.zip`).
 
 ## Release Process
 

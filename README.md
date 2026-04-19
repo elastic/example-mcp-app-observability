@@ -12,8 +12,8 @@ This project provides six interactive SRE tools, each with a rich React-based UI
 
 | Tool | What It Does |
 |------|-------------|
-| **watch** | Blocks until an ML anomaly fires or an ES\|QL metric condition is met. Metric mode works on any numeric field. |
-| **create-alert-rule** | Create a persistent Kibana custom-threshold alerting rule against any metric field in any index. |
+| **observe** | Transient ES\|QL / ML-anomaly access primitive — run a query once, live-sample it, or block until a threshold is crossed. |
+| **manage-alerts** | CRUD for Kibana custom-threshold alerting rules — create, list, get, delete. Works on any metric field in any index. |
 
 ### ML-dependent
 
@@ -42,7 +42,7 @@ An Agent Builder workflow ships alongside — for clients that prefer Agent Buil
 
 ## How It Works
 
-When a user asks Claude to watch for an anomaly or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
+When a user asks Claude to observe for an anomaly or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
 
 ### Skills
 

@@ -5,7 +5,7 @@ description: >
   user says "alert me when", "create a rule for", "page me if", "set up an alert", "show me my rules",
   "what alerts do I have", "delete that alert", "remove the rule". Backend-agnostic — works on any
   metric field in any index pattern (metrics-*, logs-*, traces-apm*, custom). For transient
-  session-scoped monitoring use `watch` instead. Requires Kibana with the Alerting feature enabled —
+  session-scoped monitoring use `observe` instead. Requires Kibana with the Alerting feature enabled —
   the tool is auto-disabled when no Kibana URL is configured.
 ---
 
@@ -37,16 +37,16 @@ easy to find and clean up.
 | `get`      | Fetch a single rule by id, with execution status.    |
 | `delete`   | Permanently remove a rule by id. Irreversible.       |
 
-## When to use this vs `watch`
+## When to use this vs `observe`
 
-| Use `manage-alerts` (create) when... | Use `watch` when... |
+| Use `manage-alerts` (create) when... | Use `observe` when... |
 |--------------------------------------|---------------------|
 | User wants durable alerting ("page me from now on") | User wants one-off monitoring ("for the next 10 min") |
 | Rule should keep running after session ends | Rule only matters inside the current conversation |
 | An operator should be paged out-of-band | The agent is validating a remediation in real time |
 | The threshold is well-understood | The threshold is still being calibrated |
 
-If the user is still calibrating, suggest `watch` first — don't create durable rules until the
+If the user is still calibrating, suggest `observe` first — don't create durable rules until the
 threshold is validated.
 
 ## operation='create'
@@ -160,7 +160,7 @@ All operations emit a common response envelope:
 - `operation`: echoes the operation for view rendering.
 - `message`: human-readable summary.
 - `investigation_actions`: click-to-send next-step prompts (chain to `list`, `get`, `delete`, or
-  `watch` as appropriate).
+  `observe` as appropriate).
 
 `create` additionally returns `rule_id` and `cleanup_hint` (a one-line DELETE instruction plus the
 equivalent `manage-alerts` call).

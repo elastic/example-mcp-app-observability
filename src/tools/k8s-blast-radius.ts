@@ -295,7 +295,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       if (feasible === false) {
         actions.push({
           label: "Create capacity alert",
-          prompt: `Use create-alert-rule to watch cluster memory headroom. Rule name "Cluster headroom below rescheduling need", metric field "k8s.node.memory.available", threshold ${totalMemoryAtRisk}, comparator "<".`,
+          prompt: `Use manage-alerts (operation "create") to watch cluster memory headroom. Rule name "Cluster headroom below rescheduling need", metric field "k8s.node.memory.available", threshold ${totalMemoryAtRisk}, comparator "<".`,
         });
       }
       // Only recommend apm-health-summary when we've proven APM telemetry is actually present

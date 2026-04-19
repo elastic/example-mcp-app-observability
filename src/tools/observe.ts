@@ -18,7 +18,7 @@ import { executeEsql } from "../elastic/esql.js";
 import type { EsqlResult } from "../shared/types.js";
 import { resolveViewPath } from "./view-path.js";
 
-const RESOURCE_URI = "ui://watch/mcp-app.html";
+const RESOURCE_URI = "ui://observe/mcp-app.html";
 
 type Comparator = "<" | "<=" | ">" | ">=" | "==";
 
@@ -67,7 +67,7 @@ async function pollMetric(esql: string): Promise<number | null> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-interface WatchInput {
+interface ObserveInput {
   mode?: "anomaly" | "metric" | "now" | "table";
   min_score?: number;
   interval?: number;
@@ -82,7 +82,7 @@ interface WatchInput {
 
 const TABLE_DEFAULT_ROW_CAP = 50;
 
-async function handleTableMode(args: WatchInput) {
+async function handleTableMode(args: ObserveInput) {
   const esql = args.esql || "";
   const description = args.description || "";
   if (!esql) {
@@ -128,7 +128,7 @@ async function handleTableMode(args: WatchInput) {
   };
 }
 
-async function handleNowMode(args: WatchInput) {
+async function handleNowMode(args: ObserveInput) {
   const esql = args.esql || "";
   const description = args.description || "";
   if (!esql) return { error: "Now mode requires 'esql' parameter with an ES|QL query." };
@@ -147,7 +147,7 @@ async function handleNowMode(args: WatchInput) {
   };
 }
 
-async function handleAnomalyMode(args: WatchInput) {
+async function handleAnomalyMode(args: ObserveInput) {
   const minScore = args.min_score ?? 75;
   const interval = args.interval ?? 30;
   const maxWait = args.max_wait ?? 600;
@@ -262,14 +262,14 @@ function buildAlert(anomalies: Awaited<ReturnType<typeof queryAnomalies>>["anoma
   };
 }
 
-function watchKey(esql: string, condition?: string): string {
+function observeKey(esql: string, condition?: string): string {
   let h = 0;
   const s = `${esql}|${condition || ""}`;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return `w_${Math.abs(h).toString(36)}`;
 }
 
-async function handleMetricMode(args: WatchInput) {
+async function handleMetricMode(args: ObserveInput) {
   const esql = args.esql || "";
   const conditionStr = args.condition;
   const interval = args.interval ?? 5;
@@ -288,8 +288,8 @@ async function handleMetricMode(args: WatchInput) {
   let elapsed = 0;
   let polls = 0;
   const history: { elapsed_seconds: number; value: number; timestamp_ms: number }[] = [];
-  const key = watchKey(esql, conditionStr);
-  const desc = description || "watched metric";
+  const key = observeKey(esql, conditionStr);
+  const desc = description || "observed metric";
 
   while (elapsed < maxWait) {
     polls++;
@@ -308,7 +308,7 @@ async function handleMetricMode(args: WatchInput) {
           polls,
           poll_interval_seconds: interval,
           trend: history,
-          watch_key: key,
+          observe_key: key,
           message: `${desc} reached ${value.toFixed(2)} (condition: ${conditionStr}) after ${elapsed}s.`,
         };
       }
@@ -337,27 +337,28 @@ async function handleMetricMode(args: WatchInput) {
     elapsed_seconds: elapsed,
     poll_interval_seconds: interval,
     trend: history,
-    watch_key: key,
+    observe_key: key,
     message: msg,
   };
 }
 
-export function registerWatchTool(server: McpServer) {
+export function registerObserveTool(server: McpServer) {
   registerAppTool(
     server,
-    "watch",
+    "observe",
     {
-      title: "Watch",
+      title: "Observe",
       description:
         "Requires: nothing in metric/now/table mode (works on any ES|QL-queryable data); ML anomaly jobs in anomaly " +
-        "mode. The agent's 'wait-and-see' primitive. Four modes:\n\n" +
+        "mode. The agent's Elastic-access primitive — run an ES|QL (or ML anomaly) query once, live-sample it over a " +
+        "window, or block until a condition fires. Four modes:\n\n" +
         "**Anomaly mode** (default): polls ML anomaly detection jobs and fires when a significant anomaly is detected. " +
         "Returns a structured alert with affected entities, severity, and investigation hints. Starting point for " +
         "autonomous incident investigation.\n\n" +
         "**Metric mode** (mode='metric'): polls an ES|QL query and either (a) fires when a condition is satisfied " +
         "(e.g. 'value < 80000000'), or (b) if no condition is given, live-samples the metric for the full max_wait " +
         "window and returns the trend — use this for 'show me a live chart of X' style prompts. Default interval 5s, " +
-        "max_wait 60s → ~12 samples. Tool returns include a `watch_key` so the UI can accumulate samples across repeated calls.\n\n" +
+        "max_wait 60s → ~12 samples. Tool returns include an `observe_key` so the UI can accumulate samples across repeated calls.\n\n" +
         "**Now mode** (mode='now'): runs the ES|QL query once and returns the current scalar value in a compact card — " +
         "use this for 'what is X right now' style prompts. Extracts the first numeric value of the first row, so it's " +
         "only suitable for single-value reads.\n\n" +
@@ -365,15 +366,15 @@ export function registerWatchTool(server: McpServer) {
         "columns, all types (string, numeric, boolean, date). Use this for 'list', 'group by', 'which …', or any query " +
         "that returns mixed-type rows (e.g. pod → node mappings, clusters with counts, top-N with labels). Rows are " +
         "capped (default 50) to keep responses compact; use LIMIT in the ES|QL or raise `row_cap` to get more.\n\n" +
-        "Unlike `create-alert-rule`, watch is transient and session-scoped — nothing is persisted to Kibana.",
+        "Unlike `manage-alerts`, observe is transient and session-scoped — nothing is persisted to Kibana.",
       inputSchema: {
         mode: z.enum(["anomaly", "metric", "now", "table"]).optional().describe(
-          "Watch mode. 'anomaly' (default) polls ML anomaly results — use when the user asks 'tell me when anything " +
+          "Observe mode. 'anomaly' (default) polls ML anomaly results — use when the user asks 'tell me when anything " +
           "unusual fires'. 'metric' polls an ES|QL query over time — use when the user names a specific metric " +
-          "and wants a live trend or threshold watch ('wait until memory drops below 80MB', 'show me a live chart'). " +
-          "'now' runs the query once and returns a single scalar value — use when the user asks 'what is X right now' " +
-          "and X is a single number. 'table' runs the query once and returns all rows and columns — use when the " +
-          "query groups, lists, or returns mixed-type data ('list pods by node', 'which clusters are reporting')."
+          "and wants a live trend or a threshold condition ('wait until memory drops below 80MB', 'show me a live " +
+          "chart'). 'now' runs the query once and returns a single scalar value — use when the user asks 'what is " +
+          "X right now' and X is a single number. 'table' runs the query once and returns all rows and columns — " +
+          "use when the query groups, lists, or returns mixed-type data ('list pods by node', 'which clusters are reporting')."
         ),
         min_score: z.number().optional().describe(
           "[Anomaly mode] Minimum anomaly score 0-100 to trigger. Default 75 (major+). Lower to 50 to include " +
@@ -409,12 +410,12 @@ export function registerWatchTool(server: McpServer) {
           "transaction counts in 1-minute rollup indices) or when you want a real cumulative total across entities."
         ),
         condition: z.string().optional().describe(
-          "[Metric mode] Optional condition '<comparator> <threshold>'. Examples: '< 80000000' (watch for memory to " +
-          "drop below 80MB), '>= 3' (watch for count to reach 3), '> 500' (watch for latency over 500ms). Omit for " +
-          "live-sampling — the tool polls for the full max_wait window and returns the trend."
+          "[Metric mode] Optional condition '<comparator> <threshold>'. Examples: '< 80000000' (fire when memory " +
+          "drops below 80MB), '>= 3' (fire when count reaches 3), '> 500' (fire when latency exceeds 500ms). Omit " +
+          "for live-sampling — the tool polls for the full max_wait window and returns the trend."
         ),
         description: z.string().optional().describe(
-          "[Metric/now/table mode] Human-readable description of what's being watched — surfaces as the card title. " +
+          "[Metric/now/table mode] Human-readable description of what's being observed — surfaces as the card title. " +
           "E.g. 'frontend memory working set', 'checkout p99 latency', 'k8s clusters'."
         ),
         row_cap: z.number().optional().describe(
@@ -424,7 +425,7 @@ export function registerWatchTool(server: McpServer) {
       },
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
-    async (args: WatchInput) => {
+    async (args: ObserveInput) => {
       const mode = args.mode || "anomaly";
       const raw =
         mode === "metric"
@@ -439,7 +440,7 @@ export function registerWatchTool(server: McpServer) {
     }
   );
 
-  const viewPath = resolveViewPath("watch");
+  const viewPath = resolveViewPath("observe");
   registerAppResource(
     server,
     RESOURCE_URI,
@@ -460,7 +461,7 @@ function detectUnit(description: string, esql?: string): "bytes" | "ms" | "pct" 
   return "raw";
 }
 
-function enrichForView(result: Record<string, unknown>, args: WatchInput): Record<string, unknown> {
+function enrichForView(result: Record<string, unknown>, args: ObserveInput): Record<string, unknown> {
   const enriched = { ...result };
   const actions: { label: string; prompt: string }[] = [];
 
@@ -469,7 +470,7 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
     enriched.namespace = args.namespace;
     actions.push({
       label: "Re-run query",
-      prompt: `Re-run watch in table mode with the same ESQL "${args.esql}" to refresh the result.`,
+      prompt: `Re-run observe in table mode with the same ESQL "${args.esql}" to refresh the result.`,
     });
     if (enriched.investigation_actions === undefined) enriched.investigation_actions = actions;
     return enriched;
@@ -486,15 +487,15 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
     enriched.unit = detectUnit(String(result.description || ""), args.esql);
     actions.push({
       label: "Re-check now",
-      prompt: `Re-run watch in now mode with the same ESQL "${args.esql}" to refresh the current value.`,
+      prompt: `Re-run observe in now mode with the same ESQL "${args.esql}" to refresh the current value.`,
     });
     actions.push({
-      label: "Watch live (60s)",
-      prompt: `Switch to a live watch: run watch in metric mode with the same ESQL "${args.esql}" (no condition) to draw a live chart.`,
+      label: "Observe live (60s)",
+      prompt: `Switch to a live observation: run observe in metric mode with the same ESQL "${args.esql}" (no condition) to draw a live chart.`,
     });
     actions.push({
       label: "Create alert rule",
-      prompt: `Use create-alert-rule against the same ES|QL target to persist a threshold for this metric.`,
+      prompt: `Use manage-alerts (operation "create") against the same ES|QL target to persist a threshold for this metric.`,
     });
     if (actions.length) enriched.investigation_actions = actions;
     return enriched;
@@ -509,16 +510,16 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
     enriched.namespace = args.namespace;
     enriched.unit = detectUnit(String(result.description || ""), args.esql);
 
-    // "Extend watch" always available — re-runs the same query for another window.
+    // "Extend" always available — re-runs the same query for another window.
     const extendPrompt = args.condition
-      ? `Re-run watch in metric mode with the same ESQL "${args.esql}" and condition "${args.condition}" for another ${args.max_wait ?? 60}s.`
-      : `Re-run watch in metric mode with the same ESQL "${args.esql}" (no condition — live sample) for another ${args.max_wait ?? 60}s.`;
-    actions.push({ label: "Extend watch (+60s)", prompt: extendPrompt });
+      ? `Re-run observe in metric mode with the same ESQL "${args.esql}" and condition "${args.condition}" for another ${args.max_wait ?? 60}s.`
+      : `Re-run observe in metric mode with the same ESQL "${args.esql}" (no condition — live sample) for another ${args.max_wait ?? 60}s.`;
+    actions.push({ label: "Extend observation (+60s)", prompt: extendPrompt });
 
     if (result.status === "CONDITION_MET") {
       actions.push({
         label: "Create alert rule",
-        prompt: `Now that the metric meets the condition, persist monitoring with create-alert-rule. Use the same ES|QL target and threshold.`,
+        prompt: `Now that the metric meets the condition, persist monitoring with manage-alerts (operation "create"). Use the same ES|QL target and threshold.`,
       });
     } else if (result.status === "TIMEOUT") {
       actions.push({
@@ -527,16 +528,16 @@ function enrichForView(result: Record<string, unknown>, args: WatchInput): Recor
       });
       actions.push({
         label: "Persist as alert rule",
-        prompt: "Use create-alert-rule to turn this watch into a persistent Kibana rule that will page if the condition ever fires.",
+        prompt: "Use manage-alerts (operation \"create\") to turn this observation into a persistent Kibana rule that will page if the condition ever fires.",
       });
     } else {
-      // SAMPLED (no condition) — offer to pivot into a real rule or threshold watch.
+      // SAMPLED (no condition) — offer to pivot into a real rule or threshold condition.
       actions.push({
         label: "Create alert rule",
-        prompt: `Use create-alert-rule to set a persistent threshold against the same ES|QL target. Pick a threshold informed by the sampled trend.`,
+        prompt: `Use manage-alerts (operation "create") to set a persistent threshold against the same ES|QL target. Pick a threshold informed by the sampled trend.`,
       });
     }
-    // Note: watch is universal (any ES|QL target). We cannot assume APM is deployed, so
+    // Note: observe is universal (any ES|QL target). We cannot assume APM is deployed, so
     // do NOT add "Confirm cluster health → apm-health-summary" here. Recommendations must
     // stay within tools whose data requirements are a subset of what this call required.
   } else if (result.status === "ALERT") {

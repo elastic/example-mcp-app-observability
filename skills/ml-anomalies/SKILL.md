@@ -28,7 +28,7 @@ into "here's what's wrong, where, and how bad."
 | Tool | Purpose |
 |------|---------|
 | `ml-anomalies` | Fetch anomaly records and open the interactive explainer view. |
-| `watch` (anomaly mode) | Block and wait for the next anomaly to fire rather than querying past ones. |
+| `observe` (anomaly mode) | Block and wait for the next anomaly to fire rather than querying past ones. |
 | `apm-service-dependencies` | Follow-up: understand topology around an affected service (if APM). |
 | `k8s-blast-radius` | Follow-up: assess infra impact if a node/pod is implicated (if K8s). |
 

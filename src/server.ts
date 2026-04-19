@@ -7,7 +7,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerMlAnomaliesTool } from "./tools/ml-anomalies.js";
-import { registerWatchTool } from "./tools/watch.js";
+import { registerObserveTool } from "./tools/observe.js";
 import { registerApmHealthSummaryTool } from "./tools/apm-health-summary.js";
 import { registerK8sBlastRadiusTool } from "./tools/k8s-blast-radius.js";
 import { registerApmServiceDependenciesTool } from "./tools/apm-service-dependencies.js";
@@ -21,7 +21,7 @@ export function createServer(): McpServer {
   });
 
   registerMlAnomaliesTool(server);
-  registerWatchTool(server);
+  registerObserveTool(server);
   registerApmHealthSummaryTool(server);
   registerK8sBlastRadiusTool(server);
   registerApmServiceDependenciesTool(server);

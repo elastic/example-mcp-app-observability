@@ -109,20 +109,20 @@ async function main() {
 | LIMIT 5`
   );
 
-  // ── watch (metric mode, universal) ───────────────────────────
+  // ── observe (metric mode, universal) ─────────────────────────
   await trySql(
-    "watch: generic ES|QL runs against cluster",
+    "observe: generic ES|QL runs against cluster",
     `FROM metrics-*
 | STATS doc_count = COUNT(*)
 | LIMIT 1`
   );
 
-  // ── create-alert-rule (Kibana reachability) ──────────────────
+  // ── manage-alerts (Kibana reachability) ──────────────────────
   try {
     await kibanaRequest("/api/status");
-    record("create-alert-rule: Kibana /api/status reachable", "PASS", "Kibana OK");
+    record("manage-alerts: Kibana /api/status reachable", "PASS", "Kibana OK");
   } catch (err) {
-    record("create-alert-rule: Kibana /api/status reachable", "FAIL", (err as Error).message.slice(0, 200));
+    record("manage-alerts: Kibana /api/status reachable", "FAIL", (err as Error).message.slice(0, 200));
   }
 
   // ── summary ──────────────────────────────────────────────────

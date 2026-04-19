@@ -197,7 +197,7 @@ async function enrichForView(
       const actualVal = firstNum(top.actual)!;
       actions.push({
         label: "Create alert rule",
-        prompt: `Use create-alert-rule to create a rule watching ${top.fieldName} > ${Math.round(actualVal * 0.9)} for the affected entity.`,
+        prompt: `Use manage-alerts (operation "create") to create a rule watching ${top.fieldName} > ${Math.round(actualVal * 0.9)} for the affected entity.`,
       });
     }
   }

@@ -455,7 +455,7 @@ FROM traces-*.otel-*
                   `No service dependency data in the last ${lb}. This tool requires Elastic APM traces ` +
                   `(traces-*.otel-*) with span.destination.service.resource or service.target.name populated. ` +
                   `If this is a log/metrics-only deployment, this tool does not apply — consider ` +
-                  `ml-anomalies, watch, or create-alert-rule instead.`,
+                  `ml-anomalies, observe, or manage-alerts instead.`,
               }),
             },
           ],

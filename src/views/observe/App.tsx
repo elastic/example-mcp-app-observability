@@ -4,7 +4,7 @@
  * 2.0; you may not use this file except in compliance with the Elastic License
  * 2.0.
  *
- * Watch view — renders results from the `watch` tool.
+ * Observe view — renders results from the `observe` tool.
  *
  * Two modes mirroring the tool:
  *
@@ -46,7 +46,7 @@ type MetricResult = {
   polls: number;
   poll_interval_seconds?: number;
   trend: TrendPoint[];
-  watch_key?: string;
+  observe_key?: string;
   message: string;
   esql?: string;
   namespace?: string;
@@ -108,21 +108,21 @@ type AnomalyAlert = {
   suggestion?: string;
 };
 
-type WatchResult = MetricResult | AnomalyAlert | NowResult | TableResult | ErrorResult;
+type ObserveResult = MetricResult | AnomalyAlert | NowResult | TableResult | ErrorResult;
 
-function isMetric(r: WatchResult): r is MetricResult {
+function isMetric(r: ObserveResult): r is MetricResult {
   return r.status === "CONDITION_MET" || r.status === "TIMEOUT" || r.status === "SAMPLED";
 }
 
-function isNow(r: WatchResult): r is NowResult {
+function isNow(r: ObserveResult): r is NowResult {
   return r.status === "NOW";
 }
 
-function isTable(r: WatchResult): r is TableResult {
+function isTable(r: ObserveResult): r is TableResult {
   return r.status === "TABLE";
 }
 
-function isError(r: WatchResult): r is ErrorResult {
+function isError(r: ObserveResult): r is ErrorResult {
   return r.status === "ERROR";
 }
 
@@ -627,7 +627,7 @@ function MetricView({
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-              {data.description || "Watched metric"}
+              {data.description || "Observed metric"}
             </div>
             <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
               {subtitle}
@@ -676,7 +676,7 @@ function MetricView({
       </SectionCard>
 
       <InvestigationActions
-        title={sampling ? "Keep watching" : "Recommended next steps"}
+        title={sampling ? "Keep observing" : "Recommended next steps"}
         actions={data.investigation_actions}
         onSend={onSend}
       />
@@ -691,7 +691,7 @@ function AnomalyAlertView({ data, onSend }: { data: AnomalyAlert; onSend: (p: st
     return (
       <SectionCard>
         <div style={{ fontSize: 13, color: theme.textMuted, marginBottom: 4 }}>
-          {data.status === "QUIET" ? "No anomalies fired" : "Watch could not run"}
+          {data.status === "QUIET" ? "No anomalies fired" : "Observation could not run"}
         </div>
         <div style={{ fontSize: 12, color: theme.textDim, marginBottom: 8 }}>{data.message}</div>
         {data.suggestion && (
@@ -808,7 +808,7 @@ function AnomalyAlertView({ data, onSend }: { data: AnomalyAlert; onSend: (p: st
 // ── Main App ───────────────────────────────────────────────────────────────
 
 export function App() {
-  const [data, setData] = useState<WatchResult | null>(null);
+  const [data, setData] = useState<ObserveResult | null>(null);
   const [accumulated, setAccumulated] = useState<TrendPoint[]>([]);
   const [lastKey, setLastKey] = useState<string | undefined>();
   const [app, setApp] = useState<AppLike | null>(null);
@@ -822,15 +822,15 @@ export function App() {
 
   const handleToolResult = useCallback(
     (params: ToolResultParams) => {
-      const d = parseToolResult<WatchResult>(params);
+      const d = parseToolResult<ObserveResult>(params);
       if (!d?.status) return;
 
       if (isMetric(d)) {
         const incoming = d.trend || [];
-        // Merge when the watch_key matches a prior run — same ES|QL + condition —
-        // so "Extend watch" invocations build a continuous timeline instead of
+        // Merge when the observe_key matches a prior run — same ES|QL + condition —
+        // so "Extend observation" invocations build a continuous timeline instead of
         // resetting. Otherwise treat as a fresh series.
-        if (d.watch_key && d.watch_key === lastKey && accumulated.length > 0) {
+        if (d.observe_key && d.observe_key === lastKey && accumulated.length > 0) {
           const seen = new Set(
             accumulated.map((p) => p.timestamp_ms).filter((t) => t !== undefined) as number[]
           );
@@ -842,11 +842,11 @@ export function App() {
             const bt = b.timestamp_ms ?? b.elapsed_seconds;
             return at - bt;
           });
-          // Cap at 240 points so a long-running watch doesn't overflow the SVG.
+          // Cap at 240 points so a long-running observation doesn't overflow the SVG.
           setAccumulated(merged.slice(-240));
         } else {
           setAccumulated(incoming);
-          setLastKey(d.watch_key);
+          setLastKey(d.observe_key);
         }
       } else {
         setAccumulated([]);
@@ -859,7 +859,7 @@ export function App() {
   );
 
   useApp({
-    appInfo: { name: "Watch", version: "1.0.0" },
+    appInfo: { name: "Observe", version: "1.0.0" },
     onAppCreated: (a) => {
       a.ontoolresult = handleToolResult;
       setApp(a);
@@ -871,8 +871,8 @@ export function App() {
   if (!data) {
     return (
       <div style={{ padding: 24, textAlign: "center", color: theme.textMuted }}>
-        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for watch result…</div>
-        <div style={{ fontSize: 11 }}>Call the watch tool to populate this view.</div>
+        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for observe result…</div>
+        <div style={{ fontSize: 11 }}>Call the observe tool to populate this view.</div>
       </div>
     );
   }

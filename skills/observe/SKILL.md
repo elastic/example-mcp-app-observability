@@ -1,7 +1,7 @@
 ---
-name: watch
+name: observe
 description: >
-  The agent's "wait-and-see" primitive. Four modes: wait for an ML anomaly to fire, poll an ES|QL
+  The agent's Elastic-access primitive. Four modes: wait for an ML anomaly to fire, poll an ES|QL
   metric (live-sample or wait for a threshold), read a single-instance scalar value, or return a
   full ES|QL table. Use when the user says "tell me when...", "let me know if...", "wait until X
   drops below Y", "watch for anything unusual", "monitor for the next N minutes", "poll until
@@ -10,11 +10,11 @@ description: >
   an eye on" and post-remediation validation.
 ---
 
-# Watch
+# Observe
 
-Transient, session-scoped monitoring. Unlike `create-alert-rule` (which creates a durable saved
-object in Kibana), `watch` polls in-process and returns once fired, once its window closes, or
-— in `now` mode — immediately.
+Transient, session-scoped monitoring and ad-hoc querying. Unlike `manage-alerts` (which
+creates a durable saved object in Kibana), `observe` polls in-process and returns once fired,
+once its window closes, or — in `now` / `table` mode — immediately.
 
 ## Modes
 
@@ -25,7 +25,7 @@ object in Kibana), `watch` polls in-process and returns once fired, once its win
 | `now` | "what is X right now", "check X", "current value of Y" — single-instance **scalar** read | Returns immediately |
 | `table` | "list …", "which … are …", group-by / top-N queries, or any ES\|QL result with mixed-type columns | Returns immediately |
 
-If the user wants durable alerting ("page me whenever..."), use `create-alert-rule` instead.
+If the user wants durable alerting ("page me whenever..."), use `manage-alerts` instead.
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ If the user wants durable alerting ("page me whenever..."), use `create-alert-ru
 | `now` | Any ES\|QL-queryable numeric field |
 | `table` | Any ES\|QL-queryable data |
 
-## How to call watch
+## How to call observe
 
 ### Anomaly mode (default)
 
@@ -53,7 +53,7 @@ If the user wants durable alerting ("page me whenever..."), use `create-alert-ru
 - `max_wait`: generous (600s default). Returns immediately on trigger — long waits are free.
 - `namespace`: only if the user scopes to a K8s namespace.
 
-### Metric mode — threshold watch
+### Metric mode — threshold condition
 
 ```json
 {
@@ -226,10 +226,10 @@ FROM logs-*
 
 ## After the tool returns
 
-The watch MCP App view renders inline in one of several modes, picked automatically from the result:
+The observe MCP App view renders inline in one of several modes, picked automatically from the result:
 
 - **Now mode (`status: NOW`)** — compact card: big unit-formatted number, ES|QL subtitle, "evaluated
-  Xs ago" stamp, and three follow-up actions (re-check, escalate to live watch, create alert rule).
+  Xs ago" stamp, and three follow-up actions (re-check, escalate to live observation, create alert rule).
 - **Metric mode** — area + line + dots sparkline with optional threshold line; stat cards for
   current / threshold / peak / baseline. Covers `CONDITION_MET`, `TIMEOUT`, and `SAMPLED`.
 - **Anomaly mode** — severity-scored trigger card with affected entities and click-to-send
@@ -244,8 +244,8 @@ on the buttons alone.
 
 ### Status-by-status guidance
 
-- **`NOW`** — State the value plainly. Offer to escalate to a live watch if the user seems to want
-  ongoing visibility.
+- **`NOW`** — State the value plainly. Offer to escalate to a live observation if the user seems to
+  want ongoing visibility.
 - **`TABLE`** — Summarize what the rows show (top entity, total count, any outliers). Don't just
   dump the full table back — the user can read the widget. If the result was truncated, say so and
   offer to tighten the ES|QL.
@@ -256,9 +256,9 @@ on the buttons alone.
   immediately** — don't just report the alert, start investigating and narrate your reasoning.
 - **`CONDITION_MET`** (metric threshold satisfied) — Confirm to the user and describe the trend
   from the returned history. If this was post-remediation validation, explicitly state the fix has
-  been validated. Offer to graduate the condition into a durable rule via `create-alert-rule`.
+  been validated. Offer to graduate the condition into a durable rule via `manage-alerts`.
 - **`SAMPLED`** (live sample completed without a condition) — Summarize the trend (trending up /
-  down / flat, peak, typical). Offer "keep watching" (extend window) or graduate to an alert rule.
+  down / flat, peak, typical). Offer "keep observing" (extend window) or graduate to an alert rule.
 - **`TIMEOUT`** (metric condition never met) — Tell the user the metric didn't stabilize. Suggest
   follow-ups: check `ml-anomalies`, persist as alert rule, re-examine the ES|QL.
 - **`QUIET`** (anomaly mode, nothing fired) — Suggest adjustments: lower `min_score`, widen
@@ -266,26 +266,26 @@ on the buttons alone.
 
 ## Accumulating timelines
 
-Every metric-mode response includes a `watch_key` derived from `esql + condition`. When Claude
-re-invokes watch with the same ES|QL (e.g. via the "Extend watch (+60s)" button), the view merges
-the new samples into the existing sparkline instead of resetting — so the user sees a continuous
-timeline across multiple tool calls. To keep this continuity, reuse the exact same ES|QL string
-and condition when extending. Capped at 240 points to keep the chart readable.
+Every metric-mode response includes an `observe_key` derived from `esql + condition`. When Claude
+re-invokes observe with the same ES|QL (e.g. via the "Extend observation (+60s)" button), the view
+merges the new samples into the existing sparkline instead of resetting — so the user sees a
+continuous timeline across multiple tool calls. To keep this continuity, reuse the exact same
+ES|QL string and condition when extending. Capped at 240 points to keep the chart readable.
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `watch` | Polls and blocks. Four modes: `anomaly`, `metric`, `now`, `table`. |
+| `observe` | Polls and blocks. Four modes: `anomaly`, `metric`, `now`, `table`. |
 | `ml-anomalies` | Follow-up: deeper look at the anomaly that fired. |
 | `apm-service-dependencies` | Follow-up: topology of affected services (if APM available). |
 | `apm-health-summary` | Follow-up: cluster-wide context, and useful for discovering which namespaces actually have data. |
 | `k8s-blast-radius` | Follow-up: infra impact if a node is implicated. |
-| `create-alert-rule` | Graduate to persistent alerting once the pattern is well-understood. |
+| `manage-alerts` | Graduate to persistent alerting once the pattern is well-understood. |
 
 ## Key principles
 
-- **Watch is transient.** Nothing is saved. If the user wants an ongoing rule, use `create-alert-rule`.
+- **Observe is transient.** Nothing is saved. If the user wants an ongoing rule, use `manage-alerts`.
 - **Pick the mode from the user's phrasing.** "What is X right now" (scalar) → `now`. "Show me a
   live chart of X" or "watch X for 60s" → `metric` (no condition). "Wait until X drops below Y" →
   `metric` (with condition). "Tell me when anything unusual fires" → `anomaly`. "List …", "which

@@ -420,7 +420,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       if (!services.length) {
         result.warning =
           "No APM service telemetry found. This tool requires Elastic APM — if you're a logs- or metrics-only " +
-          "customer, reach for 'ml-anomalies', 'watch', or 'create-alert-rule' instead.";
+          "customer, reach for 'ml-anomalies', 'observe', or 'manage-alerts' instead.";
       } else if (degraded.length) {
         result.recommendation = `Investigate ${degraded[0].service}: ${degraded[0].reasons.join(", ")}. Use ml-anomalies for details.`;
       }

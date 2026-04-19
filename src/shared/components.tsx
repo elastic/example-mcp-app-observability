@@ -231,7 +231,7 @@ export function InvestigationActions({
 //   Time range  [15m] [1h●] [6h] [24h]
 //
 // Chip row only renders when `rerunContext` is supplied — tools without a
-// user-configurable lookback (k8s-blast-radius, create-alert-rule) still
+// user-configurable lookback (k8s-blast-radius, manage-alerts) still
 // use this component so the title/subtitle/status layout stays consistent.
 //
 // Rerun works by substituting `{lookback}` in the caller-provided
