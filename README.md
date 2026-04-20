@@ -6,37 +6,29 @@ An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) that brin
 
 ## What This Does
 
-This project provides six interactive SRE tools, each with a rich React-based UI that renders inline when Claude (or another MCP host) calls the tool. Tools are grouped by the backend they require — a logs-or-metrics-only Elastic Observability customer can use the **Universal** tools immediately; the prefixed tools (`apm-*`, `k8s-*`) surface their requirements in both name and description.
+This project provides six interactive SRE tools, each with a rich React-based UI that renders inline when Claude (or another MCP host) calls the tool. The **Dependency** column shows what each tool needs from your deployment — **Universal** tools work on any Elastic Observability cluster; the others require APM, ML, or Kubernetes telemetry.
 
 ![Animated demo of the Elastic Observability MCP App](docs/screenshots/Animated%20Demo.gif)
 
-### Universal (any Elastic Observability deployment)
-
-| Tool | What It Does |
-|------|-------------|
-| **observe** | Transient ES\|QL + ML-anomaly access primitive. Four modes: run a query once (`now`/`table`), live-sample a metric, or block until a threshold or anomaly fires. |
-| **manage-alerts** | CRUD for Kibana custom-threshold alerting rules — create, list, get, delete. Works on any metric field in any index. Registered only when a Kibana URL is configured (leave blank to run the server strictly read-only). |
-
-### ML-dependent
-
-| Tool | What It Does |
-|------|-------------|
-| **ml-anomalies** | Query ML anomaly-detection records and open an inline anomaly-explainer view. Requires ML jobs configured. |
-
-### APM-dependent
-
-| Tool | What It Does |
-|------|-------------|
-| **apm-health-summary** | Cluster-level health rollup from APM service telemetry; layers in K8s and ML context when available. |
-| **apm-service-dependencies** | Service dependency graph (upstream/downstream, protocols, call volume). |
-
-### Kubernetes-dependent
-
-| Tool | What It Does |
-|------|-------------|
-| **k8s-blast-radius** | Assess the impact of a node going offline — full outage, degraded, unaffected, reschedule feasibility. APM optional. |
+| Tool | Dependency | What It Does |
+|------|-----------|--------------|
+| **observe** | Universal | Transient ES\|QL + ML-anomaly access primitive — run a query once, live-sample a metric, or block until a threshold or anomaly fires. |
+| **manage-alerts** | Universal *(needs Kibana)* | Create, list, get, and delete Kibana custom-threshold alerting rules. Omit the Kibana URL to run read-only. |
+| **ml-anomalies** | ML jobs | Query ML anomaly records and open an inline anomaly-explainer view. |
+| **apm-health-summary** | Elastic APM | Cluster-level health rollup from APM telemetry; layers in K8s and ML context when available. |
+| **apm-service-dependencies** | Elastic APM | Service dependency graph — upstream/downstream, protocols, call volume. |
+| **k8s-blast-radius** | Kubernetes metrics | Node-outage impact — full outage, degraded, unaffected, reschedule feasibility. |
 
 Every tool emits an `investigation_actions` list so the UI can surface opinionated next-step prompts — click-to-send without forcing the user to guess the right follow-up tool.
+
+## Quick Start
+
+> [!TIP]
+> **Just want to try it?** Download **[example-mcp-app-observability.mcpb](https://github.com/elastic/example-mcp-app-observability/releases/latest/download/example-mcp-app-observability.mcpb)** and double-click it. No Node.js, no cloning, no config files.
+>
+> Claude Desktop handles the rest — you'll be prompted for your Elasticsearch URL and API key during install. That's it.
+
+For other hosts (Cursor, VS Code, Claude Code) or building from source, see [Installation](#installation) below.
 
 An Agent Builder workflow ships alongside — for clients that prefer Agent Builder workflows over MCP tools:
 
@@ -45,6 +37,14 @@ An Agent Builder workflow ships alongside — for clients that prefer Agent Buil
 ## How It Works
 
 When a user asks Claude to observe a metric or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
+
+### Architecture
+
+![Elastic Observability MCP App architecture](docs/screenshots/mcp_app_architecture.svg)
+
+### Request flow
+
+![Elastic Observability MCP App request flow](docs/screenshots/mcp_app_request_flow.svg)
 
 ### Skills
 
