@@ -66,7 +66,7 @@ The `skills/` directory contains [Claude Skills](https://claude.com/docs/skills/
 
 ### Requirements
 
-- Node ≥ 22
+- Node ≥ 22 — required for Cursor, VS Code, Claude Code, or building from source. **Not required** for the Claude Desktop `.mcpb` install path; Claude Desktop ships a bundled Node runtime.
 - An Elasticsearch cluster with OpenTelemetry data (EDOT + kube-stack recommended)
 - A Kibana instance with Alerting enabled — **optional**; required only for `manage-alerts`. Omit the Kibana URL to run the server strictly read-only.
 
