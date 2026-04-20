@@ -12,8 +12,8 @@ This project provides six interactive SRE tools, each with a rich React-based UI
 
 | Tool | What It Does |
 |------|-------------|
-| **observe** | Transient ES\|QL / ML-anomaly access primitive — run a query once, live-sample it, or block until a threshold is crossed. |
-| **manage-alerts** | CRUD for Kibana custom-threshold alerting rules — create, list, get, delete. Works on any metric field in any index. |
+| **observe** | Transient ES\|QL + ML-anomaly access primitive. Four modes: run a query once (`now`/`table`), live-sample a metric, or block until a threshold or anomaly fires. |
+| **manage-alerts** | CRUD for Kibana custom-threshold alerting rules — create, list, get, delete. Works on any metric field in any index. Registered only when a Kibana URL is configured (leave blank to run the server strictly read-only). |
 
 ### ML-dependent
 
@@ -42,7 +42,7 @@ An Agent Builder workflow ships alongside — for clients that prefer Agent Buil
 
 ## How It Works
 
-When a user asks Claude to observe for an anomaly or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
+When a user asks Claude to observe a metric or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
 
 ### Skills
 
@@ -64,7 +64,7 @@ The `skills/` directory contains [Claude Skills](https://claude.com/docs/skills/
 
 - Node ≥ 22
 - An Elasticsearch cluster with OpenTelemetry data (EDOT + kube-stack recommended)
-- A Kibana instance with Alerting enabled
+- A Kibana instance with Alerting enabled — **optional**; required only for `manage-alerts`. Omit the Kibana URL to run the server strictly read-only.
 
 ### Data schema
 
