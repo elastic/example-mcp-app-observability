@@ -36,11 +36,13 @@ For other hosts (Cursor, VS Code, Claude Code) or building from source, see [Ins
 
 ## How It Works
 
-When a user asks Claude to observe a metric or assess blast radius, Claude calls a model-facing tool on this server. The tool returns a compact text summary to Claude **and** an interactive React UI that renders inline in the conversation. The UI then calls app-only tools directly for all subsequent interactions — keeping the LLM context small while the UI has full data access.
+The following diagram shows the three components that make up the app: the MCP host (Claude Desktop, VS Code, or similar), which holds the LLM and the Claude skills that teach it how to use the tools; the MCP app server, a single Node.js process that exposes the tool registry, bundles the React UI views, and handles all communication with Elastic; and the Elastic Stack itself, where Elasticsearch and Kibana serve as the live data and alerting backends.
 
 ### Architecture
 
 ![Elastic Observability MCP App architecture](docs/screenshots/mcp_app_architecture.svg)
+
+The diagram below traces the flow of a user request: Claude reads the relevant skill file to understand which tool to call and how to fill its parameters, calls the tool which triggers server-side queries against Elasticsearch and Kibana, and receives back a compact text summary alongside a React UI resource that renders inline as an interactive widget.
 
 ### Request flow
 
