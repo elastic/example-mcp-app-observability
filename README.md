@@ -26,7 +26,11 @@ Every tool emits an `investigation_actions` list so the UI can surface opinionat
 > [!TIP]
 > **Just want to try it?** Download **[example-mcp-app-observability.mcpb](https://github.com/elastic/example-mcp-app-observability/releases/latest/download/example-mcp-app-observability.mcpb)** and double-click it. No Node.js, no cloning, no config files.
 >
-> Claude Desktop handles the rest — you'll be prompted for your Elasticsearch URL and API key during install. That's it.
+> Claude Desktop handles the rest — you'll be prompted for your Elasticsearch URL and API key during install.
+>
+> **Then install the skills.** The `.mcpb` ships the tools; the skills that teach Claude *when* and *how* to call them are a separate upload. Download each `*.zip` from the [latest release](https://github.com/elastic/example-mcp-app-observability/releases/latest) (`observe.zip`, `manage-alerts.zip`, `ml-anomalies.zip`, `apm-health-summary.zip`, `apm-service-dependencies.zip`, `k8s-blast-radius.zip`) and upload each via **Customize → Skills → Create Skill → Upload a skill**. When a new release lands, re-upload to pick up skill changes — restarting Claude alone won't refresh them.
+>
+> **Optional: install the Agent Builder workflow.** For automatic CrashLoopBackOff / OOMKilled investigation on clusters using the OTel ingest path, download [`k8s-crashloop-investigation-otel.yaml`](https://github.com/elastic/example-mcp-app-observability/releases/latest/download/k8s-crashloop-investigation-otel.yaml) and import it from the **Workflows** page in Kibana. Optionally wire it to an alert rule so the investigation kicks off automatically when the alert fires.
 
 For other hosts (Cursor, VS Code, Claude Code) or building from source, see [Installation](#installation) below.
 
