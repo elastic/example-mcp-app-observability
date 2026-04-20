@@ -4,6 +4,9 @@ An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) that brin
 
 > **What are MCP Apps?** MCP Apps extend the Model Context Protocol to let tool servers return interactive HTML interfaces — dashboards, forms, visualizations — that render inside the AI conversation. The LLM calls a tool, and instead of just returning text, an interactive UI appears alongside the response.
 
+> [!WARNING]
+> **Technical preview — not officially supported.** This project is an experimental reference implementation published for exploration and feedback. It is not covered by Elastic support SLAs, may change or break without notice, and is not intended for production use. File issues on GitHub; responses are best-effort.
+
 ## What This Does
 
 This project provides six interactive SRE tools, each with a rich React-based UI that renders inline when Claude (or another MCP host) calls the tool. The **Dependency** column shows what each tool needs from your deployment — **Universal** tools work on any Elastic Observability cluster; the others require APM, ML, or Kubernetes telemetry.
