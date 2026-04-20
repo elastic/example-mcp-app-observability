@@ -144,57 +144,165 @@ These are the field paths this deployment's data actually uses — prefer them o
 
 Index: `metrics-kubeletstatsreceiver.otel*`
 
-| Signal | Field |
-|--------|-------|
-| Pod memory working set (bytes) | `metrics.k8s.pod.memory.working_set` |
-| Pod CPU (cores) | `metrics.k8s.pod.cpu.usage` |
-| Pod name | `resource.attributes.k8s.pod.name` |
-| Namespace | `resource.attributes.k8s.namespace.name` |
-| Node | `resource.attributes.k8s.node.name` |
+Each kubeletstats scrape emits **separate documents per metric** — a CPU doc, a memory doc, a network doc, etc. Always filter `WHERE <field> IS NOT NULL` for the field you're aggregating, otherwise most rows carry nulls for it.
 
-Namespace-wide memory average:
+**Gauge fields — use `AVG` / `MAX` / `MIN`, never `SUM`:**
+
+| Signal | Field | Type |
+|--------|-------|------|
+| Pod memory working set | `k8s.pod.memory.working_set` | `long` (bytes) |
+| Pod memory RSS | `k8s.pod.memory.rss` | `long` (bytes) |
+| Pod memory available | `k8s.pod.memory.available` | `long` (bytes) |
+| Pod CPU usage | `k8s.pod.cpu.usage` | `double` (cores — 1.0 = one full core) |
+| Pod filesystem usage | `k8s.pod.filesystem.usage` | `long` (bytes) |
+| Node memory working set | `k8s.node.memory.working_set` | `long` (bytes) |
+| Node memory available | `k8s.node.memory.available` | `long` (bytes) |
+| Node CPU usage | `k8s.node.cpu.usage` | `double` (cores) |
+| Node filesystem usage | `k8s.node.filesystem.usage` | `long` (bytes) |
+
+> For **counter** fields (network I/O, network errors, uptime), see the "Counter fields" section below — these require `TS` + `RATE()`.
+
+**Dimension fields — use for filtering and `BY` grouping:**
+
+| Dimension | Unprefixed | Prefixed (equivalent) |
+|---|---|---|
+| Pod name | `k8s.pod.name` | `resource.attributes.k8s.pod.name` |
+| Namespace | `k8s.namespace.name` | `resource.attributes.k8s.namespace.name` |
+| Node name | `k8s.node.name` | `resource.attributes.k8s.node.name` |
+| Cluster name | `k8s.cluster.name` | (same) |
+
+Both forms work on `metrics-kubeletstatsreceiver.otel*`. Prefer the unprefixed form — it's shorter and also works on counter-field queries via `TS`.
+
+**Common recipes:**
+
+Top pods by memory (last 5m, across all namespaces):
 
 ```
 FROM metrics-kubeletstatsreceiver.otel*
-| WHERE resource.attributes.k8s.namespace.name == "oteldemo-esyox-default"
-| STATS v = AVG(metrics.k8s.pod.memory.working_set)
+| WHERE @timestamp > NOW() - 5 minutes AND k8s.pod.memory.working_set IS NOT NULL
+| STATS avg_mem = AVG(k8s.pod.memory.working_set),
+        max_mem = MAX(k8s.pod.memory.working_set)
+  BY k8s.pod.name, k8s.namespace.name
+| SORT max_mem DESC
+| LIMIT 20
 ```
 
-Single pod CPU:
+Which pods are on a specific node:
 
 ```
 FROM metrics-kubeletstatsreceiver.otel*
-| WHERE resource.attributes.k8s.pod.name == "frontend-7d4b8f9c5-x2k9m"
-| STATS v = AVG(metrics.k8s.pod.cpu.usage)
+| WHERE @timestamp > NOW() - 5 minutes
+  AND k8s.node.name == "<node>" AND k8s.pod.name IS NOT NULL
+| STATS last_seen = MAX(@timestamp) BY k8s.pod.name, k8s.namespace.name
+| SORT last_seen DESC
+```
+
+Namespace-wide memory average (single scalar — works in `now`/`metric` mode):
+
+```
+FROM metrics-kubeletstatsreceiver.otel*
+| WHERE k8s.namespace.name == "oteldemo-esyox-default"
+  AND k8s.pod.memory.working_set IS NOT NULL
+| STATS v = AVG(k8s.pod.memory.working_set)
+```
+
+Is this node under memory pressure (working-set vs available):
+
+```
+FROM metrics-kubeletstatsreceiver.otel*
+| WHERE @timestamp > NOW() - 5 minutes
+  AND k8s.node.name == "<node>" AND k8s.node.memory.working_set IS NOT NULL
+| STATS working_set = AVG(k8s.node.memory.working_set),
+        available = AVG(k8s.node.memory.available)
+```
+
+### Counter fields — require `TS` + `RATE()`
+
+Network I/O, network errors, and uptime fields are stored as monotonically-increasing counters (`counter_long`), **not** instantaneous gauges. `FROM` + `MAX`/`AVG`/`SUM`/`VALUES` on a counter field is a hard error — ES|QL returns `argument of [...] must be [...numeric except counter types]`.
+
+Counter fields in this deployment:
+
+| Field | Notes |
+|---|---|
+| `k8s.pod.network.io` | bytes, carries `direction` attribute (`transmit` / `receive`) — emitted as separate docs per direction |
+| `k8s.pod.network.errors` | error count, also carries `direction` |
+| `k8s.node.network.io`, `k8s.node.network.errors` | node-level equivalents |
+| `k8s.node.uptime`, `k8s.pod.uptime` | seconds since start |
+
+**Correct pattern:** use `TS` as the source command, wrap `RATE()` in an aggregation, filter the counter field `IS NOT NULL`, and group by `direction` whenever you query network fields.
+
+Network throughput by cluster, last 15m (result in bytes/sec):
+
+```
+TS metrics-kubeletstatsreceiver.otel*
+| WHERE @timestamp > NOW() - 15 minutes
+  AND k8s.pod.network.io IS NOT NULL
+| STATS rate_bps = AVG(RATE(k8s.pod.network.io))
+  BY k8s.cluster.name, direction
+| SORT rate_bps DESC
+```
+
+Rules:
+- `TS`, not `FROM`. `FROM` will be rejected.
+- Wrap `RATE()` in `AVG()` (or similar) when grouping — bare `RATE(...) BY ...` is rejected.
+- Network counters are emitted as **separate docs per direction**. Without `BY direction` or a `direction == "..."` filter, transmit and receive aggregate into a meaningless combined number.
+- Without `IS NOT NULL` the query spans many kubeletstats docs that carry a different metric — you get nulls, not errors.
+
+**Escape hatch — raw counter snapshot:** if you want the current counter value (e.g. "how long has node X been up"), cast first. `TO_LONG` strips the counter type and unlocks standard aggregations:
+
+```
+FROM metrics-kubeletstatsreceiver.otel*
+| WHERE @timestamp > NOW() - 5 minutes AND k8s.node.uptime IS NOT NULL
+| EVAL u = TO_LONG(k8s.node.uptime)
+| STATS uptime_s = MAX(u) BY k8s.node.name
 ```
 
 ### APM traces
 
-Index: `traces-apm*` or `traces-generic.otel*`
+Primary index: `traces-*.otel-*` (OTel-native). Fallback: `traces-apm*` (classic APM — only if the OTel path returns empty).
 
-| Signal | Field |
-|--------|-------|
-| Transaction duration (µs) | `transaction.duration.us` |
-| Service name | `service.name` |
-| Transaction name | `transaction.name` |
-| Outcome | `event.outcome` |
+In EDOT-ingested clusters, `traces-*.otel-*` carries **both** OTel-native fields (`duration`, `kind`, `status.code`) and classic-APM-compatible fields (`processor.event`, `event.outcome`, `transaction.duration.us` on transaction-level docs). The cluster's "APM-ness" isn't determined by the index — it's determined by which field shape you query.
 
-Service p95 latency:
+| Signal | OTel-native (preferred) | Classic APM |
+|---|---|---|
+| Duration | `duration` (nanoseconds, long, populated on every span) | `transaction.duration.us` (microseconds, populated only on `processor.event == "transaction"` docs) |
+| Error signal | `event.outcome == "failure"` — **use this**, 100% populated | `status.code == "Error"` (sparse; only set when instrumentation explicitly calls `SetStatus`) |
+| Span kind | `kind` — values `Server`, `Internal`, `Client`, `Producer`, `Consumer` (**title case**, not `SERVER`/`CLIENT`) | `transaction.type` |
+| Scope filter | `kind == "Server"` isolates incoming requests | `processor.event == "transaction"` |
+| Service name | `service.name` | `service.name` |
 
-```
-FROM traces-apm*
-| WHERE service.name == "checkout" AND @timestamp > NOW() - 5m
-| STATS v = PERCENTILE(transaction.duration.us, 95)
-```
+> **Unit warning.** OTel `duration` is in **nanoseconds**. Divide by 1,000,000 for milliseconds. Classic `transaction.duration.us` is in **microseconds** — divide by 1,000. Mixing these across a comparison produces wildly wrong numbers.
 
-Error rate for a service:
+Service p95 latency (OTel-native), last 15m — result in ms:
 
 ```
-FROM traces-apm*
-| WHERE service.name == "checkout" AND @timestamp > NOW() - 5m
+FROM traces-*.otel-*
+| WHERE service.name == "checkout" AND @timestamp > NOW() - 15 minutes
+  AND kind == "Server"
+| STATS p95_ms = PERCENTILE(duration, 95) / 1000000
+```
+
+Error rate for a service — `event.outcome` is reliable here:
+
+```
+FROM traces-*.otel-*
+| WHERE service.name == "checkout" AND @timestamp > NOW() - 15 minutes
+  AND kind == "Server"
 | STATS errors = COUNT(*) WHERE event.outcome == "failure", total = COUNT(*)
-| EVAL v = errors / total
-| KEEP v
+| EVAL error_rate_pct = ROUND(errors * 100.0 / total, 2)
+| KEEP error_rate_pct, errors, total
+```
+
+If `traces-*.otel-*` returns empty, the deployment is classic-APM-only — fall back to `traces-apm*` with `processor.event == "transaction"` and `transaction.duration.us`.
+
+**Throughput trend — use the pre-aggregated rollup when possible.** `metrics-service_summary.1m.otel-*` carries per-minute request counts in `service_summary` (a regular `long`, designed to `SUM`). Cheaper and faster than scanning raw traces for "how many requests/min over the last hour":
+
+```
+FROM metrics-service_summary.1m.otel-*
+| WHERE service.name == "frontend" AND @timestamp > NOW() - 1 hour
+| STATS throughput = SUM(service_summary)
+  BY bucket = BUCKET(@timestamp, 1 minute)
+| SORT bucket ASC
 ```
 
 ### Log rate
@@ -217,12 +325,17 @@ FROM logs-*
 - When the user names a namespace, match it exactly (e.g. `oteldemo-esyox-default`, not
   `otel-demo`). If unsure, call `apm-health-summary` first — its `namespace_candidates` field
   surfaces fuzzy matches.
-- **Match the aggregation to the field's storage shape.** Most metric fields in
-  `metrics-kubeletstatsreceiver.otel*` are **gauges** (`memory.working_set`, `cpu.usage`,
-  `memory.available`). Use `AVG` / `MAX` / `MIN` on gauges. **Do not `SUM` a gauge** — it will add
-  every ~15s kubelet sample over your window and inflate the value by hundreds or thousands. Reserve
-  `SUM` for pre-aggregated counters (e.g. `service_summary` on `metrics-service_summary.1m.otel-*`
-  is a per-minute rollup designed to sum). If unsure, prefer `AVG` or `MAX`.
+- **Match the aggregation to the field's storage shape.** Three shapes to recognize:
+  - **Gauges** (`memory.working_set`, `memory.available`, `cpu.usage`, `filesystem.usage` in
+    `metrics-kubeletstatsreceiver.otel*`): use `AVG` / `MAX` / `MIN`. **Do not `SUM` a gauge** — it
+    will add every ~15s kubelet sample over your window and inflate the value by hundreds or
+    thousands.
+  - **Counters** (`k8s.pod.network.io`, `k8s.node.uptime`, etc. — `counter_long` type): require
+    `TS` + `RATE()`. See the "Counter fields" section above. `FROM` + `MAX`/`AVG`/`SUM` on a
+    counter is a hard error, not a silent wrong number.
+  - **Pre-aggregated rollups** (`service_summary` on `metrics-service_summary.1m.otel-*`,
+    `span.destination.service.response_time.count` on `metrics-service_destination.1m.otel-*`):
+    designed for `SUM` across the window. Each doc is already a per-minute bucket count.
 
 ## After the tool returns
 
@@ -296,4 +409,8 @@ ES|QL string and condition when extending. Capped at 240 points to keep the char
   this environment.
 - **On ALERT, start investigating immediately.** The `investigation_hints` are suggestions —
   follow them and narrate your reasoning.
+- **Don't start with `observe` for vague triage.** If the user reports a symptom without naming a
+  specific metric ("something feels slow", "what's wrong with prod"), reach for `apm-health-summary`
+  first — it surfaces the worst-offender services without needing a query. `observe` needs a target
+  metric to poll; use it to drill in *after* the rollup names something.
 - **Don't over-tune `min_score`.** 75 catches the important stuff; dropping below 50 produces noise.
