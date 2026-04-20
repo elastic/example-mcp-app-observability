@@ -8,6 +8,8 @@ An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) that brin
 
 This project provides six interactive SRE tools, each with a rich React-based UI that renders inline when Claude (or another MCP host) calls the tool. Tools are grouped by the backend they require — a logs-or-metrics-only Elastic Observability customer can use the **Universal** tools immediately; the prefixed tools (`apm-*`, `k8s-*`) surface their requirements in both name and description.
 
+![Animated demo of the Elastic Observability MCP App](docs/screenshots/Animated%20Demo.gif)
+
 ### Universal (any Elastic Observability deployment)
 
 | Tool | What It Does |
