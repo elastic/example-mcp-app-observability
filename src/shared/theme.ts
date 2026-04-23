@@ -40,7 +40,10 @@ export const theme = {
   borderStrong: "#383c4b",
   text: "#e5e7eb",
   textMuted: "#9ca3af",
-  textDim: "#6b7280",
+  // #9097a8 hits ~6.5:1 on #0f1117, passing WCAG 2 AA for body text. The
+  // prior value (#6b7280) landed at ~3.9:1, which axe-core flagged as a
+  // serious violation across every dim-text callsite in the legacy views.
+  textDim: "#9097a8",
   blue: "#3b82f6",
   red: "#ef4444",
   redSoft: "#e06c6c",
@@ -85,7 +88,8 @@ const DS_STYLESHEET = `
     --text-primary: #e5e7eb;
     --text-secondary: #c6c9d1;
     --text-muted: #9ca3af;
-    --text-dim: #6b7280;
+    /* #9097a8 → ~6.5:1 on --bg-primary; passes WCAG 2 AA body text. */
+    --text-dim: #9097a8;
     --ds-text-label: #a9adb8;
 
     /* ── Borders ─────────────────────────────────────────────────────── */
@@ -151,7 +155,10 @@ const DS_STYLESHEET = `
     --text-primary:   #1a1a19;
     --text-secondary: #2f2f2e;
     --text-muted:     #6a6a66;
-    --text-dim:       #8a8a86;
+    /* #6e6e6e → ~4.8:1 on light --bg-primary; sits just below --text-muted
+     * (5.9:1) while still passing WCAG 2 AA body text. The prior value
+     * (#8a8a86) failed at ~3.2:1. */
+    --text-dim:       #6e6e6e;
     --ds-text-label:  #4a4a46;
 
     --border:        #d8d8d4;
