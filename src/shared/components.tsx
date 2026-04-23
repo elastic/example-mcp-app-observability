@@ -682,27 +682,36 @@ export function ZoomControls({
           {currentZoom.toFixed(1)}×
         </div>
       </div>
-      {/* Decorative pan/zoom hint. aria-hidden because the opacity-0.6 state
-       * would otherwise fail WCAG 2 AA contrast (effective ~3.2:1 on the
-       * page bg). Interaction is already keyboard/pointer-only; screen
-       * readers don't need the hint. */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          bottom: 10,
-          left: 10,
-          fontSize: 10,
-          color: theme.textDim,
-          fontFamily: "'JetBrains Mono', monospace",
-          pointerEvents: "none",
-          opacity: Math.abs(currentZoom - 1) < 0.01 && !isDragging ? 0.6 : 0,
-          transition: "opacity 200ms",
-          zIndex: 10,
-        }}
-      >
-        drag to pan · wheel to zoom
-      </div>
+      {/* Decorative pan/zoom hint. Two defenses so axe-core stops flagging it:
+       * (1) textMuted (not textDim) — passes AA even at opacity 0.6 (~5.1:1
+       *     effective contrast after alpha compositing on the page bg).
+       * (2) visibility:hidden when not showing — axe skips invisible elements.
+       *     opacity alone wasn't enough because axe 4.11 evaluates contrast on
+       *     opacity:0 elements too. aria-hidden is kept because the hint is
+       *     purely visual; screen readers have no interaction path for it. */}
+      {(() => {
+        const showHint = Math.abs(currentZoom - 1) < 0.01 && !isDragging;
+        return (
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              bottom: 10,
+              left: 10,
+              fontSize: 10,
+              color: theme.textMuted,
+              fontFamily: "'JetBrains Mono', monospace",
+              pointerEvents: "none",
+              opacity: showHint ? 0.6 : 0,
+              visibility: showHint ? "visible" : "hidden",
+              transition: "opacity 200ms",
+              zIndex: 10,
+            }}
+          >
+            drag to pan · wheel to zoom
+          </div>
+        );
+      })()}
     </>
   );
 }
