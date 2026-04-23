@@ -68,6 +68,61 @@ export const viewStyles = `
     align-items: center;
   }
 
+  /* Pinned node detail — persistent panel in the top-right of the graph.
+   * Click a node to pin its details here; click again (or the close X on
+   * the header pill) to clear. Decouples "inspected object" from cursor
+   * position so pan/zoom doesn't drag the info off-screen. */
+  .blast-pinned-panel {
+    position: absolute;
+    top: 16px;
+    right: 22px;
+    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+    border: 1px solid var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-dim) inset;
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    min-width: 220px;
+    max-width: 280px;
+    backdrop-filter: blur(6px);
+    z-index: 6;
+  }
+  .blast-pinned-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .blast-pinned-panel-name {
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .blast-pinned-panel-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .blast-pinned-panel-close:hover { color: var(--text-primary); }
+  .blast-pinned-panel-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
   .blast-meta {
     padding: 12px 16px;
     border-top: 1px solid var(--border);

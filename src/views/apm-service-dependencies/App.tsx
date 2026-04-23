@@ -373,23 +373,28 @@ function NodeCard({
   node,
   dimmed,
   isHovered,
+  isPinned,
   fanIn,
   fanOut,
   onHover,
   onMove,
   onLeave,
+  onClick,
 }: {
   node: LayoutNode;
   dimmed: boolean;
   isHovered: boolean;
+  isPinned: boolean;
   fanIn: number;
   fanOut: number;
   onHover: (e: React.MouseEvent) => void;
   onMove: (e: React.MouseEvent) => void;
   onLeave: () => void;
+  onClick: (e: React.MouseEvent) => void;
 }) {
   const color = roleColor(node.svc.role);
   const hi = healthIndicator(node.svc);
+  const focused = isHovered || isPinned;
 
   return (
     <foreignObject x={node.x} y={node.y} width={NODE_W} height={NODE_H}>
@@ -399,12 +404,16 @@ function NodeCard({
         onMouseEnter={onHover}
         onMouseMove={onMove}
         onMouseLeave={onLeave}
+        onClick={onClick}
+        role="button"
+        aria-pressed={isPinned}
         style={{
           width: NODE_W,
           height: NODE_H,
-          background: isHovered ? "#1a1d28" : theme.bgSecondary,
+          background: focused ? "#1a1d28" : theme.bgSecondary,
           borderRadius: 8,
-          border: `1px solid ${isHovered ? color : dimmed ? `${theme.border}60` : theme.border}`,
+          border: `1px solid ${isPinned ? "var(--accent)" : focused ? color : dimmed ? `${theme.border}60` : theme.border}`,
+          boxShadow: isPinned ? "0 0 0 1px var(--accent-dim) inset" : undefined,
           padding: "6px 10px",
           cursor: "pointer",
           transition: "all 0.15s",
@@ -524,10 +533,15 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 export function App() {
   const [data, setData] = useState<DepData | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<string | null>(null);
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
+
+  // Hover wins for in-motion feedback; pinned takes over once the cursor
+  // leaves so the dim/focus state persists for comparison work.
+  const focusTarget = hovered ?? pinned;
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -562,9 +576,9 @@ export function App() {
   });
 
   const connected = useMemo(() => {
-    if (!hovered || !data) return null;
-    return connectedSet(hovered, data.edges);
-  }, [hovered, data]);
+    if (!focusTarget || !data) return null;
+    return connectedSet(focusTarget, data.edges);
+  }, [focusTarget, data]);
 
   const maxCalls = useMemo(() => {
     if (!data) return 0;
@@ -673,6 +687,11 @@ export function App() {
 
   const headerPills = (
     <>
+      {pinned && (
+        <QueryPill onClear={() => setPinned(null)} label="Clear pin">
+          focus: {pinned}
+        </QueryPill>
+      )}
       {data?.focal_service && <QueryPill>focal: {data.focal_service}</QueryPill>}
       {data?.filters?.namespace && <QueryPill>namespace: {data.filters.namespace}</QueryPill>}
       {data?.filters?.lookback && <QueryPill>lookback: {data.filters.lookback}</QueryPill>}
@@ -803,13 +822,18 @@ export function App() {
               setHovered(null);
               panZoom.bgHandlers.onMouseDown(e);
             }}
+            onClick={() => {
+              // Click on empty space (no drag) clears the pin. If the user
+              // panned, React doesn't fire onClick so the pin persists.
+              setPinned(null);
+            }}
           />
 
           {data.edges.map((edge, i) => {
             const src = nodeMap.get(edge.source);
             const dst = nodeMap.get(edge.target);
             if (!src || !dst) return null;
-            const dim = hovered !== null && (!connected || !isEdgeConnected(edge, connected));
+            const dim = focusTarget !== null && (!connected || !isEdgeConnected(edge, connected));
             return (
               <EdgePath
                 key={`e-${i}`}
@@ -825,16 +849,22 @@ export function App() {
           })}
 
           {nodes.map((node) => {
-            const dim = hovered !== null && (!connected || !connected.has(node.name));
+            const dim = focusTarget !== null && (!connected || !connected.has(node.name));
             const isHov = hovered === node.name;
+            const isPin = pinned === node.name;
             return (
               <NodeCard
                 key={node.name}
                 node={node}
                 dimmed={dim}
                 isHovered={isHov}
+                isPinned={isPin}
                 fanIn={fanMap.get(node.name)?.in ?? 0}
                 fanOut={fanMap.get(node.name)?.out ?? 0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPinned((prev) => (prev === node.name ? null : node.name));
+                }}
                 onHover={(e) => {
                   if (isDragging) return;
                   setHovered(node.name);

@@ -147,6 +147,12 @@ function Tooltip({ info }: { info: TooltipInfo }) {
 export function App() {
   const [data, setData] = useState<BlastRadiusData | null>(null);
   const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
+  const [pinned, setPinned] = useState<{ name: string; details: string[] } | null>(null);
+
+  // Click a node to pin its details in the side panel. Click again to clear.
+  const togglePin = useCallback((name: string, details: string[]) => {
+    setPinned((prev) => (prev?.name === name ? null : { name, details }));
+  }, []);
   const [app, setApp] = useState<AppLike | null>(null);
 
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
@@ -411,6 +417,11 @@ export function App() {
       <AppGlyph size={20} />
       <h1 className="ds-header-title">Blast radius</h1>
       <div className="ds-header-actions">
+        {pinned && (
+          <QueryPill onClear={() => setPinned(null)} label="Clear pin">
+            focus: {pinned.name}
+          </QueryPill>
+        )}
         {headerNode && <QueryPill>node: {headerNode}</QueryPill>}
         {data && (
           <SeverityChip
@@ -497,6 +508,11 @@ export function App() {
             onMouseDown={(e) => {
               setTooltip(null);
               panZoom.bgHandlers.onMouseDown(e);
+            }}
+            onClick={() => {
+              // Empty-space click (no drag) clears the pin. Pan suppresses
+              // the synthetic click so the pin survives drag gestures.
+              setPinned(null);
             }}
           />
           <defs>
@@ -617,6 +633,10 @@ export function App() {
                 key={`r2n-${i}`}
                 onMouseMove={(e) => handleHover(e, item.label, item.details)}
                 onMouseLeave={clearHover}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePin(item.label, item.details);
+                }}
                 style={{ cursor: "pointer" }}
               >
                 <circle
@@ -648,6 +668,10 @@ export function App() {
               key={i}
               onMouseMove={(e) => handleHover(e, item.label, item.details)}
               onMouseLeave={clearHover}
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePin(item.label, item.details);
+              }}
               style={{ cursor: "pointer" }}
             >
               {item.isSpof && (
@@ -757,6 +781,27 @@ export function App() {
             </span>
           </div>
         </div>
+
+        {pinned && (
+          <div className="blast-pinned-panel" role="region" aria-label="Pinned node details">
+            <div className="blast-pinned-panel-head">
+              <div className="blast-pinned-panel-name" title={pinned.name}>{pinned.name}</div>
+              <button
+                type="button"
+                className="blast-pinned-panel-close"
+                aria-label="Unpin"
+                onClick={() => setPinned(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="blast-pinned-panel-body">
+              {pinned.details.map((d, i) => (
+                <div key={i}>{d}</div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {tooltip && <Tooltip info={tooltip} />}
 
