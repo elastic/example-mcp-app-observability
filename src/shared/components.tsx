@@ -8,8 +8,14 @@
  * visually consistent so the whole server feels like one product.
  */
 
-import React from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { theme } from "./theme.js";
+import {
+  BackIcon,
+  ChevronDownIcon,
+  SearchIcon,
+  XIcon,
+} from "./icons.js";
 
 // ── Status badge (top-right pill: "critical", "condition met", "live", etc.)
 
@@ -814,5 +820,570 @@ export function CondensedChips({ items }: { items: CondensedChipItem[] }) {
         </span>
       ))}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W1 design-system primitives.
+//
+// These compose the `.ds-*` utility layer injected by `applyTheme()` in
+// `theme.ts`. They are the building blocks the refreshed views will use
+// starting in W3 — the existing legacy components above stay in place while
+// views migrate one-by-one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type Severity = "critical" | "major" | "minor" | "ok";
+
+const SEVERITY_ORDER: Severity[] = ["critical", "major", "minor", "ok"];
+
+/**
+ * Dot + label chip. Rounded corner (not pill) — matches the security app's
+ * `SeverityChip` shape. Use for list rows and card headers.
+ */
+export function SeverityChip({
+  severity,
+  label,
+  className,
+}: {
+  severity: Severity;
+  label?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <span className={`ds-sev-chip ds-sev-chip-${severity}${className ? " " + className : ""}`}>
+      <span className="ds-sev-chip-dot" aria-hidden="true" />
+      <span>{label ?? severity}</span>
+    </span>
+  );
+}
+
+/**
+ * 42×42 donut showing severity breakdown. Segments render in
+ * critical → major → minor → ok order so the eye reads highest-severity
+ * first. An empty breakdown shows a muted ring.
+ */
+export function SeverityDonut({
+  counts,
+  size = 42,
+  thickness = 6,
+  title,
+}: {
+  counts: Partial<Record<Severity, number>>;
+  size?: number;
+  thickness?: number;
+  title?: string;
+}) {
+  const total = SEVERITY_ORDER.reduce((acc, s) => acc + (counts[s] ?? 0), 0);
+  const r = (size - thickness) / 2;
+  const cx = size / 2;
+  const cy = size / 2;
+  const circumference = 2 * Math.PI * r;
+
+  const segments = useMemo(() => {
+    if (total === 0) return [];
+    let offset = 0;
+    return SEVERITY_ORDER.flatMap((sev) => {
+      const v = counts[sev] ?? 0;
+      if (v === 0) return [];
+      const frac = v / total;
+      const len = frac * circumference;
+      const seg = { sev, offset, len };
+      offset += len;
+      return [seg];
+    });
+  }, [counts, total, circumference]);
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      role={title ? "img" : undefined}
+      aria-label={title}
+      aria-hidden={title ? undefined : true}
+    >
+      <circle
+        cx={cx}
+        cy={cy}
+        r={r}
+        fill="none"
+        stroke="var(--border-subtle)"
+        strokeWidth={thickness}
+      />
+      {segments.map((seg) => (
+        <circle
+          key={seg.sev}
+          cx={cx}
+          cy={cy}
+          r={r}
+          fill="none"
+          stroke={`var(--severity-${seg.sev})`}
+          strokeWidth={thickness}
+          strokeDasharray={`${Math.max(seg.len - 1, 0)} ${circumference}`}
+          strokeDashoffset={-seg.offset}
+          strokeLinecap="butt"
+          transform={`rotate(-90 ${cx} ${cy})`}
+        />
+      ))}
+      <text
+        x={cx}
+        y={cy + 4}
+        textAnchor="middle"
+        fontSize={size * 0.32}
+        fontFamily="var(--font-mono)"
+        fontWeight={500}
+        fill="var(--text-primary)"
+      >
+        {total}
+      </text>
+    </svg>
+  );
+}
+
+/**
+ * Bare icon button styled via `.ds-btn-icon`. Use for header actions
+ * (fullscreen, close) and inline utilities.
+ */
+export function IconButton({
+  children,
+  onClick,
+  label,
+  disabled,
+  className,
+}: {
+  children: React.ReactNode;
+  onClick?: (e: React.MouseEvent) => void;
+  label: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`ds-btn-icon${className ? " " + className : ""}`}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Two-state toggle with `role="switch"`. Controlled.
+ */
+export function Switch({
+  checked,
+  onChange,
+  label,
+  id,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label?: React.ReactNode;
+  id?: string;
+}) {
+  const handleKey = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        onChange(!checked);
+      }
+    },
+    [checked, onChange],
+  );
+  return (
+    <span
+      role="switch"
+      aria-checked={checked}
+      tabIndex={0}
+      id={id}
+      className="ds-switch"
+      onClick={() => onChange(!checked)}
+      onKeyDown={handleKey}
+    >
+      {label ? <span>{label}</span> : null}
+      <span className="ds-switch-track" aria-hidden="true">
+        <span className="ds-switch-thumb" />
+      </span>
+    </span>
+  );
+}
+
+export interface DropdownOption<V extends string = string> {
+  value: V;
+  label: React.ReactNode;
+}
+
+/**
+ * Listbox dropdown. Keyboard: Enter/Space to open, ArrowUp/Down to move,
+ * Enter to select, Esc to close. Closes on outside click.
+ */
+export function Dropdown<V extends string = string>({
+  value,
+  onChange,
+  options,
+  label,
+  triggerPrefix,
+  align = "right",
+}: {
+  value: V;
+  onChange: (next: V) => void;
+  options: DropdownOption<V>[];
+  label: string;
+  triggerPrefix?: React.ReactNode;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState<number>(-1);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+
+  const selectedIdx = options.findIndex((o) => o.value === value);
+  const selected = selectedIdx >= 0 ? options[selectedIdx] : options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (!rootRef.current) return;
+      if (rootRef.current.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) setActiveIdx(Math.max(selectedIdx, 0));
+  }, [open, selectedIdx]);
+
+  const onTriggerKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+    }
+  };
+
+  const onMenuKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); setOpen(false); return; }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIdx((i) => (i + 1) % options.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => (i - 1 + options.length) % options.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const opt = options[activeIdx];
+      if (opt) {
+        onChange(opt.value);
+        setOpen(false);
+      }
+    }
+  };
+
+  return (
+    <div className="ds-dropdown" ref={rootRef}>
+      <button
+        type="button"
+        className="ds-dropdown-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={label}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={onTriggerKey}
+      >
+        {triggerPrefix ? <span style={{ color: "var(--text-muted)" }}>{triggerPrefix}</span> : null}
+        <span><strong>{selected?.label ?? ""}</strong></span>
+        <ChevronDownIcon size={12} />
+      </button>
+      {open ? (
+        <ul
+          id={listboxId}
+          role="listbox"
+          aria-label={label}
+          className="ds-dropdown-menu"
+          style={align === "left" ? { right: "auto", left: 0 } : undefined}
+          onKeyDown={onMenuKey}
+          tabIndex={-1}
+        >
+          {options.map((opt, i) => (
+            <li
+              key={opt.value}
+              role="option"
+              aria-selected={opt.value === value}
+              className="ds-dropdown-option"
+              onMouseEnter={() => setActiveIdx(i)}
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              style={i === activeIdx ? { background: "var(--bg-hover)" } : undefined}
+            >
+              <span>{opt.label}</span>
+              {opt.value === value ? <span aria-hidden="true" style={{ color: "var(--accent)" }}>●</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * `Showing N items │ Sort by: … │ Details [switch] │ Group by: …`
+ * The uniform toolkit the security app ships on every list view. All
+ * controls are optional — the count + noun is always shown.
+ */
+export function Subheader<S extends string = string, G extends string = string>({
+  total,
+  itemNoun,
+  sort,
+  group,
+  details,
+  leftExtras,
+  rightExtras,
+}: {
+  total: number;
+  itemNoun: string;
+  sort?: { value: S; onChange: (v: S) => void; options: DropdownOption<S>[] };
+  group?: { value: G; onChange: (v: G) => void; options: DropdownOption<G>[] };
+  details?: { checked: boolean; onChange: (v: boolean) => void };
+  leftExtras?: React.ReactNode;
+  rightExtras?: React.ReactNode;
+}) {
+  return (
+    <div className="ds-subheader">
+      <div className="ds-subheader-left">
+        <span>
+          Showing <strong>{total.toLocaleString()}</strong> {itemNoun}
+        </span>
+        {leftExtras}
+      </div>
+      <div className="ds-subheader-right">
+        {sort ? (
+          <Dropdown
+            value={sort.value}
+            onChange={sort.onChange}
+            options={sort.options}
+            label="Sort by"
+            triggerPrefix="Sort by:"
+          />
+        ) : null}
+        {details ? (
+          <Switch checked={details.checked} onChange={details.onChange} label="Details" />
+        ) : null}
+        {group ? (
+          <Dropdown
+            value={group.value}
+            onChange={group.onChange}
+            options={group.options}
+            label="Group by"
+            triggerPrefix="Group by:"
+          />
+        ) : null}
+        {rightExtras}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Label + value grid for the top of a detail pane. Auto-flows into as many
+ * columns as fit. `value` falls back to em-dash when null/undefined/empty.
+ */
+export function FactCol({
+  items,
+}: {
+  items: { label: React.ReactNode; value: React.ReactNode }[];
+}) {
+  return (
+    <div className="ds-fact-col">
+      {items.map((it, i) => {
+        const empty = it.value === null || it.value === undefined || it.value === "";
+        return (
+          <div key={i} className="ds-fact-col-item">
+            <div className="ds-fact-col-label">{it.label}</div>
+            <div className="ds-fact-col-value">{empty ? "—" : it.value}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Collapsible section with a header row (title + optional preview count +
+ * chevron). Controlled — parent owns open state so multiple sections can
+ * be coordinated.
+ */
+export function ExpandSection({
+  title,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  title: React.ReactNode;
+  count?: number;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="ds-expand">
+      <button
+        type="button"
+        className="ds-expand-trigger"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <span>{title}</span>
+        {typeof count === "number" ? (
+          <span className="ds-expand-count">{count}</span>
+        ) : null}
+        <ChevronDownIcon size={14} />
+      </button>
+      {open ? <div className="ds-expand-body">{children}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * Filter chip showing the active query / scope value. Click × to clear.
+ */
+export function QueryPill({
+  children,
+  onClear,
+  label = "Clear filter",
+}: {
+  children: React.ReactNode;
+  onClear?: () => void;
+  label?: string;
+}) {
+  return (
+    <span className="ds-query-pill">
+      <span>{children}</span>
+      {onClear ? (
+        <button type="button" aria-label={label} onClick={onClear}>
+          <XIcon size={12} />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * List → detail split. Renders children as the list; when `detail` is
+ * supplied, the list narrows and the detail pane slides in.
+ */
+export function ListDetailLayout({
+  children,
+  detail,
+}: {
+  children: React.ReactNode;
+  detail?: React.ReactNode;
+}) {
+  return (
+    <div className="ds-list-detail">
+      <div className={`ds-list-detail-list${detail ? " narrow" : ""}`}>{children}</div>
+      {detail ? <div className="ds-list-detail-pane">{detail}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * Detail-pane header with "← Back to list" + optional close X + actions slot.
+ * Use inside a `<ListDetailLayout detail={...}>`.
+ */
+export function DetailPaneHeader({
+  onBack,
+  onClose,
+  title,
+  actions,
+}: {
+  onBack?: () => void;
+  onClose?: () => void;
+  title?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div className="ds-list-detail-pane-header">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {onBack ? (
+          <button type="button" className="ds-back-btn" onClick={onBack}>
+            <BackIcon size={14} /> Back to list
+          </button>
+        ) : null}
+        {title ? (
+          <span
+            style={{
+              fontFamily: "var(--font-sans)",
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--text-primary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              minWidth: 0,
+            }}
+          >
+            {title}
+          </span>
+        ) : null}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {actions}
+        {onClose ? (
+          <IconButton label="Close detail" onClick={onClose}>
+            <XIcon size={14} />
+          </IconButton>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Controlled search input with the shared `.ds-search` shell. Includes a
+ * magnifier icon and optional clear button when the value is non-empty.
+ */
+export function SearchInput({
+  value,
+  onChange,
+  placeholder = "Search",
+  onSubmit,
+  onClear,
+  autoFocus,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  onSubmit?: () => void;
+  onClear?: () => void;
+  autoFocus?: boolean;
+}) {
+  return (
+    <label className="ds-search">
+      <SearchIcon size={14} />
+      <input
+        type="search"
+        value={value}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && onSubmit) onSubmit();
+          if (e.key === "Escape") {
+            if (value) onChange("");
+            onClear?.();
+          }
+        }}
+      />
+      {value ? (
+        <IconButton label="Clear search" onClick={() => { onChange(""); onClear?.(); }}>
+          <XIcon size={12} />
+        </IconButton>
+      ) : null}
+    </label>
   );
 }
