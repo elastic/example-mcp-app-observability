@@ -227,7 +227,9 @@ const DS_STYLESHEET = `
   .ds-header {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 24px;
+    row-gap: 10px;
     padding: 16px;
     background: var(--bg-primary);
     border-bottom: 1px solid var(--border);
@@ -248,9 +250,11 @@ const DS_STYLESHEET = `
   .ds-header-actions {
     display: flex;
     align-items: center;
-    gap: 16px;
-    flex-shrink: 0;
-    margin-left: auto;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    min-width: 0;
   }
 
   .ds-card {
