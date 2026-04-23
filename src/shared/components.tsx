@@ -682,36 +682,28 @@ export function ZoomControls({
           {currentZoom.toFixed(1)}×
         </div>
       </div>
-      {/* Decorative pan/zoom hint. Two defenses so axe-core stops flagging it:
-       * (1) textMuted (not textDim) — passes AA even at opacity 0.6 (~5.1:1
-       *     effective contrast after alpha compositing on the page bg).
-       * (2) visibility:hidden when not showing — axe skips invisible elements.
-       *     opacity alone wasn't enough because axe 4.11 evaluates contrast on
-       *     opacity:0 elements too. aria-hidden is kept because the hint is
-       *     purely visual; screen readers have no interaction path for it. */}
-      {(() => {
-        const showHint = Math.abs(currentZoom - 1) < 0.01 && !isDragging;
-        return (
-          <div
-            aria-hidden="true"
-            style={{
-              position: "absolute",
-              bottom: 10,
-              left: 10,
-              fontSize: 10,
-              color: theme.textMuted,
-              fontFamily: "'JetBrains Mono', monospace",
-              pointerEvents: "none",
-              opacity: showHint ? 0.6 : 0,
-              visibility: showHint ? "visible" : "hidden",
-              transition: "opacity 200ms",
-              zIndex: 10,
-            }}
-          >
-            drag to pan · wheel to zoom
-          </div>
-        );
-      })()}
+      {/* Decorative pan/zoom hint. Conditionally rendered so axe can't find
+       * it when not shown — simpler than fighting opacity/visibility alpha
+       * compositing rules. At full opacity with textMuted it clears AA at
+       * ~7.5:1. aria-hidden keeps it out of the screen-reader tree since
+       * the hint is purely visual. */}
+      {Math.abs(currentZoom - 1) < 0.01 && !isDragging && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            bottom: 10,
+            left: 10,
+            fontSize: 10,
+            color: theme.textMuted,
+            fontFamily: "'JetBrains Mono', monospace",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          drag to pan · wheel to zoom
+        </div>
+      )}
     </>
   );
 }
