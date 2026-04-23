@@ -890,14 +890,17 @@ export function App() {
               ? `${panZoom.viewBox.x} ${panZoom.viewBox.y} ${panZoom.viewBox.w} ${panZoom.viewBox.h}`
               : `0 0 ${svgW} ${svgH}`
           }
+          preserveAspectRatio="xMidYMid meet"
           {...panZoom.svgHandlers}
           style={{
             display: "block",
+            // SVG fills the graph container both ways. viewBox content stays
+            // at its natural aspect and is centered via preserveAspectRatio;
+            // any whitespace lives inside the SVG and blends with the
+            // container background, so the graph canvas fills the available
+            // vertical space cleanly even when the compare strip is empty.
             width: "100%",
-            // Aspect-ratio matches the viewBox so the element dimensions and
-            // the content coordinate system agree — no letterbox whitespace
-            // when the graph is wider than tall (horizontal layout).
-            aspectRatio: `${svgW} / ${svgH}`,
+            height: "100%",
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",

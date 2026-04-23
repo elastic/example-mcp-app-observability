@@ -307,7 +307,7 @@ export function App() {
   const tone = HEALTH_TONE[data.overall_health] || "neutral";
 
   return (
-    <div style={{ padding: "14px 16px", maxWidth: 620 }}>
+    <div style={{ padding: "14px 16px" }}>
       {data.namespace_candidates?.length ? (
         <div
           style={{
