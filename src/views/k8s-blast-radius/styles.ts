@@ -68,55 +68,58 @@ export const viewStyles = `
     align-items: center;
   }
 
-  /* Pinned node detail — persistent panel in the top-right of the graph.
-   * Click a node to pin its details here; click again (or the close X on
-   * the header pill) to clear. Decouples "inspected object" from cursor
-   * position so pan/zoom doesn't drag the info off-screen. */
-  .blast-pinned-panel {
-    position: absolute;
-    top: 16px;
-    right: 22px;
-    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
-    border: 1px solid var(--accent);
-    box-shadow: 0 0 0 1px var(--accent-dim) inset;
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    min-width: 220px;
-    max-width: 280px;
-    backdrop-filter: blur(6px);
-    z-index: 6;
+  /* Bottom inspect strip — click a node to pin its details into a card here.
+   * Up to 4 cards; hidden when empty. Replaces the single top-right panel
+   * that was there in the earlier W5 iteration. */
+  .blast-inspect-strip {
+    display: flex;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-primary);
+    overflow-x: auto;
+    flex-shrink: 0;
   }
-  .blast-pinned-panel-head {
+  .blast-inspect-card {
+    flex: 0 0 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .blast-inspect-card-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
-    margin-bottom: 6px;
   }
-  .blast-pinned-panel-name {
+  .blast-inspect-card-name {
+    flex: 1 1 0;
+    min-width: 0;
     font-family: var(--font-sans);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
-    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .blast-pinned-panel-close {
+  .blast-inspect-card-close {
     background: transparent;
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1;
     padding: 0 4px;
   }
-  .blast-pinned-panel-close:hover { color: var(--text-primary); }
-  .blast-pinned-panel-body {
+  .blast-inspect-card-close:hover { color: var(--text-primary); }
+  .blast-inspect-card-body {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-secondary);

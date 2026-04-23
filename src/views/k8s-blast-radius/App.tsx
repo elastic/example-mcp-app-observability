@@ -147,11 +147,19 @@ function Tooltip({ info }: { info: TooltipInfo }) {
 export function App() {
   const [data, setData] = useState<BlastRadiusData | null>(null);
   const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
-  const [pinned, setPinned] = useState<{ name: string; details: string[] } | null>(null);
+  const [inspected, setInspected] = useState<Array<{ name: string; details: string[] }>>([]);
+  const MAX_INSPECT = 4;
+  const inspectedNames = useMemo(() => new Set(inspected.map((i) => i.name)), [inspected]);
+  const canInspectMore = inspected.length < MAX_INSPECT;
 
-  // Click a node to pin its details in the side panel. Click again to clear.
-  const togglePin = useCallback((name: string, details: string[]) => {
-    setPinned((prev) => (prev?.name === name ? null : { name, details }));
+  // Click a node to pin its details into the bottom compare strip (up to 4).
+  // Click the same node again to remove it from the strip.
+  const toggleInspect = useCallback((name: string, details: string[]) => {
+    setInspected((prev) => {
+      if (prev.some((i) => i.name === name)) return prev.filter((i) => i.name !== name);
+      if (prev.length >= MAX_INSPECT) return prev;
+      return [...prev, { name, details }];
+    });
   }, []);
   const [app, setApp] = useState<AppLike | null>(null);
 
@@ -417,9 +425,9 @@ export function App() {
       <AppGlyph size={20} />
       <h1 className="ds-header-title">Blast radius</h1>
       <div className="ds-header-actions">
-        {pinned && (
-          <QueryPill onClear={() => setPinned(null)} label="Clear pin">
-            focus: {pinned.name}
+        {inspected.length > 0 && (
+          <QueryPill onClear={() => setInspected([])} label="Clear all comparisons">
+            comparing: {inspected.length}
           </QueryPill>
         )}
         {headerNode && <QueryPill>node: {headerNode}</QueryPill>}
@@ -509,11 +517,11 @@ export function App() {
               setTooltip(null);
               panZoom.bgHandlers.onMouseDown(e);
             }}
-            onClick={() => {
-              // Empty-space click (no drag) clears the pin. Pan suppresses
-              // the synthetic click so the pin survives drag gestures.
-              setPinned(null);
-            }}
+            /* Empty-space click was clearing the single pin in the previous
+             * iteration. With the multi-select compare strip, clearing all
+             * on an empty click would be surprising — the strip persists
+             * until the user closes cards explicitly or uses the header
+             * "comparing: N" pill. */
           />
           <defs>
             <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -635,7 +643,9 @@ export function App() {
                 onMouseLeave={clearHover}
                 onClick={(e) => {
                   e.stopPropagation();
-                  togglePin(item.label, item.details);
+                  if (inspectedNames.has(item.label) || canInspectMore) {
+                    toggleInspect(item.label, item.details);
+                  }
                 }}
                 style={{ cursor: "pointer" }}
               >
@@ -670,7 +680,9 @@ export function App() {
               onMouseLeave={clearHover}
               onClick={(e) => {
                 e.stopPropagation();
-                togglePin(item.label, item.details);
+                if (inspectedNames.has(item.label) || canInspectMore) {
+                  toggleInspect(item.label, item.details);
+                }
               }}
               style={{ cursor: "pointer" }}
             >
@@ -782,27 +794,6 @@ export function App() {
           </div>
         </div>
 
-        {pinned && (
-          <div className="blast-pinned-panel" role="region" aria-label="Pinned node details">
-            <div className="blast-pinned-panel-head">
-              <div className="blast-pinned-panel-name" title={pinned.name}>{pinned.name}</div>
-              <button
-                type="button"
-                className="blast-pinned-panel-close"
-                aria-label="Unpin"
-                onClick={() => setPinned(null)}
-              >
-                ×
-              </button>
-            </div>
-            <div className="blast-pinned-panel-body">
-              {pinned.details.map((d, i) => (
-                <div key={i}>{d}</div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {tooltip && <Tooltip info={tooltip} />}
 
         <ZoomControls
@@ -815,6 +806,31 @@ export function App() {
           isDragging={isDragging}
         />
       </div>
+
+      {inspected.length > 0 && (
+        <div className="blast-inspect-strip" role="region" aria-label="Compare panel">
+          {inspected.map((item) => (
+            <div key={item.name} className="blast-inspect-card">
+              <div className="blast-inspect-card-head">
+                <span className="blast-inspect-card-name" title={item.name}>{item.name}</span>
+                <button
+                  type="button"
+                  className="blast-inspect-card-close"
+                  aria-label={`Remove ${item.name} from compare`}
+                  onClick={() => toggleInspect(item.name, item.details)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="blast-inspect-card-body">
+                {item.details.map((d, i) => (
+                  <div key={i}>{d}</div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="blast-meta">
         <div className="blast-meta-row">

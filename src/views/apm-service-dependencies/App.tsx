@@ -420,27 +420,40 @@ function NodeCard({
   dimmed,
   isHovered,
   isPinned,
+  isInspected,
+  canInspect,
   fanIn,
   fanOut,
   onHover,
   onMove,
   onLeave,
   onClick,
+  onToggleInspect,
 }: {
   node: LayoutNode;
   dimmed: boolean;
   isHovered: boolean;
   isPinned: boolean;
+  isInspected: boolean;
+  canInspect: boolean;
   fanIn: number;
   fanOut: number;
   onHover: (e: React.MouseEvent) => void;
   onMove: (e: React.MouseEvent) => void;
   onLeave: () => void;
   onClick: (e: React.MouseEvent) => void;
+  onToggleInspect: () => void;
 }) {
   const color = roleColor(node.svc.role);
   const hi = healthIndicator(node.svc);
   const focused = isHovered || isPinned;
+  const showBadge = isHovered || isInspected;
+  const badgeDisabled = !isInspected && !canInspect;
+  const badgeTitle = isInspected
+    ? "Remove from compare"
+    : canInspect
+      ? "Add to compare"
+      : "Compare panel is full (max 4)";
 
   return (
     <foreignObject x={node.x} y={node.y} width={NODE_W} height={NODE_H}>
@@ -453,7 +466,9 @@ function NodeCard({
         onClick={onClick}
         role="button"
         aria-pressed={isPinned}
+        className={isInspected ? "dep-node-inspected" : undefined}
         style={{
+          position: "relative",
           width: NODE_W,
           height: NODE_H,
           background: focused ? "#1a1d28" : theme.bgSecondary,
@@ -470,6 +485,21 @@ function NodeCard({
           boxSizing: "border-box",
         }}
       >
+        {showBadge && (
+          <button
+            className={`dep-inspect-badge${isInspected ? " on" : ""}`}
+            aria-label={badgeTitle}
+            title={badgeTitle}
+            disabled={badgeDisabled}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleInspect();
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {isInspected ? "✓" : "+"}
+          </button>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <div
             style={{
@@ -585,6 +615,7 @@ export function App() {
   const [data, setData] = useState<DepData | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [pinned, setPinned] = useState<string | null>(null);
+  const [inspected, setInspected] = useState<string[]>([]);
   const [direction, setDirection] = useState<GraphDirection>("vertical");
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
@@ -594,6 +625,18 @@ export function App() {
   // Hover wins for in-motion feedback; pinned takes over once the cursor
   // leaves so the dim/focus state persists for comparison work.
   const focusTarget = hovered ?? pinned;
+
+  const inspectedSet = useMemo(() => new Set(inspected), [inspected]);
+  const MAX_INSPECT = 4;
+  const canInspectMore = inspected.length < MAX_INSPECT;
+
+  const toggleInspect = useCallback((name: string) => {
+    setInspected((prev) => {
+      if (prev.includes(name)) return prev.filter((n) => n !== name);
+      if (prev.length >= MAX_INSPECT) return prev;
+      return [...prev, name];
+    });
+  }, []);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -892,7 +935,12 @@ export function App() {
             const src = nodeMap.get(edge.source);
             const dst = nodeMap.get(edge.target);
             if (!src || !dst) return null;
-            const dim = focusTarget !== null && (!connected || !isEdgeConnected(edge, connected));
+            const edgeTouchesInspected =
+              inspectedSet.has(edge.source) || inspectedSet.has(edge.target);
+            const dim =
+              focusTarget !== null &&
+              !edgeTouchesInspected &&
+              (!connected || !isEdgeConnected(edge, connected));
             return (
               <EdgePath
                 key={`e-${i}`}
@@ -909,7 +957,11 @@ export function App() {
           })}
 
           {nodes.map((node) => {
-            const dim = focusTarget !== null && (!connected || !connected.has(node.name));
+            const isIns = inspectedSet.has(node.name);
+            const dim =
+              focusTarget !== null &&
+              !isIns &&
+              (!connected || !connected.has(node.name));
             const isHov = hovered === node.name;
             const isPin = pinned === node.name;
             return (
@@ -919,12 +971,15 @@ export function App() {
                 dimmed={dim}
                 isHovered={isHov}
                 isPinned={isPin}
+                isInspected={isIns}
+                canInspect={canInspectMore}
                 fanIn={fanMap.get(node.name)?.in ?? 0}
                 fanOut={fanMap.get(node.name)?.out ?? 0}
                 onClick={(e) => {
                   e.stopPropagation();
                   setPinned((prev) => (prev === node.name ? null : node.name));
                 }}
+                onToggleInspect={() => toggleInspect(node.name)}
                 onHover={(e) => {
                   if (isDragging) return;
                   setHovered(node.name);
@@ -955,6 +1010,78 @@ export function App() {
           isDragging={isDragging}
         />
       </div>
+
+      {inspected.length > 0 && (
+        <div className="dep-inspect-strip" role="region" aria-label="Compare panel">
+          {inspected.map((name) => {
+            const svc = data.services.find((s) => s.name === name);
+            if (!svc) return null;
+            const isFocused = pinned === name;
+            const fan = fanMap.get(name);
+            const hi = healthIndicator(svc);
+            return (
+              <div
+                key={name}
+                className={`dep-inspect-card${isFocused ? " focused" : ""}`}
+              >
+                <div className="dep-inspect-card-head">
+                  <span className="dep-inspect-card-name" title={name}>{name}</span>
+                  {isFocused && <span className="dep-inspect-card-focused-badge">focus</span>}
+                  <button
+                    type="button"
+                    className="dep-inspect-card-close"
+                    aria-label={`Remove ${name} from compare`}
+                    onClick={() => toggleInspect(name)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="dep-inspect-card-meta">
+                  <div className="dep-inspect-card-meta-row">
+                    <strong>{svc.role}</strong>
+                    {svc.language ? ` · ${svc.language}` : ""}
+                    {svc.namespace ? ` · ns: ${svc.namespace}` : ""}
+                  </div>
+                  {svc.health && svc.health.span_count > 0 && (
+                    <div className="dep-inspect-card-meta-row">
+                      <strong>{formatCount(svc.health.span_count)}</strong> spans
+                      {(svc.health.error_count ?? 0) > 0 && (
+                        <>
+                          {" · "}
+                          <span style={{ color: hi.color }}>{hi.label}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {svc.health?.avg_duration_us != null && (
+                    <div className="dep-inspect-card-meta-row">
+                      avg <strong>{formatDuration(svc.health.avg_duration_us)}</strong>
+                      {svc.health.p99_duration_us != null && (
+                        <> · p99 <strong>{formatDuration(svc.health.p99_duration_us)}</strong></>
+                      )}
+                    </div>
+                  )}
+                  {fan && (
+                    <div className="dep-inspect-card-meta-row">
+                      <strong>{fan.in}</strong> upstream · <strong>{fan.out}</strong> downstream
+                    </div>
+                  )}
+                </div>
+                <div className="dep-inspect-card-foot">
+                  <button
+                    type="button"
+                    className="dep-inspect-card-action"
+                    onClick={() => setPinned(isFocused ? null : name)}
+                    disabled={isFocused}
+                  >
+                    {isFocused ? "Focused" : "Make focus"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="dep-legend">
         <LegendDot color={theme.green} label="Root (no upstream)" />

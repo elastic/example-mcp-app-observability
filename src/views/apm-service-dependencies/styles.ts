@@ -68,6 +68,142 @@ export const viewStyles = `
     flex-shrink: 0;
   }
 
+  /* Inspect "+" badge on a NodeCard. Hidden by default, appears on node
+   * hover, stays visible while the node is inspected. */
+  .dep-inspect-badge {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  }
+  .dep-inspect-badge:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .dep-inspect-badge.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg-primary);
+  }
+  .dep-inspect-badge:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  /* Inspected node gets a subtle dotted accent ring so the bright node
+   * in the graph is recognizable as "pinned for compare" vs simply not
+   * dimmed. */
+  .dep-node-inspected {
+    outline: 1px dashed var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Bottom inspect strip — collapses when empty. Scrolls horizontally if
+   * we ever allow > 4 cards; currently capped at 4. */
+  .dep-inspect-strip {
+    display: flex;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-primary);
+    overflow-x: auto;
+    flex-shrink: 0;
+  }
+
+  .dep-inspect-card {
+    flex: 0 0 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    position: relative;
+  }
+  .dep-inspect-card.focused { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim) inset; }
+  .dep-inspect-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dep-inspect-card-name {
+    flex: 1 1 0;
+    min-width: 0;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dep-inspect-card-focused-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-tag);
+  }
+  .dep-inspect-card-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .dep-inspect-card-close:hover { color: var(--text-primary); }
+  .dep-inspect-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .dep-inspect-card-meta-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dep-inspect-card-meta-row strong { color: var(--text-primary); font-weight: 500; }
+  .dep-inspect-card-foot {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .dep-inspect-card-action {
+    flex: 1;
+    padding: 5px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .dep-inspect-card-action:hover { background: var(--bg-hover); }
+  .dep-inspect-card-action:disabled {
+    color: var(--text-muted);
+    cursor: default;
+    background: transparent;
+  }
+
   .dep-empty {
     display: flex;
     flex-direction: column;
