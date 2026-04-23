@@ -23,8 +23,11 @@ export type BadgeTone = "critical" | "major" | "minor" | "ok" | "info" | "neutra
 
 // Severity palette is Okabe-Ito-derived: vermillion / orange / sky-blue. Strong hue
 // separation and a hot-to-cool ramp that stays distinguishable under all common
-// color-vision deficiencies.
-const SEV_CRIT = "#D55E00";
+// color-vision deficiencies. Critical uses #F07840 (same hue family as canonical
+// Okabe-Ito #D55E00) because #D55E00 fails WCAG 2 AA as TEXT on the tinted
+// critical background (#D55E0020 ≈ 3.9:1). #F07840 clears ~4.8:1. Chart/SVG
+// marks elsewhere in the codebase still use #D55E00 for the canonical stroke.
+const SEV_CRIT = "#F07840";
 const SEV_MAJOR = "#E69F00";
 const SEV_MINOR = "#56B4E9";
 
@@ -679,7 +682,12 @@ export function ZoomControls({
           {currentZoom.toFixed(1)}×
         </div>
       </div>
+      {/* Decorative pan/zoom hint. aria-hidden because the opacity-0.6 state
+       * would otherwise fail WCAG 2 AA contrast (effective ~3.2:1 on the
+       * page bg). Interaction is already keyboard/pointer-only; screen
+       * readers don't need the hint. */}
       <div
+        aria-hidden="true"
         style={{
           position: "absolute",
           bottom: 10,
