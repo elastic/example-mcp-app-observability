@@ -1,0 +1,269 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ */
+
+export const viewStyles = `
+  /* Header context pills row */
+  .anom-context-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  /* Summary panel — ScoreRing + textual summary */
+  .anom-summary {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 24px 24px 20px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+  .anom-summary-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .anom-summary-headline {
+    font-family: var(--font-sans);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .anom-summary-sub {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* Score ring text inside the donut */
+  .anom-score-value {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    fill: var(--text-primary);
+  }
+  .anom-score-suffix {
+    font-family: var(--font-mono);
+    fill: var(--text-muted);
+  }
+
+  /* Section blocks (FactCol, charts) */
+  .anom-section {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .anom-section:last-of-type { border-bottom: none; }
+  .anom-section-title {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+
+  /* Time-series chart */
+  .anom-chart {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+  }
+  .anom-chart-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .anom-chart-legend-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .anom-chart-legend-swatch-dashed {
+    border-top: 2px dashed var(--text-muted);
+    height: 0;
+  }
+  .anom-chart-meta {
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Action bar at the bottom of detail */
+  .anom-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 24px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-primary);
+  }
+  .anom-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .anom-action:hover { background: var(--bg-hover); }
+  .anom-action-primary {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  /* Overview KPI strip */
+  .anom-kpi {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 20px 24px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+  .anom-kpi-totals {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .anom-kpi-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ds-text-label);
+  }
+  .anom-kpi-row strong {
+    font-weight: 500;
+    color: var(--text-primary);
+    min-width: 24px;
+    display: inline-block;
+    text-align: right;
+  }
+
+  /* Anomaly entity card list */
+  .anom-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px 24px;
+  }
+  .anom-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 4px;
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .anom-group-header:first-child { margin-top: 0; }
+
+  .anom-entity-card {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .anom-entity-card:hover { background: var(--bg-hover); }
+  .anom-entity-card.selected { border-color: var(--accent); background: var(--bg-hover); }
+  .anom-entity-card:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+  .anom-entity-card-name {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .anom-entity-card-meta {
+    margin-top: 2px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .anom-entity-card-score {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
+  .anom-entity-card-score-value {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .anom-entity-card-score-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  /* Empty / waiting */
+  .anom-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 64px 24px;
+    text-align: center;
+    color: var(--text-muted);
+    gap: 6px;
+  }
+  .anom-empty-title {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+  .anom-empty-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* Headline banner (echo of payload.headline) */
+  .anom-headline {
+    padding: 10px 24px;
+    background: var(--severity-critical-bg);
+    border-bottom: 1px solid var(--severity-critical-border);
+    color: var(--severity-critical-text);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+  }
+`;
