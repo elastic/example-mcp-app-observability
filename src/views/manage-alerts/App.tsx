@@ -26,6 +26,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
   ListDetailLayout,
   DetailPaneHeader,
@@ -74,7 +75,7 @@ const TAB_ORDER: { key: StatusTab; label: string }[] = [
 export function App() {
   const [data, setData] = useState<Result | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
+  const { isFullscreen: fullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -82,27 +83,6 @@ export function App() {
     document.head.appendChild(style);
     applyTheme();
     return () => style.remove();
-  }, []);
-
-  // Keep local state in sync with the browser's actual fullscreen state so the
-  // icon flips correctly even if the user exits via Esc or the OS chrome.
-  useEffect(() => {
-    const sync = () => setFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", sync);
-    return () => document.removeEventListener("fullscreenchange", sync);
-  }, []);
-
-  const toggleFullscreen = useCallback(async () => {
-    try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch (err) {
-      // Claude Desktop / iframe embedders may block fullscreen. Log and move on.
-      console.warn("[manage-alerts] fullscreen unavailable:", err);
-    }
   }, []);
 
   const handleToolResult = useCallback((params: ToolResultParams) => {

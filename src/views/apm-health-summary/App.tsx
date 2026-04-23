@@ -97,8 +97,12 @@ interface HealthData {
 // Okabe-Ito-derived palette: vermillion / orange / sky-blue. Strong hue separation
 // and a hot-to-cool severity ramp that remains distinguishable under all common
 // color-vision deficiencies (protanopia, deuteranopia, tritanopia).
+// Critical text uses #F07840 rather than canonical Okabe-Ito #D55E00 because
+// the latter fails WCAG 2 AA as TEXT on bg-secondary / bg-elevated (~4.4:1).
+// #F07840 is the same hue family and clears ~4.8:1. Chart/donut stroke uses
+// the same value for consistency — visually nearly identical to the canonical.
 const SEV_COLORS: Record<string, string> = {
-  critical: "#D55E00",
+  critical: "#F07840",
   major: "#E69F00",
   minor: "#56B4E9",
 };

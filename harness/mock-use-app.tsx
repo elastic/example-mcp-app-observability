@@ -24,6 +24,8 @@ import React, {
 
 // Mirror the real shapes so views compile unchanged.
 
+export type DisplayMode = "inline" | "fullscreen" | "pip";
+
 export interface ToolResultParams {
   content?: Array<{ type: string; text?: string }>;
 }
@@ -36,6 +38,7 @@ export interface AppLike {
     arguments: Record<string, unknown>;
   }) => Promise<ToolResultParams>;
   sendMessage: (text: string) => void;
+  requestDisplayMode: (params: { mode: DisplayMode }) => Promise<{ mode: DisplayMode }>;
 }
 
 export interface Fixture {
@@ -47,12 +50,14 @@ interface HarnessContextValue {
   fixture: Fixture | null;
   onSendMessage: (text: string) => void;
   onCallServerTool: (name: string, args: Record<string, unknown>) => void;
+  onRequestDisplayMode: (mode: DisplayMode) => DisplayMode;
 }
 
 const HarnessContext = createContext<HarnessContextValue>({
   fixture: null,
   onSendMessage: () => {},
   onCallServerTool: () => {},
+  onRequestDisplayMode: (m) => m,
 });
 
 export function FixtureProvider({
@@ -62,7 +67,10 @@ export function FixtureProvider({
   value: HarnessContextValue;
   children: React.ReactNode;
 }) {
-  const memo = useMemo(() => value, [value.fixture, value.onSendMessage, value.onCallServerTool]);
+  const memo = useMemo(
+    () => value,
+    [value.fixture, value.onSendMessage, value.onCallServerTool, value.onRequestDisplayMode],
+  );
   return <HarnessContext.Provider value={memo}>{children}</HarnessContext.Provider>;
 }
 
@@ -76,12 +84,14 @@ export function useApp(opts: UseAppOptions): {
   isConnected: boolean;
   error: Error | null;
 } {
-  const { fixture, onSendMessage, onCallServerTool } = useContext(HarnessContext);
+  const { fixture, onSendMessage, onCallServerTool, onRequestDisplayMode } =
+    useContext(HarnessContext);
   const appRef = useRef<AppLike>({
     ontoolresult: null,
     ontoolinput: null,
     callServerTool: () => Promise.resolve({}),
     sendMessage: () => {},
+    requestDisplayMode: () => Promise.resolve({ mode: "inline" }),
   });
   const setupRef = useRef(false);
   const [, force] = useState(0);
@@ -96,9 +106,13 @@ export function useApp(opts: UseAppOptions): {
       onCallServerTool(name, args);
       return { content: [] };
     };
+    app.requestDisplayMode = async ({ mode }) => {
+      const applied = onRequestDisplayMode(mode);
+      return { mode: applied };
+    };
     opts.onAppCreated?.(app);
     force((n) => n + 1);
-  }, [opts, onSendMessage, onCallServerTool]);
+  }, [opts, onSendMessage, onCallServerTool, onRequestDisplayMode]);
 
   // Whenever the fixture changes, re-dispatch through the view's handler.
   useEffect(() => {

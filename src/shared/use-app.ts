@@ -21,6 +21,8 @@ export interface ToolResultParams {
   content?: Array<{ type: string; text?: string }>;
 }
 
+export type DisplayMode = "inline" | "fullscreen" | "pip";
+
 export interface AppLike {
   ontoolresult: ((params: ToolResultParams) => void) | null;
   ontoolinput: ((params: Record<string, unknown>) => void) | null;
@@ -29,6 +31,12 @@ export interface AppLike {
     arguments: Record<string, unknown>;
   }) => Promise<ToolResultParams>;
   sendMessage: (text: string) => void;
+  /**
+   * Ask the host to switch the view's display mode. Host may return a
+   * different mode than requested if the requested one isn't supported.
+   * Wraps the MCP protocol method `ui/request-display-mode`.
+   */
+  requestDisplayMode: (params: { mode: DisplayMode }) => Promise<{ mode: DisplayMode }>;
 }
 
 interface UseAppOptions {
@@ -54,6 +62,7 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
     ontoolinput: null,
     callServerTool: () => Promise.reject(new Error("not initialized")),
     sendMessage: () => {},
+    requestDisplayMode: () => Promise.reject(new Error("not initialized")),
   });
 
   useEffect(() => {
@@ -92,6 +101,31 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
         },
         "*"
       );
+    };
+
+    app.requestDisplayMode = (params) => {
+      return new Promise<{ mode: DisplayMode }>((resolve, reject) => {
+        const id = _nextId++;
+        _pending.set(id, {
+          // Cast: this pending map is shared with callServerTool, whose
+          // resolvers expect ToolResultParams. The host echoes back
+          // `{ mode }` for this method, so the cast is safe at runtime.
+          resolve: (r: unknown) => resolve(r as { mode: DisplayMode }),
+          reject,
+        } as { resolve: (v: ToolResultParams) => void; reject: (e: Error) => void });
+
+        window.parent.postMessage(
+          { jsonrpc: "2.0", id, method: "ui/request-display-mode", params },
+          "*"
+        );
+
+        setTimeout(() => {
+          if (_pending.has(id)) {
+            _pending.delete(id);
+            reject(new Error("requestDisplayMode timed out after 10s"));
+          }
+        }, 10_000);
+      });
     };
 
     onAppCreated?.(app);

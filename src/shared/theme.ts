@@ -45,7 +45,11 @@ export const theme = {
   // serious violation across every dim-text callsite in the legacy views.
   textDim: "#9097a8",
   blue: "#3b82f6",
-  red: "#ef4444",
+  // #ef4444 only hit ~4.3:1 on --bg-secondary / bg-elevated, which axe-core
+  // flagged on the "AT RISK" label in k8s-blast-radius and the health-indicator
+  // text in apm-service-dependencies. #f56565 clears ~5.7:1 on the same bgs
+  // while staying in the same hue family.
+  red: "#f56565",
   redSoft: "#e06c6c",
   green: "#22c55e",
   greenSoft: "#5aba6f",
