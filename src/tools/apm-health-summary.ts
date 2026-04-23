@@ -137,12 +137,29 @@ async function queryPodResources(
     }));
 }
 
+interface TimelineBucket {
+  ts: number;        // bucket start, epoch ms
+  max_score: number; // 0 when no anomaly fired in this bucket for this entity
+}
+
+interface TimelineWindow {
+  start_ms: number;
+  end_ms: number;
+  bucket_span_ms: number;
+}
+
 interface AnomalyRollup {
   total: number;
   by_severity: Record<string, number>;
-  top_entities: { entity: string; max_score: number }[];
+  top_entities: { entity: string; max_score: number; timeline?: TimelineBucket[] }[];
+  timeline_window?: TimelineWindow;
   error?: string;
 }
+
+// 1-hour lookback split into 5-minute buckets = 12 cells. Matches the Kibana
+// anomaly-explorer heatmap density at this zoom.
+const TIMELINE_BUCKET_SPAN = "5m";
+const TIMELINE_BUCKET_SPAN_MS = 5 * 60 * 1000;
 
 async function queryActiveAnomalies(
   namespace: string | undefined,
@@ -231,7 +248,23 @@ async function queryActiveAnomalies(
                 aggs: {
                   parent: {
                     reverse_nested: {},
-                    aggs: { max_score: { max: { field: "record_score" } } },
+                    aggs: {
+                      max_score: { max: { field: "record_score" } },
+                      // Per-entity timeline for the heatmap. Empty buckets
+                      // are preserved (min_doc_count 0 + extended_bounds)
+                      // so the UI can render contiguous cells.
+                      timeline: {
+                        date_histogram: {
+                          field: "timestamp",
+                          fixed_interval: TIMELINE_BUCKET_SPAN,
+                          min_doc_count: 0,
+                          extended_bounds: { min: "now-1h", max: "now" },
+                        },
+                        aggs: {
+                          max_score: { max: { field: "record_score" } },
+                        },
+                      },
+                    },
                   },
                 },
               },
@@ -241,29 +274,47 @@ async function queryActiveAnomalies(
       },
       top_entities_by_partition: {
         terms: { field: "partition_field_value", size: 5, order: { max_score: "desc" } },
-        aggs: { max_score: { max: { field: "record_score" } } },
+        aggs: {
+          max_score: { max: { field: "record_score" } },
+          timeline: {
+            date_histogram: {
+              field: "timestamp",
+              fixed_interval: TIMELINE_BUCKET_SPAN,
+              min_doc_count: 0,
+              extended_bounds: { min: "now-1h", max: "now" },
+            },
+            aggs: {
+              max_score: { max: { field: "record_score" } },
+            },
+          },
+        },
       },
     },
   };
 
   try {
+    type HistoBucket = { key: number; max_score?: { value: number | null } };
+    type HistoAgg = { buckets: HistoBucket[] };
+    type InfluencerBucket = {
+      key: string;
+      parent?: {
+        max_score?: { value: number };
+        timeline?: HistoAgg;
+      };
+    };
+    type PartitionBucket = {
+      key: string;
+      max_score: { value: number };
+      timeline?: HistoAgg;
+    };
     type AggResp = {
       hits: { total: { value: number } | number };
       aggregations?: {
         by_severity?: { buckets: { key: string; doc_count: number }[] };
         top_entities_by_influencer?: {
-          pods_only?: {
-            by_value?: {
-              buckets: {
-                key: string;
-                parent?: { max_score?: { value: number } };
-              }[];
-            };
-          };
+          pods_only?: { by_value?: { buckets: InfluencerBucket[] } };
         };
-        top_entities_by_partition?: {
-          buckets: { key: string; max_score: { value: number } }[];
-        };
+        top_entities_by_partition?: { buckets: PartitionBucket[] };
       };
     };
     const resp = await esRequest<AggResp>("/.ml-anomalies-*/_search", { body });
@@ -275,15 +326,60 @@ async function queryActiveAnomalies(
     const influencerBuckets =
       resp.aggregations?.top_entities_by_influencer?.pods_only?.by_value?.buckets || [];
     const partitionBuckets = resp.aggregations?.top_entities_by_partition?.buckets || [];
-    const buckets = influencerBuckets.length ? influencerBuckets : partitionBuckets;
+    const usedInfluencer = influencerBuckets.length > 0;
+    const buckets: Array<InfluencerBucket | PartitionBucket> = usedInfluencer
+      ? influencerBuckets
+      : partitionBuckets;
+
+    const mapTimeline = (histo: HistoAgg | undefined): TimelineBucket[] | undefined => {
+      if (!histo) return undefined;
+      return histo.buckets.map((hb) => ({
+        ts: hb.key,
+        max_score: Math.round(((hb.max_score?.value ?? 0) || 0) * 10) / 10,
+      }));
+    };
+
     const topEntities = buckets.map((b) => {
-      const score =
-        "parent" in b
-          ? b.parent?.max_score?.value ?? 0
-          : (b as { max_score: { value: number } }).max_score.value;
-      return { entity: b.key, max_score: Math.round(score * 10) / 10 };
+      if (usedInfluencer) {
+        const ib = b as InfluencerBucket;
+        const score = ib.parent?.max_score?.value ?? 0;
+        return {
+          entity: ib.key,
+          max_score: Math.round(score * 10) / 10,
+          timeline: mapTimeline(ib.parent?.timeline),
+        };
+      }
+      const pb = b as PartitionBucket;
+      return {
+        entity: pb.key,
+        max_score: Math.round(pb.max_score.value * 10) / 10,
+        timeline: mapTimeline(pb.timeline),
+      };
     });
-    return { total, by_severity: bySeverity, top_entities: topEntities };
+
+    // Derive the window from the first entity's timeline (all entities share
+    // the same extended_bounds so the grid is uniform). Fall back to the
+    // fixed 1-hour lookback if no buckets were returned.
+    const firstTimeline = topEntities.find((e) => e.timeline?.length)?.timeline ?? [];
+    const now = Date.now();
+    const timelineWindow: TimelineWindow = firstTimeline.length
+      ? {
+          start_ms: firstTimeline[0].ts,
+          end_ms: firstTimeline[firstTimeline.length - 1].ts + TIMELINE_BUCKET_SPAN_MS,
+          bucket_span_ms: TIMELINE_BUCKET_SPAN_MS,
+        }
+      : {
+          start_ms: now - 60 * 60 * 1000,
+          end_ms: now,
+          bucket_span_ms: TIMELINE_BUCKET_SPAN_MS,
+        };
+
+    return {
+      total,
+      by_severity: bySeverity,
+      top_entities: topEntities,
+      timeline_window: timelineWindow,
+    };
   } catch (exc) {
     return {
       total: 0,

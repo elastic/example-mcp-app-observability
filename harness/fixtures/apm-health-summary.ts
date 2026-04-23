@@ -7,6 +7,22 @@
 
 import { type FixtureSet, fixture } from "./types";
 
+const BUCKET_SPAN_MS = 5 * 60 * 1000;
+const now = Date.parse("2026-04-23T14:20:00Z");
+const bucketStart = now - 60 * 60 * 1000; // 1h ago
+
+/**
+ * Twelve 5-minute buckets worth of max-score values. 0 means "no anomaly
+ * fired in that bucket for this entity" — the heatmap renders an empty cell.
+ * Scores map to severity at 50 / 75 / 90 thresholds.
+ */
+function timeline(scores: number[]) {
+  return scores.map((s, i) => ({
+    ts: bucketStart + i * BUCKET_SPAN_MS,
+    max_score: s,
+  }));
+}
+
 export const apmHealthSummaryFixtures: FixtureSet = {
   degraded: fixture("Degraded cluster", {
     overall_health: "degraded",
@@ -43,10 +59,37 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       total: 11,
       by_severity: { critical: 2, major: 4, minor: 5 },
       top_entities: [
-        { entity: "service.name=checkout", max_score: 93.2 },
-        { entity: "service.name=shipping", max_score: 78.5 },
-        { entity: "service.name=payments", max_score: 64.1 },
+        {
+          entity: "service.name=checkout",
+          max_score: 93.2,
+          timeline: timeline([0, 0, 55, 62, 71, 82, 88, 91, 93, 85, 72, 61]),
+        },
+        {
+          entity: "service.name=shipping",
+          max_score: 78.5,
+          timeline: timeline([0, 0, 0, 0, 51, 63, 78, 74, 58, 0, 0, 0]),
+        },
+        {
+          entity: "service.name=payments",
+          max_score: 64.1,
+          timeline: timeline([0, 0, 0, 52, 64, 62, 55, 0, 0, 0, 0, 0]),
+        },
+        {
+          entity: "host.name=node-us-east-4",
+          max_score: 56.8,
+          timeline: timeline([0, 0, 0, 0, 0, 0, 52, 56, 54, 0, 0, 0]),
+        },
+        {
+          entity: "host.name=node-us-west-1",
+          max_score: 51.2,
+          timeline: timeline([0, 0, 0, 0, 0, 0, 0, 0, 0, 51, 50, 0]),
+        },
       ],
+      timeline_window: {
+        start_ms: bucketStart,
+        end_ms: now,
+        bucket_span_ms: BUCKET_SPAN_MS,
+      },
     },
     recommendation: "Investigate checkout — p99 latency and error rate both breached baseline in the last 15 minutes.",
     investigation_actions: [
@@ -99,9 +142,22 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       total: 8,
       by_severity: { critical: 6, major: 2 },
       top_entities: [
-        { entity: "service.name=checkout", max_score: 97.8 },
-        { entity: "service.name=payments", max_score: 94.3 },
+        {
+          entity: "service.name=checkout",
+          max_score: 97.8,
+          timeline: timeline([0, 0, 0, 0, 0, 0, 0, 0, 78, 92, 95, 97]),
+        },
+        {
+          entity: "service.name=payments",
+          max_score: 94.3,
+          timeline: timeline([0, 0, 0, 0, 0, 0, 0, 0, 0, 82, 91, 94]),
+        },
       ],
+      timeline_window: {
+        start_ms: bucketStart,
+        end_ms: now,
+        bucket_span_ms: BUCKET_SPAN_MS,
+      },
     },
     warning: "Kubernetes telemetry is unavailable — pod-level context is hidden.",
     pods_note: "Add kubeletstats integration to see pod-level memory/CPU.",

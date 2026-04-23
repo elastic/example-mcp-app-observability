@@ -57,10 +57,28 @@ interface PodDetail {
   avg_cpu_cores?: number;
 }
 
+interface TimelineBucket {
+  ts: number;
+  max_score: number;
+}
+
+interface TimelineWindow {
+  start_ms: number;
+  end_ms: number;
+  bucket_span_ms: number;
+}
+
+interface TopAnomalyEntity {
+  entity: string;
+  max_score: number;
+  timeline?: TimelineBucket[];
+}
+
 interface AnomalyInfo {
   total: number;
   by_severity?: Record<string, number>;
-  top_entities?: Array<{ entity: string; max_score: number }>;
+  top_entities?: TopAnomalyEntity[];
+  timeline_window?: TimelineWindow;
 }
 
 interface DataCoverage {
@@ -178,6 +196,131 @@ function Donut({ segments, size = 120 }: { segments: Array<{ label: string; valu
   );
 }
 
+function severityFromScore(score: number): "critical" | "major" | "minor" | "none" {
+  if (score >= 90) return "critical";
+  if (score >= 75) return "major";
+  if (score >= 50) return "minor";
+  return "none";
+}
+
+function shortenEntity(label: string): string {
+  // "service.name=checkout" -> "checkout" ; "host.name=node-us-east-4" -> "node-us-east-4"
+  const eq = label.indexOf("=");
+  return eq >= 0 ? label.slice(eq + 1) : label;
+}
+
+function fmtAxisTime(ts: number): string {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Entity × time heatmap, one row per top anomaly entity. Each cell's color
+ * is driven by the max anomaly score that fell into that bucket (Okabe-Ito
+ * ramp matching the rest of the view); empty buckets render as a subtle
+ * inset. Mirrors the Kibana Anomaly Explorer heatmap at this zoom.
+ */
+function AnomalyHeatmap({
+  entities,
+  window,
+}: {
+  entities: TopAnomalyEntity[];
+  window: TimelineWindow;
+}) {
+  const rows = entities.filter((e) => (e.timeline?.length ?? 0) > 0);
+  if (rows.length === 0) return null;
+
+  const bucketCount = rows[0].timeline!.length;
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div
+        style={{
+          fontSize: 11,
+          color: theme.textMuted,
+          textTransform: "uppercase",
+          letterSpacing: 0.4,
+          marginBottom: 8,
+          fontWeight: 600,
+        }}
+      >
+        Top entities · last {Math.round((window.end_ms - window.start_ms) / 60000)}m
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(120px, 22%) 1fr",
+          rowGap: 4,
+          alignItems: "center",
+        }}
+      >
+        {rows.map((row) => (
+          <React.Fragment key={row.entity}>
+            <div
+              style={{
+                fontSize: 11,
+                color: theme.text,
+                fontFamily: "'JetBrains Mono', monospace",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                paddingRight: 10,
+              }}
+              title={row.entity}
+            >
+              {shortenEntity(row.entity)}
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${bucketCount}, 1fr)`,
+                gap: 2,
+              }}
+            >
+              {row.timeline!.map((b, i) => {
+                const sev = severityFromScore(b.max_score);
+                const color = sev === "none" ? undefined : SEV_COLORS[sev];
+                return (
+                  <div
+                    key={i}
+                    title={
+                      sev === "none"
+                        ? `${fmtAxisTime(b.ts)} · no anomaly`
+                        : `${fmtAxisTime(b.ts)} · max score ${b.max_score}`
+                    }
+                    style={{
+                      height: 20,
+                      borderRadius: 3,
+                      background: color ?? "var(--bg-tertiary)",
+                      border: color ? `1px solid ${color}88` : "1px solid var(--border-subtle)",
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </React.Fragment>
+        ))}
+
+        <div />
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginTop: 4,
+            fontSize: 10,
+            fontFamily: "'JetBrains Mono', monospace",
+            color: theme.textMuted,
+          }}
+        >
+          <span>{fmtAxisTime(window.start_ms)}</span>
+          <span>{fmtAxisTime(window.end_ms)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
   const sev = anomalies.by_severity || {};
   const segments = SEV_ORDER.filter((s) => (sev[s] ?? 0) > 0).map((s) => ({
@@ -190,51 +333,63 @@ function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
       <div style={{ fontSize: 12, color: theme.greenSoft }}>No anomalies in this window.</div>
     );
   }
+
   return (
-    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-        {segments.map((s) => (
-          <div
-            key={s.label}
-            style={{
-              background: `${s.color}18`,
-              border: `1px solid ${s.color}40`,
-              borderRadius: 6,
-              padding: "10px 12px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
+    <div>
+      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+        <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}>
+          <Donut segments={segments} size={96} />
+        </div>
+        <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: "6px 12px" }}>
+          {segments.map((s) => (
             <div
+              key={s.label}
               style={{
-                fontSize: 11,
-                color: s.color,
-                textTransform: "lowercase",
-                letterSpacing: 0.3,
-                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "2px 10px",
+                background: `${s.color}18`,
+                border: `1px solid ${s.color}40`,
+                borderRadius: 999,
               }}
             >
-              {s.label}
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: s.color,
+                  display: "inline-block",
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  color: s.color,
+                  textTransform: "lowercase",
+                  fontWeight: 600,
+                  letterSpacing: 0.3,
+                }}
+              >
+                {s.label}
+              </span>
+              <span
+                className="mono"
+                style={{ fontSize: 12, fontWeight: 600, color: s.color }}
+              >
+                {s.value}
+              </span>
             </div>
-            <div
-              className="mono"
-              style={{
-                fontSize: 22,
-                fontWeight: 700,
-                color: s.color,
-                lineHeight: 1,
-              }}
-            >
-              {s.value}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
-      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}>
-        <Donut segments={segments} />
-      </div>
+      {anomalies.top_entities && anomalies.timeline_window && (
+        <AnomalyHeatmap
+          entities={anomalies.top_entities}
+          window={anomalies.timeline_window}
+        />
+      )}
     </div>
   );
 }
