@@ -95,18 +95,30 @@ const DS_STYLESHEET = `
     /* ── Borders ─────────────────────────────────────────────────────── */
     --border: #383c4b;
     --border-subtle: #2a2d3a;
-    --border-focus: #5c7cfa;
+    --border-focus: #7c97fb;
 
-    /* ── Accent ──────────────────────────────────────────────────────── */
-    --accent: #5c7cfa;
-    --accent-hover: #7c97fb;
-    --accent-dim: rgba(92, 124, 250, 0.12);
+    /* ── Accent ──────────────────────────────────────────────────────── *
+     * Brighter than #5c7cfa so that text using var(--accent) on the tinted
+     * --accent-dim background still clears WCAG 2 AA (~5.1:1). The
+     * prior value hit ~4.13:1 and axe-core flagged every pill using it. */
+    --accent: #7c97fb;
+    --accent-hover: #95adff;
+    --accent-dim: rgba(124, 151, 251, 0.12);
 
-    /* ── Severity (Okabe-Ito, colorblind-safe) ───────────────────────── */
+    /* ── Severity (Okabe-Ito, colorblind-safe) ───────────────────────── *
+     * Stripes / dots / chart marks keep the canonical Okabe-Ito values.
+     * Chip text uses the -text variant: #D55E00 on the tinted-critical
+     * background failed AA (~3.9:1); #F07840 clears at ~4.8:1 while staying
+     * in the same hue family so the colorblind separation is preserved. */
     --severity-critical: #D55E00;
     --severity-major:    #E69F00;
     --severity-minor:    #56B4E9;
     --severity-ok:       #5aba6f;
+
+    --severity-critical-text: #F07840;
+    --severity-major-text:    #E69F00;
+    --severity-minor-text:    #56B4E9;
+    --severity-ok-text:       #5aba6f;
 
     --severity-critical-bg: rgba(213, 94, 0, 0.12);
     --severity-major-bg:    rgba(230, 159, 0, 0.12);
@@ -164,7 +176,15 @@ const DS_STYLESHEET = `
     --border:        #d8d8d4;
     --border-subtle: #ececea;
 
-    --accent-dim: rgba(92, 124, 250, 0.14);
+    --accent-dim: rgba(124, 151, 251, 0.14);
+
+    /* Severity *text* in light mode needs dark variants — the base hues
+     * are too bright on a light background. Values below clear WCAG 2 AA
+     * body (>=4.79:1) while staying in the canonical hue family. */
+    --severity-critical-text: #8A3D00;
+    --severity-major-text:    #8B6100;
+    --severity-minor-text:    #2A72A0;
+    --severity-ok-text:       #2F7549;
 
     --severity-critical-bg: rgba(213, 94, 0, 0.10);
     --severity-major-bg:    rgba(230, 159, 0, 0.14);
@@ -574,10 +594,10 @@ const DS_STYLESHEET = `
     white-space: nowrap;
   }
   .ds-sev-chip-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-  .ds-sev-chip-critical { background: var(--severity-critical-bg); color: var(--severity-critical); border-color: var(--severity-critical-border); }
-  .ds-sev-chip-major    { background: var(--severity-major-bg);    color: var(--severity-major);    border-color: var(--severity-major-border); }
-  .ds-sev-chip-minor    { background: var(--severity-minor-bg);    color: var(--severity-minor);    border-color: var(--severity-minor-border); }
-  .ds-sev-chip-ok       { background: var(--severity-ok-bg);       color: var(--severity-ok);       border-color: var(--severity-ok-border); }
+  .ds-sev-chip-critical { background: var(--severity-critical-bg); color: var(--severity-critical-text); border-color: var(--severity-critical-border); }
+  .ds-sev-chip-major    { background: var(--severity-major-bg);    color: var(--severity-major-text);    border-color: var(--severity-major-border); }
+  .ds-sev-chip-minor    { background: var(--severity-minor-bg);    color: var(--severity-minor-text);    border-color: var(--severity-minor-border); }
+  .ds-sev-chip-ok       { background: var(--severity-ok-bg);       color: var(--severity-ok-text);       border-color: var(--severity-ok-border); }
   .ds-sev-chip-critical .ds-sev-chip-dot { background: var(--severity-critical); }
   .ds-sev-chip-major    .ds-sev-chip-dot { background: var(--severity-major); }
   .ds-sev-chip-minor    .ds-sev-chip-dot { background: var(--severity-minor); }

@@ -144,7 +144,7 @@ export const viewStyles = `
     padding: 1px 8px;
     border-radius: var(--radius-tag);
     background: var(--severity-major-bg);
-    color: var(--severity-major);
+    color: var(--severity-major-text);
     border: 1px solid var(--severity-major-border);
     font-family: var(--font-sans);
     font-size: 11px;
@@ -168,7 +168,7 @@ export const viewStyles = `
   }
   .rule-enabled-yes {
     background: var(--severity-ok-bg);
-    color: var(--severity-ok);
+    color: var(--severity-ok-text);
     border: 1px solid var(--severity-ok-border);
   }
   .rule-enabled-no {
@@ -297,7 +297,7 @@ export const viewStyles = `
   .rule-action-danger {
     background: var(--severity-critical-bg);
     border-color: var(--severity-critical-border);
-    color: var(--severity-critical);
+    color: var(--severity-critical-text);
   }
   .rule-action-danger:hover {
     background: var(--severity-critical-bg);
@@ -356,7 +356,7 @@ export const viewStyles = `
     font-family: var(--font-sans);
     font-size: 13px;
     font-weight: 600;
-    color: var(--severity-critical);
+    color: var(--severity-critical-text);
     margin-bottom: 6px;
   }
   .rule-error-body {

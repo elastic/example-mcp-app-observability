@@ -84,6 +84,27 @@ export function App() {
     return () => style.remove();
   }, []);
 
+  // Keep local state in sync with the browser's actual fullscreen state so the
+  // icon flips correctly even if the user exits via Esc or the OS chrome.
+  useEffect(() => {
+    const sync = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      // Claude Desktop / iframe embedders may block fullscreen. Log and move on.
+      console.warn("[manage-alerts] fullscreen unavailable:", err);
+    }
+  }, []);
+
   const handleToolResult = useCallback((params: ToolResultParams) => {
     const d = parseToolResult<Result>(params);
     if (d) setData(d);
@@ -99,12 +120,12 @@ export function App() {
 
   const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
-  if (!data) return <Frame onToggleFullscreen={() => setFullscreen((v) => !v)} fullscreen={fullscreen} body={<Waiting />} />;
+  if (!data) return <Frame onToggleFullscreen={toggleFullscreen} fullscreen={fullscreen} body={<Waiting />} />;
 
   if (data.status === "error") {
     return (
       <Frame
-        onToggleFullscreen={() => setFullscreen((v) => !v)}
+        onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
         body={
           <div className="rule-error">
@@ -121,7 +142,7 @@ export function App() {
     const rule = createResultToRule(d);
     return (
       <Frame
-        onToggleFullscreen={() => setFullscreen((v) => !v)}
+        onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
         body={
           <RuleDetailView
@@ -138,7 +159,7 @@ export function App() {
     const d = data;
     return (
       <Frame
-        onToggleFullscreen={() => setFullscreen((v) => !v)}
+        onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
         body={
           <RuleDetailView
@@ -158,7 +179,7 @@ export function App() {
   if (data.operation === "delete") {
     return (
       <Frame
-        onToggleFullscreen={() => setFullscreen((v) => !v)}
+        onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
         body={<DeleteBody d={data} />}
         footer={<NextSteps actions={data.investigation_actions} onSend={onSend} />}
@@ -170,7 +191,7 @@ export function App() {
     <ListView
       d={data}
       fullscreen={fullscreen}
-      onToggleFullscreen={() => setFullscreen((v) => !v)}
+      onToggleFullscreen={toggleFullscreen}
       onSend={onSend}
     />
   );
