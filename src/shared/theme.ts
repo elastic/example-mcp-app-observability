@@ -206,17 +206,25 @@ const DS_STYLESHEET = `
    * .ds-* utility layer
    * ────────────────────────────────────────────────────────────────── */
 
+  /* The shell is content-sized by default so the MCP host (Claude Desktop)
+   * can size the iframe to the view's natural height, and the harness can
+   * render without forced empty space. When a view opts into fullscreen via
+   * app.requestDisplayMode, the host / harness wrapper expands the viewport
+   * and .ds-view grows to fill via min-height: 100vh from the modifier. */
   .ds-view {
-    height: 100vh;
     min-height: 500px;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
     border: 1px solid var(--border);
     background: var(--bg-primary);
     color: var(--text-primary);
     font-family: var(--font-sans);
   }
+
+  /* When the harness (or equivalent host chrome) marks the container as
+   * fullscreen, stretch .ds-view to the viewport so graph views can use the
+   * extra room. */
+  .harness-display-fullscreen .ds-view { min-height: 100vh; }
 
   .ds-header {
     display: flex;
@@ -608,13 +616,14 @@ const DS_STYLESHEET = `
   .ds-sev-chip-ok       .ds-sev-chip-dot { background: var(--severity-ok); }
 
   /* List → detail pane layout */
-  .ds-list-detail { display: flex; flex: 1 1 0; min-height: 0; overflow: hidden; }
-  .ds-list-detail-list { flex: 1 1 0; min-width: 0; overflow-y: auto; }
+  /* List / detail split — content-sized panes. The host page handles scroll
+   * rather than trapping it inside the view; avoids the nested-scrollbar UX. */
+  .ds-list-detail { display: flex; align-items: stretch; }
+  .ds-list-detail-list { flex: 1 1 0; min-width: 0; }
   .ds-list-detail-list.narrow { flex: 0 0 360px; border-right: 1px solid var(--border); }
   .ds-list-detail-pane {
     flex: 1 1 0;
     min-width: 0;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
     background: var(--bg-primary);

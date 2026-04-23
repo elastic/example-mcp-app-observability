@@ -772,10 +772,10 @@ export function App() {
               : `0 0 ${svgW} ${svgH}`
           }
           {...panZoom.svgHandlers}
+          preserveAspectRatio="xMidYMid meet"
           style={{
             display: "block",
-            margin: "0 auto",
-            maxWidth: svgW,
+            width: "100%",
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",

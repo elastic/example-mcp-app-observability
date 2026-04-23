@@ -38,13 +38,17 @@ export const viewStyles = `
     margin-right: 6px;
   }
 
+  /* Graph container fills available width so the SVG can pan/zoom all the
+   * way to the edges. Height follows the SVG's natural height so the view
+   * is as tall as it needs to be (no forced empty space). Under
+   * .harness-display-fullscreen the container flex-grows to absorb the
+   * extra viewport room — handled by the SVG sizing below. */
   .dep-graph {
     position: relative;
-    flex: 1 1 0;
-    min-height: 0;
-    overflow: auto;
     padding: 8px 14px;
+    flex: 0 0 auto;
   }
+  .harness-display-fullscreen .dep-graph { flex: 1 1 0; min-height: 0; overflow: auto; }
 
   .dep-legend {
     display: flex;

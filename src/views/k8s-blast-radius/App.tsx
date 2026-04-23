@@ -475,9 +475,10 @@ export function App() {
               ? `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`
               : `0 0 ${svgW} ${svgH}`
           }
+          preserveAspectRatio="xMidYMid meet"
           style={{
             display: "block",
-            maxWidth: svgW,
+            width: "100%",
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",

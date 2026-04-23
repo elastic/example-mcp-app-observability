@@ -11,11 +11,10 @@
 export const viewStyles = `
   .blast-graph {
     position: relative;
-    flex: 1 1 0;
-    min-height: 0;
-    overflow: auto;
     padding: 8px 14px;
+    flex: 0 0 auto;
   }
+  .harness-display-fullscreen .blast-graph { flex: 1 1 0; min-height: 0; overflow: auto; }
 
   .blast-summary-card {
     position: absolute;
