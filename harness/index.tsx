@@ -14,7 +14,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import "./harness.css";
 import { applyTheme, setTheme } from "../src/shared/theme";
-import { FixtureProvider, type Fixture } from "./mock-use-app";
+import { FixtureProvider, type Fixture, type DisplayMode } from "./mock-use-app";
 import { VIEWS, type ViewEntry } from "./fixtures";
 
 type HarnessTheme = "dark" | "light";
@@ -64,6 +64,14 @@ function HarnessShell() {
     console.log(`[harness] view called server tool '${name}' with`, args);
   }, []);
 
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("inline");
+  const onRequestDisplayMode = useCallback((mode: DisplayMode): DisplayMode => {
+    // `pip` isn't modeled in the harness — fall back to inline.
+    const applied: DisplayMode = mode === "fullscreen" ? "fullscreen" : "inline";
+    setDisplayMode(applied);
+    return applied;
+  }, []);
+
   const stageBodyRef = useRef<HTMLDivElement | null>(null);
   const [axe, setAxe] = useState<{ passes: number; violations: AxeResult[] } | null>(null);
   const [axeOpen, setAxeOpen] = useState(false);
@@ -100,8 +108,8 @@ function HarnessShell() {
   const stateKeys = Object.keys(view.fixtures);
 
   return (
-    <FixtureProvider value={{ fixture, onSendMessage, onCallServerTool }}>
-      <div className="harness-shell">
+    <FixtureProvider value={{ fixture, onSendMessage, onCallServerTool, onRequestDisplayMode }}>
+      <div className={`harness-shell${displayMode === "fullscreen" ? " harness-display-fullscreen" : ""}`}>
         <aside className="harness-sidebar">
           <h1>MCP App · Harness</h1>
 
@@ -186,7 +194,7 @@ function HarnessShell() {
             </span>
           </div>
           <div className="harness-stage-body" ref={stageBodyRef}>
-            <div className="harness-view-frame">
+            <div className={`harness-view-frame${displayMode === "fullscreen" ? " harness-view-frame-fullscreen" : ""}`}>
               <ViewComponent key={`${view.slug}`} />
             </div>
           </div>

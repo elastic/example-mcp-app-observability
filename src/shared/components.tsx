@@ -23,8 +23,11 @@ export type BadgeTone = "critical" | "major" | "minor" | "ok" | "info" | "neutra
 
 // Severity palette is Okabe-Ito-derived: vermillion / orange / sky-blue. Strong hue
 // separation and a hot-to-cool ramp that stays distinguishable under all common
-// color-vision deficiencies.
-const SEV_CRIT = "#D55E00";
+// color-vision deficiencies. Critical uses #F07840 (same hue family as canonical
+// Okabe-Ito #D55E00) because #D55E00 fails WCAG 2 AA as TEXT on the tinted
+// critical background (#D55E0020 ≈ 3.9:1). #F07840 clears ~4.8:1. Chart/SVG
+// marks elsewhere in the codebase still use #D55E00 for the canonical stroke.
+const SEV_CRIT = "#F07840";
 const SEV_MAJOR = "#E69F00";
 const SEV_MINOR = "#56B4E9";
 
@@ -679,22 +682,28 @@ export function ZoomControls({
           {currentZoom.toFixed(1)}×
         </div>
       </div>
-      <div
-        style={{
-          position: "absolute",
-          bottom: 10,
-          left: 10,
-          fontSize: 10,
-          color: theme.textDim,
-          fontFamily: "'JetBrains Mono', monospace",
-          pointerEvents: "none",
-          opacity: Math.abs(currentZoom - 1) < 0.01 && !isDragging ? 0.6 : 0,
-          transition: "opacity 200ms",
-          zIndex: 10,
-        }}
-      >
-        drag to pan · wheel to zoom
-      </div>
+      {/* Decorative pan/zoom hint. Conditionally rendered so axe can't find
+       * it when not shown — simpler than fighting opacity/visibility alpha
+       * compositing rules. At full opacity with textMuted it clears AA at
+       * ~7.5:1. aria-hidden keeps it out of the screen-reader tree since
+       * the hint is purely visual. */}
+      {Math.abs(currentZoom - 1) < 0.01 && !isDragging && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            bottom: 10,
+            left: 10,
+            fontSize: 10,
+            color: theme.textMuted,
+            fontFamily: "'JetBrains Mono', monospace",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          drag to pan · wheel to zoom
+        </div>
+      )}
     </>
   );
 }

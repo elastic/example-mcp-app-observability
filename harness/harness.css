@@ -159,6 +159,21 @@ html, body, #root {
 }
 [data-harness-theme="light"] .harness-stage-body { background: #d8dae0; }
 
+/* When a view requests fullscreen via app.requestDisplayMode({mode:"fullscreen"})
+ * the harness simulates Claude Desktop's behavior: the view expands to fill the
+ * viewport. */
+.harness-display-fullscreen .harness-view-frame-fullscreen {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  max-width: none;
+  width: 100vw;
+  min-height: 100vh;
+  z-index: 999;
+  border: none;
+  box-shadow: none;
+}
+
 .harness-view-frame {
   margin: 0 auto;
   max-width: 1120px;

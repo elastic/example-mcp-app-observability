@@ -98,11 +98,13 @@ function severityTone(score: number): BadgeTone {
   return "ok";
 }
 
-// Okabe-Ito severity palette: vermillion → orange → sky-blue. Strong hue
-// separation under all common color-vision deficiencies. Mirrors the shared
+// Okabe-Ito-inspired severity palette: vermillion → orange → sky-blue. Strong
+// hue separation under all common color-vision deficiencies. Mirrors the shared
 // StatusBadge / StatCard tones so the whole view reads as a single scale.
+// Critical uses #F07840 (not canonical #D55E00) because as TEXT, #D55E00 fails
+// WCAG 2 AA on bg-secondary / bg-elevated. #F07840 clears AA in the same hue.
 function sevColor(score: number): string {
-  if (score >= 90) return "#D55E00";
+  if (score >= 90) return "#F07840";
   if (score >= 75) return "#E69F00";
   return "#56B4E9";
 }

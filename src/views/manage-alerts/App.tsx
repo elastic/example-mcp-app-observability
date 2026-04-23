@@ -4,323 +4,84 @@
  * 2.0; you may not use this file except in compliance with the Elastic License
  * 2.0.
  *
- * Manage Alerts view — renders four operation shapes emitted by the manage-alerts tool:
+ * Manage Alerts view — W3 refresh.
  *
- *   create → newly-created rule card (live badge, KV rows, next-step buttons)
- *   get    → single-rule detail card (same KV rows + execution status)
- *   list   → list of rule summary cards (name, condition, status, tags)
- *   delete → deletion confirmation card (deleted rule id + next steps)
+ * Renders the four operation shapes emitted by the manage-alerts tool:
  *
- * All operations emit `investigation_actions` as click-to-send prompts so the LLM can chain
- * operations (e.g. list → get → delete) without the user retyping IDs.
+ *   list   → subheader toolkit (Sort / Details / Group), status tabs,
+ *            search, and a list → detail split (inline detail pane uses
+ *            the list payload so no extra server call is needed).
+ *   get    → full-width RuleDetailView.
+ *   create → full-width RuleDetailView with a "created" eyebrow + synthesized
+ *            RuleSummary (the create payload has flat fields).
+ *   delete → confirmation body or a "deleted" card.
+ *
+ * All operations still emit `investigation_actions` as click-to-send prompts,
+ * rendered as a next-steps row under the main content. Interactive enable
+ * toggling is out of scope here — the tool doesn't yet expose an update op;
+ * that's a future server-side addition.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
-import { theme, baseStyles } from "@shared/theme";
+import { applyTheme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
-  SectionCard,
-  KVRow,
-  InvestigationActions,
-  InvestigationAction,
-  TimeRangeHeader,
-  StatusBadge,
-  BadgeTone,
+  ListDetailLayout,
+  DetailPaneHeader,
+  SearchInput,
+  Subheader,
+  type DropdownOption,
 } from "@shared/components";
+import { AppGlyph, FullscreenIcon, ExitFullscreenIcon } from "@shared/icons";
+import { RuleCard } from "./components/RuleCard";
+import { RuleDetailView } from "./components/RuleDetailView";
+import { applyGroup, applySearch, applySort, applyStatusTab, statusTabCounts } from "./derive";
+import type {
+  CreateResult,
+  DeleteResult,
+  GroupKey,
+  ListResult,
+  Result,
+  RuleSummary,
+  SortKey,
+  StatusTab,
+} from "./types";
+import { viewStyles } from "./styles";
 
-interface RuleSummary {
-  id: string;
-  name: string;
-  rule_type_id: string;
-  enabled: boolean;
-  tags?: string[];
-  schedule_interval?: string | null;
-  execution_status?: string | null;
-  last_run_outcome?: string | null;
-  active_alert_count?: number | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  condition?: string | null;
-  window?: string | null;
-  index_pattern?: string | null;
-  kql_filter?: string | null;
-}
+const SORT_OPTIONS: DropdownOption<SortKey>[] = [
+  { value: "attention", label: "Attention first" },
+  { value: "name", label: "Name (A–Z)" },
+  { value: "updated", label: "Recently updated" },
+  { value: "enabled-first", label: "Enabled first" },
+];
 
-interface CreateResult {
-  status: "success";
-  operation: "create";
-  rule_id: string;
-  rule_name: string;
-  rule_type?: string;
-  metric_field?: string;
-  threshold?: number;
-  comparator?: string;
-  check_interval?: string;
-  agg_type?: string;
-  time_size?: number;
-  time_unit?: string;
-  kql_filter?: string;
-  index_pattern?: string;
-  tags?: string[];
-  enabled?: boolean;
-  message?: string;
-  investigation_actions?: InvestigationAction[];
-}
+const GROUP_OPTIONS: DropdownOption<GroupKey>[] = [
+  { value: "none", label: "None" },
+  { value: "rule-type", label: "Rule type" },
+  { value: "status", label: "Status" },
+  { value: "tag", label: "Tag" },
+  { value: "index", label: "Index pattern" },
+];
 
-interface ListResult {
-  status: "success";
-  operation: "list";
-  total: number;
-  returned: number;
-  page: number;
-  per_page: number;
-  filter_summary?: string;
-  filter_tags?: string[] | null;
-  rules: RuleSummary[];
-  message?: string;
-  investigation_actions?: InvestigationAction[];
-}
-
-interface GetResult {
-  status: "success";
-  operation: "get";
-  rule: RuleSummary;
-  message?: string;
-  investigation_actions?: InvestigationAction[];
-}
-
-interface DeleteResult {
-  status: "success";
-  operation: "delete";
-  rule_id: string;
-  deleted: boolean;
-  confirmation_required?: boolean;
-  preview?: RuleSummary;
-  message?: string;
-  investigation_actions?: InvestigationAction[];
-}
-
-interface ErrorResult {
-  status: "error";
-  error?: string;
-  message?: string;
-}
-
-type Result = CreateResult | ListResult | GetResult | DeleteResult | ErrorResult;
-
-function fmt(value: number | string | null | undefined, fallback = "—"): string {
-  if (value === null || value === undefined || value === "") return fallback;
-  if (typeof value === "number") return value.toLocaleString();
-  return String(value);
-}
-
-function outcomeTone(outcome: string | null | undefined): BadgeTone {
-  if (!outcome) return "neutral";
-  const o = outcome.toLowerCase();
-  if (o === "succeeded" || o === "success" || o === "ok" || o === "active") return "ok";
-  if (o === "warning") return "major";
-  if (o === "failed" || o === "error") return "critical";
-  return "info";
-}
-
-function windowStr(size: number | undefined, unit: string | undefined): string {
-  if (!size || !unit) return "last 5 minutes";
-  const unitName = unit === "m" ? "minute" : unit === "h" ? "hour" : "day";
-  return `last ${size} ${unitName}${size === 1 ? "" : "s"}`;
-}
-
-function TagList({ tags }: { tags?: string[] }) {
-  if (!tags || tags.length === 0) return null;
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-      {tags.map((t) => (
-        <span
-          key={t}
-          style={{
-            padding: "2px 8px",
-            background: `${theme.blue}20`,
-            border: `1px solid ${theme.blue}55`,
-            color: theme.blue,
-            fontSize: 11,
-            borderRadius: 999,
-          }}
-        >
-          {t}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function RuleDetailCard({ summary }: { summary: RuleSummary }) {
-  return (
-    <SectionCard>
-      <KVRow label="Rule ID" value={<span className="mono">{summary.id}</span>} />
-      <KVRow label="Type" value={<span className="mono">{summary.rule_type_id}</span>} />
-      {summary.condition && <KVRow label="Condition" value={summary.condition} />}
-      {summary.window && <KVRow label="Window" value={summary.window} />}
-      {summary.schedule_interval && (
-        <KVRow label="Check interval" value={`every ${summary.schedule_interval}`} />
-      )}
-      {summary.kql_filter && <KVRow label="KQL filter" value={summary.kql_filter} />}
-      {summary.index_pattern && <KVRow label="Index" value={summary.index_pattern} />}
-      {summary.tags?.length ? <KVRow label="Tags" value={<TagList tags={summary.tags} />} /> : null}
-      <KVRow
-        label="Enabled"
-        value={
-          <StatusBadge tone={summary.enabled ? "ok" : "neutral"}>
-            {summary.enabled ? "yes" : "no"}
-          </StatusBadge>
-        }
-      />
-      {summary.execution_status && (
-        <KVRow
-          label="Execution"
-          value={
-            <StatusBadge tone={outcomeTone(summary.execution_status)}>
-              {summary.execution_status}
-            </StatusBadge>
-          }
-        />
-      )}
-      {summary.last_run_outcome && (
-        <KVRow
-          label="Last run"
-          value={
-            <StatusBadge tone={outcomeTone(summary.last_run_outcome)}>
-              {summary.last_run_outcome}
-            </StatusBadge>
-          }
-        />
-      )}
-      {summary.active_alert_count !== null && summary.active_alert_count !== undefined && (
-        <KVRow label="Active alerts" value={String(summary.active_alert_count)} />
-      )}
-      {summary.created_at && (
-        <KVRow label="Created" value={new Date(summary.created_at).toLocaleString()} />
-      )}
-      {summary.updated_at && (
-        <KVRow label="Updated" value={new Date(summary.updated_at).toLocaleString()} />
-      )}
-    </SectionCard>
-  );
-}
-
-function RuleListItem({
-  summary,
-  onInspect,
-  onDelete,
-}: {
-  summary: RuleSummary;
-  onInspect: () => void;
-  onDelete: () => void;
-}) {
-  const outcome = summary.last_run_outcome || summary.execution_status;
-  return (
-    <div
-      style={{
-        border: `1px solid ${theme.border}`,
-        borderRadius: 6,
-        padding: "10px 12px",
-        marginBottom: 8,
-        background: theme.bg,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          gap: 12,
-        }}
-      >
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: theme.text, marginBottom: 2 }}>
-            {summary.name}
-          </div>
-          <div style={{ fontSize: 11, color: theme.textMuted }} className="mono">
-            {summary.id}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-          <StatusBadge tone={summary.enabled ? "ok" : "neutral"}>
-            {summary.enabled ? "enabled" : "disabled"}
-          </StatusBadge>
-          {outcome && <StatusBadge tone={outcomeTone(outcome)}>{outcome}</StatusBadge>}
-        </div>
-      </div>
-      {summary.condition && (
-        <div style={{ fontSize: 12, color: theme.text, marginTop: 6 }} className="mono">
-          {summary.condition}
-          {summary.window ? <span style={{ color: theme.textMuted }}> · {summary.window}</span> : null}
-          {summary.schedule_interval ? (
-            <span style={{ color: theme.textMuted }}> · every {summary.schedule_interval}</span>
-          ) : null}
-        </div>
-      )}
-      {summary.kql_filter && (
-        <div
-          style={{
-            fontSize: 11,
-            color: theme.textMuted,
-            marginTop: 4,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-          className="mono"
-        >
-          {summary.kql_filter}
-        </div>
-      )}
-      {summary.tags?.length ? (
-        <div style={{ marginTop: 8 }}>
-          <TagList tags={summary.tags} />
-        </div>
-      ) : null}
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <button
-          onClick={onInspect}
-          style={{
-            padding: "4px 10px",
-            fontSize: 11,
-            background: `${theme.blue}20`,
-            color: theme.blue,
-            border: `1px solid ${theme.blue}55`,
-            borderRadius: 4,
-            cursor: "pointer",
-          }}
-        >
-          Inspect
-        </button>
-        <button
-          onClick={onDelete}
-          style={{
-            padding: "4px 10px",
-            fontSize: 11,
-            background: `${theme.redSoft}20`,
-            color: theme.redSoft,
-            border: `1px solid ${theme.redSoft}55`,
-            borderRadius: 4,
-            cursor: "pointer",
-          }}
-        >
-          Delete
-        </button>
-      </div>
-    </div>
-  );
-}
+const TAB_ORDER: { key: StatusTab; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "enabled", label: "Enabled" },
+  { key: "disabled", label: "Disabled" },
+  { key: "errors", label: "Errors" },
+];
 
 export function App() {
   const [data, setData] = useState<Result | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const { isFullscreen: fullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   useEffect(() => {
     const style = document.createElement("style");
-    style.textContent = baseStyles;
+    style.textContent = viewStyles;
     document.head.appendChild(style);
+    applyTheme();
     return () => style.remove();
   }, []);
 
@@ -339,198 +100,369 @@ export function App() {
 
   const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
-  if (!data) {
-    return (
-      <div style={{ padding: 24, textAlign: "center", color: theme.textMuted }}>
-        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for manage-alerts result…</div>
-        <div style={{ fontSize: 11 }}>Call manage-alerts to populate this view.</div>
-      </div>
-    );
-  }
+  if (!data) return <Frame onToggleFullscreen={toggleFullscreen} fullscreen={fullscreen} body={<Waiting />} />;
 
   if (data.status === "error") {
     return (
-      <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-        <SectionCard>
-          <div style={{ fontSize: 13, fontWeight: 700, color: theme.redSoft, marginBottom: 6 }}>
-            manage-alerts failed
+      <Frame
+        onToggleFullscreen={toggleFullscreen}
+        fullscreen={fullscreen}
+        body={
+          <div className="rule-error">
+            <div className="rule-error-title">manage-alerts failed</div>
+            <div className="rule-error-body">{data.error || data.message || "Unknown error."}</div>
           </div>
-          <div style={{ fontSize: 12, color: theme.text }}>{data.error || data.message}</div>
-        </SectionCard>
-      </div>
+        }
+      />
     );
   }
 
   if (data.operation === "create") {
     const d = data;
-    const aggType = d.agg_type || "avg";
-    const comparator = d.comparator || ">";
-    const conditionStr = `${aggType}(${d.metric_field}) ${comparator} ${fmt(d.threshold)}`;
+    const rule = createResultToRule(d);
     return (
-      <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-        <TimeRangeHeader
-          title={
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-              <span
-                style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: "50%",
-                  background: theme.greenSoft,
-                  boxShadow: `0 0 8px ${theme.green}80`,
-                  display: "inline-block",
-                  flexShrink: 0,
-                }}
-              />
-              {d.rule_name}
-            </span>
-          }
-          subtitle={
-            <span className="mono">{d.rule_type || "observability.rules.custom_threshold"}</span>
-          }
-          status={{ tone: "ok", label: "created" }}
-        />
-        <SectionCard>
-          <KVRow label="Rule ID" value={<span className="mono">{d.rule_id}</span>} />
-          <KVRow label="Condition" value={conditionStr} />
-          <KVRow label="Window" value={windowStr(d.time_size, d.time_unit)} />
-          <KVRow label="Check interval" value={`every ${d.check_interval || "5m"}`} />
-          {d.kql_filter && <KVRow label="KQL filter" value={d.kql_filter} />}
-          <KVRow label="Aggregation" value={aggType} />
-          {d.tags?.length ? <KVRow label="Tags" value={<TagList tags={d.tags} />} /> : null}
-          {d.index_pattern && <KVRow label="Index" value={d.index_pattern} />}
-        </SectionCard>
-        <InvestigationActions
-          title="Next steps"
-          actions={d.investigation_actions}
-          onSend={onSend}
-        />
-      </div>
+      <Frame
+        onToggleFullscreen={toggleFullscreen}
+        fullscreen={fullscreen}
+        body={
+          <RuleDetailView
+            rule={rule}
+            eyebrow={<span>Just created · {d.message ?? "saved to Kibana"}</span>}
+          />
+        }
+        footer={<NextSteps actions={d.investigation_actions} onSend={onSend} />}
+      />
     );
   }
 
   if (data.operation === "get") {
     const d = data;
     return (
-      <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-        <TimeRangeHeader
-          title={d.rule.name}
-          subtitle={<span className="mono">{d.rule.rule_type_id}</span>}
-          status={{
-            tone: d.rule.enabled ? "ok" : "neutral",
-            label: d.rule.enabled ? "enabled" : "disabled",
-          }}
-        />
-        <RuleDetailCard summary={d.rule} />
-        <InvestigationActions
-          title="Next steps"
-          actions={d.investigation_actions}
-          onSend={onSend}
-        />
-      </div>
+      <Frame
+        onToggleFullscreen={toggleFullscreen}
+        fullscreen={fullscreen}
+        body={
+          <RuleDetailView
+            rule={d.rule}
+            onDelete={() =>
+              onSend(
+                `Delete the alert rule '${d.rule.name}' (id ${d.rule.id}) via manage-alerts with operation='delete'. Confirm first before dispatching.`,
+              )
+            }
+          />
+        }
+        footer={<NextSteps actions={d.investigation_actions} onSend={onSend} />}
+      />
     );
   }
 
   if (data.operation === "delete") {
-    const d = data;
-    if (d.confirmation_required && d.preview) {
-      return (
-        <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-          <TimeRangeHeader
-            title="Confirm deletion"
-            subtitle={<span className="mono">{d.preview.name}</span>}
-            status={{ tone: "major", label: "confirmation required" }}
-          />
-          <SectionCard>
-            <div
-              style={{
-                fontSize: 12,
-                color: theme.text,
-                marginBottom: 10,
-                padding: "8px 10px",
-                background: `${theme.redSoft}15`,
-                border: `1px solid ${theme.redSoft}55`,
-                borderRadius: 4,
-              }}
-            >
-              <strong>This is irreversible.</strong> The rule below will be permanently removed
-              from Kibana. Confirm with the user before dispatching the delete.
-            </div>
-          </SectionCard>
-          <RuleDetailCard summary={d.preview} />
-          <InvestigationActions
-            title="Next steps"
-            actions={d.investigation_actions}
-            onSend={onSend}
-          />
-        </div>
-      );
-    }
     return (
-      <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-        <TimeRangeHeader
-          title="Rule deleted"
-          subtitle={<span className="mono">{d.rule_id}</span>}
-          status={{ tone: "neutral", label: "deleted" }}
-        />
-        <SectionCard>
-          <div style={{ fontSize: 12, color: theme.text }}>
-            {d.message || `Rule ${d.rule_id} has been permanently deleted.`}
+      <Frame
+        onToggleFullscreen={toggleFullscreen}
+        fullscreen={fullscreen}
+        body={<DeleteBody d={data} />}
+        footer={<NextSteps actions={data.investigation_actions} onSend={onSend} />}
+      />
+    );
+  }
+
+  return (
+    <ListView
+      d={data}
+      fullscreen={fullscreen}
+      onToggleFullscreen={toggleFullscreen}
+      onSend={onSend}
+    />
+  );
+}
+
+// ─── Frame ───────────────────────────────────────────────────────────────────
+
+function Frame({
+  children,
+  body,
+  subheader,
+  tabs,
+  footer,
+  onToggleFullscreen,
+  fullscreen,
+}: {
+  children?: React.ReactNode;
+  body?: React.ReactNode;
+  subheader?: React.ReactNode;
+  tabs?: React.ReactNode;
+  footer?: React.ReactNode;
+  onToggleFullscreen: () => void;
+  fullscreen: boolean;
+}) {
+  return (
+    <div className="ds-view">
+      <header className="ds-header">
+        <AppGlyph size={20} />
+        <h1 className="ds-header-title">Alert rules</h1>
+        <div className="ds-header-actions">
+          {children}
+          <button
+            type="button"
+            className="ds-btn-icon"
+            aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+            onClick={onToggleFullscreen}
+          >
+            {fullscreen ? <ExitFullscreenIcon size={14} /> : <FullscreenIcon size={14} />}
+          </button>
+        </div>
+      </header>
+      {tabs}
+      {subheader}
+      <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>{body}</div>
+      {footer}
+    </div>
+  );
+}
+
+// ─── List view ───────────────────────────────────────────────────────────────
+
+function ListView({
+  d,
+  fullscreen,
+  onToggleFullscreen,
+  onSend,
+}: {
+  d: ListResult;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  onSend: (p: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [statusTab, setStatusTab] = useState<StatusTab>("all");
+  const [sort, setSort] = useState<SortKey>("attention");
+  const [group, setGroup] = useState<GroupKey>("none");
+  const [showDetails, setShowDetails] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const counts = useMemo(() => statusTabCounts(d.rules), [d.rules]);
+
+  const filtered = useMemo(() => {
+    const byTab = applyStatusTab(d.rules, statusTab);
+    const bySearch = applySearch(byTab, search);
+    return applySort(bySearch, sort);
+  }, [d.rules, statusTab, search, sort]);
+
+  const grouped = useMemo(() => applyGroup(filtered, group), [filtered, group]);
+  const selected = useMemo(
+    () => (selectedId ? d.rules.find((r) => r.id === selectedId) ?? null : null),
+    [selectedId, d.rules],
+  );
+
+  // If the current selection gets filtered out, clear it.
+  useEffect(() => {
+    if (selectedId && !filtered.some((r) => r.id === selectedId)) setSelectedId(null);
+  }, [filtered, selectedId]);
+
+  const tabs = (
+    <div className="rule-tabs" role="tablist" aria-label="Status filter">
+      {TAB_ORDER.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          role="tab"
+          aria-selected={statusTab === t.key}
+          className="rule-tab"
+          onClick={() => setStatusTab(t.key)}
+        >
+          {t.label}
+          <span className="rule-tab-count">{counts[t.key]}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const subheader = (
+    <Subheader
+      total={filtered.length}
+      itemNoun={filtered.length === 1 ? "alert rule" : "alert rules"}
+      sort={{ value: sort, onChange: setSort, options: SORT_OPTIONS }}
+      details={{ checked: showDetails, onChange: setShowDetails }}
+      group={{ value: group, onChange: setGroup, options: GROUP_OPTIONS }}
+    />
+  );
+
+  const list = (
+    <div className="rule-list">
+      {filtered.length === 0 ? (
+        <div className="rule-empty">
+          <div className="rule-empty-title">No alert rules match.</div>
+          <div className="rule-empty-sub">
+            {search ? (
+              <>Try clearing the search or switching tabs.</>
+            ) : (
+              <>Try a different status tab — {counts.all} rules total.</>
+            )}
           </div>
-        </SectionCard>
-        <InvestigationActions
-          title="Next steps"
-          actions={d.investigation_actions}
-          onSend={onSend}
+        </div>
+      ) : (
+        grouped.map((bucket) => (
+          <React.Fragment key={bucket.key}>
+            {group !== "none" ? (
+              <div className="rule-group-header">
+                <span>{bucket.label}</span>
+                <span className="rule-group-header-count">· {bucket.rules.length}</span>
+              </div>
+            ) : null}
+            {bucket.rules.map((r) => (
+              <RuleCard
+                key={`${bucket.key}-${r.id}`}
+                rule={r}
+                selected={r.id === selectedId}
+                detailed={showDetails}
+                onClick={() => setSelectedId((prev) => (prev === r.id ? null : r.id))}
+              />
+            ))}
+          </React.Fragment>
+        ))
+      )}
+    </div>
+  );
+
+  const detail = selected ? (
+    <>
+      <DetailPaneHeader
+        onBack={() => setSelectedId(null)}
+        onClose={() => setSelectedId(null)}
+        title={selected.name}
+      />
+      <RuleDetailView
+        rule={selected}
+        onDelete={() =>
+          onSend(
+            `Delete the alert rule '${selected.name}' (id ${selected.id}) via manage-alerts with operation='delete'. Confirm first before dispatching.`,
+          )
+        }
+      />
+    </>
+  ) : null;
+
+  return (
+    <Frame
+      fullscreen={fullscreen}
+      onToggleFullscreen={onToggleFullscreen}
+      tabs={tabs}
+      subheader={subheader}
+      body={<ListDetailLayout detail={detail}>{list}</ListDetailLayout>}
+      footer={<NextSteps actions={d.investigation_actions} onSend={onSend} />}
+    >
+      <SearchInput
+        value={search}
+        onChange={setSearch}
+        placeholder="Search by name, tag, index…"
+      />
+    </Frame>
+  );
+}
+
+// ─── Delete body ─────────────────────────────────────────────────────────────
+
+function DeleteBody({ d }: { d: DeleteResult }) {
+  if (d.confirmation_required && d.preview) {
+    return (
+      <div style={{ padding: 20 }}>
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "var(--severity-critical-bg)",
+            border: "1px solid var(--severity-critical-border)",
+            borderRadius: "var(--radius-sm)",
+            marginBottom: 16,
+            fontSize: 12,
+            color: "var(--text-primary)",
+          }}
+        >
+          <strong>This is irreversible.</strong> The alert rule below will be permanently
+          removed from Kibana. Confirm with the user before dispatching the delete.
+        </div>
+        <RuleDetailView
+          rule={d.preview}
+          eyebrow={<span>Confirm deletion</span>}
         />
       </div>
     );
   }
-
-  // operation === "list"
-  const d = data;
   return (
-    <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-      <TimeRangeHeader
-        title={
-          <span>
-            {d.total} rule{d.total === 1 ? "" : "s"}
-            {d.total > d.returned ? (
-              <span style={{ color: theme.textMuted, fontWeight: 400 }}>
-                {" "}
-                (showing {d.returned})
-              </span>
-            ) : null}
-          </span>
-        }
-        subtitle={d.filter_summary ? <span className="mono">{d.filter_summary}</span> : undefined}
-        status={{ tone: d.total === 0 ? "neutral" : "info", label: `page ${d.page}` }}
-      />
-      {d.rules.length === 0 ? (
-        <SectionCard>
-          <div style={{ fontSize: 12, color: theme.textMuted }}>
-            {d.message || "No rules matched the filter."}
-          </div>
-        </SectionCard>
-      ) : (
-        <div>
-          {d.rules.map((r) => (
-            <RuleListItem
-              key={r.id}
-              summary={r}
-              onInspect={() =>
-                onSend(`Use manage-alerts with operation='get' and rule_id='${r.id}'.`)
-              }
-              onDelete={() =>
-                onSend(
-                  `Delete the rule '${r.name}' (id ${r.id}) via manage-alerts with operation='delete'. Confirm first before dispatching.`
-                )
-              }
-            />
-          ))}
-        </div>
-      )}
-      <InvestigationActions title="Next steps" actions={d.investigation_actions} onSend={onSend} />
+    <div style={{ padding: 20 }}>
+      <div className="rule-detail-eyebrow" style={{ marginBottom: 8 }}>
+        Alert rule deleted
+      </div>
+      <div className="rule-detail-code">
+        {d.message || `Alert rule ${d.rule_id} has been permanently deleted.`}
+      </div>
     </div>
   );
 }
+
+// ─── Next steps row ──────────────────────────────────────────────────────────
+
+function NextSteps({
+  actions,
+  onSend,
+}: {
+  actions?: { label: string; prompt: string }[];
+  onSend: (p: string) => void;
+}) {
+  if (!actions?.length) return null;
+  return (
+    <div className="rule-next-steps">
+      <span className="rule-next-steps-label">Next steps</span>
+      {actions.map((a, i) => (
+        <button
+          key={i}
+          type="button"
+          className="rule-action"
+          onClick={() => onSend(a.prompt)}
+        >
+          {a.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Waiting ─────────────────────────────────────────────────────────────────
+
+function Waiting() {
+  return (
+    <div className="rule-empty" style={{ padding: 80 }}>
+      <div className="rule-empty-title">Waiting for a manage-alerts result…</div>
+      <div className="rule-empty-sub">Call the manage-alerts tool to populate this view.</div>
+    </div>
+  );
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * The `create` op returns a flat payload; synthesize a RuleSummary so we can
+ * reuse RuleDetailView.
+ */
+function createResultToRule(d: CreateResult): RuleSummary {
+  const aggType = d.agg_type || "avg";
+  const comparator = d.comparator || ">";
+  const threshold = d.threshold;
+  const condition = d.metric_field
+    ? `${aggType}(${d.metric_field}) ${comparator} ${threshold ?? "?"}`
+    : null;
+  const window = d.time_size && d.time_unit ? `${d.time_size}${d.time_unit}` : null;
+  return {
+    id: d.rule_id,
+    name: d.rule_name,
+    rule_type_id: d.rule_type ?? "observability.rules.custom_threshold",
+    enabled: d.enabled ?? true,
+    tags: d.tags,
+    schedule_interval: d.check_interval,
+    condition,
+    window,
+    index_pattern: d.index_pattern,
+    kql_filter: d.kql_filter,
+  };
+}
+
