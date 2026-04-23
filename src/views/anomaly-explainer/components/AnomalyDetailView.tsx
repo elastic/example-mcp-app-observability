@@ -27,10 +27,19 @@ export function AnomalyDetailView({
   top,
   data,
   onSend,
+  onDrillDown,
 }: {
   top: Anomaly;
   data: AnomalyData;
   onSend: (prompt: string) => void;
+  /**
+   * When provided, prepends a "Get full details" button to the action bar.
+   * Used by the overview-mode detail pane, which shows whatever per-anomaly
+   * data the overview payload carries (sparse — no time series, no actual /
+   * typical values, no influencers) and offers an explicit drill-through to
+   * have the LLM fetch the full payload.
+   */
+  onDrillDown?: () => void;
 }) {
   const sev = top.severity || severityFromScore(top.recordScore);
   const actual = firstNum(top.actual);
@@ -86,9 +95,7 @@ export function AnomalyDetailView({
   const related = (data.anomalies ?? []).filter((a) => a !== top).slice(0, 5);
   const [openRelated, setOpenRelated] = useState(false);
 
-  const actions: InvestigationAction[] = [
-    ...(data.investigation_actions ?? []),
-  ];
+  const actions: InvestigationAction[] = data.investigation_actions ?? [];
 
   return (
     <>
@@ -172,13 +179,22 @@ export function AnomalyDetailView({
         </div>
       )}
 
-      {actions.length > 0 && (
+      {(onDrillDown || actions.length > 0) && (
         <div className="anom-actions">
+          {onDrillDown && (
+            <button
+              type="button"
+              className="anom-action anom-action-primary"
+              onClick={onDrillDown}
+            >
+              Get full details
+            </button>
+          )}
           {actions.map((a, i) => (
             <button
               key={i}
               type="button"
-              className={`anom-action${i === 0 ? " anom-action-primary" : ""}`}
+              className={`anom-action${!onDrillDown && i === 0 ? " anom-action-primary" : ""}`}
               onClick={() => onSend(a.prompt)}
             >
               {a.label}

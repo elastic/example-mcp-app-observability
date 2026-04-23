@@ -26,6 +26,8 @@ import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
 import {
+  DetailPaneHeader,
+  ListDetailLayout,
   QueryPill,
   SeverityDonut,
   Subheader,
@@ -34,8 +36,8 @@ import {
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { AnomalyDetailView } from "./components/AnomalyDetailView";
 import { AnomalyEntityCard } from "./components/AnomalyEntityCard";
-import { applyGroup, applySort, pickMode, severityCounts } from "./derive";
-import type { AnomalyData, GroupKey, SortKey } from "./types";
+import { applyGroup, applySort, entityLabel, pickMode, severityCounts } from "./derive";
+import type { Anomaly, AnomalyData, GroupKey, SortKey } from "./types";
 import { viewStyles } from "./styles";
 
 const SORT_OPTIONS: DropdownOption<SortKey>[] = [
@@ -145,18 +147,28 @@ function OverviewView({
   const counts = useMemo(() => severityCounts(anomalies), [anomalies]);
   const [sort, setSort] = useState<SortKey>("score");
   const [group, setGroup] = useState<GroupKey>("none");
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const sorted = useMemo(() => applySort(anomalies, sort), [anomalies, sort]);
   const grouped = useMemo(() => applyGroup(sorted, group), [sorted, group]);
 
+  const anomalyKey = (a: Anomaly) =>
+    `${a.jobId}|${a.entity ?? entityLabel(a)}|${a.timestamp}`;
+  const selected: Anomaly | null = useMemo(() => {
+    if (!selectedKey) return null;
+    return sorted.find((a) => anomalyKey(a) === selectedKey) ?? null;
+  }, [selectedKey, sorted]);
+
+  // If sort/group changes ever filter the selection out, clear it.
+  useEffect(() => {
+    if (selectedKey && !sorted.some((a) => anomalyKey(a) === selectedKey)) {
+      setSelectedKey(null);
+    }
+  }, [sorted, selectedKey]);
+
   const lookback = data.filters?.lookback ?? "1h";
-  const drill = (entity: string | undefined, jobId: string) => {
-    const target = entity ?? `job ${jobId}`;
-    onSend(
-      `Use ml-anomalies to show details for ${entity ? `entity "${entity}"` : `job_id "${jobId}"`} with lookback "${lookback}"`,
-    );
-    return target;
-  };
+  const drillFor = (a: Anomaly) =>
+    `Use ml-anomalies to show details for ${a.entity ? `entity "${a.entity}"` : `job_id "${a.jobId}"`} with lookback "${lookback}"`;
 
   const kpi = (
     <div className="anom-kpi">
@@ -200,17 +212,37 @@ function OverviewView({
               <span style={{ color: "var(--ds-text-label)" }}>· {bucket.anomalies.length}</span>
             </div>
           )}
-          {bucket.anomalies.map((a, i) => (
-            <AnomalyEntityCard
-              key={`${bucket.key}-${i}`}
-              anomaly={a}
-              onClick={() => drill(a.entity, a.jobId)}
-            />
-          ))}
+          {bucket.anomalies.map((a) => {
+            const k = anomalyKey(a);
+            return (
+              <AnomalyEntityCard
+                key={k}
+                anomaly={a}
+                selected={k === selectedKey}
+                onClick={() => setSelectedKey((prev) => (prev === k ? null : k))}
+              />
+            );
+          })}
         </React.Fragment>
       ))}
     </div>
   );
+
+  const detail = selected ? (
+    <>
+      <DetailPaneHeader
+        onBack={() => setSelectedKey(null)}
+        onClose={() => setSelectedKey(null)}
+        title={entityLabel(selected)}
+      />
+      <AnomalyDetailView
+        top={selected}
+        data={data}
+        onSend={onSend}
+        onDrillDown={() => onSend(drillFor(selected))}
+      />
+    </>
+  ) : null;
 
   return (
     <Frame
@@ -221,7 +253,7 @@ function OverviewView({
         <>
           {kpi}
           {subheader}
-          {list}
+          <ListDetailLayout detail={detail}>{list}</ListDetailLayout>
         </>
       }
     />

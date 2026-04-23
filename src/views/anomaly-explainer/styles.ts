@@ -199,6 +199,7 @@ export const viewStyles = `
     transition: background var(--transition-fast), border-color var(--transition-fast);
   }
   .anom-entity-card:hover { background: var(--bg-hover); }
+  .anom-entity-card.selected { border-color: var(--accent); background: var(--bg-hover); }
   .anom-entity-card:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
   .anom-entity-card-name {
     font-family: var(--font-sans);

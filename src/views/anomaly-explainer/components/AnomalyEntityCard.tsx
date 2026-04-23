@@ -12,9 +12,11 @@ import { entityLabel, fmtRelativeTime, severityFromScore } from "../derive";
 
 export function AnomalyEntityCard({
   anomaly,
+  selected,
   onClick,
 }: {
   anomaly: Anomaly;
+  selected?: boolean;
   onClick: () => void;
 }) {
   const sev = anomaly.severity || severityFromScore(anomaly.recordScore);
@@ -26,8 +28,9 @@ export function AnomalyEntityCard({
   return (
     <button
       type="button"
-      className={`anom-entity-card ${stripeClass}`}
+      className={`anom-entity-card ${stripeClass}${selected ? " selected" : ""}`}
       onClick={onClick}
+      aria-pressed={selected}
       aria-label={`${entityLabel(anomaly)} score ${Math.round(anomaly.recordScore)}`}
     >
       <div>
