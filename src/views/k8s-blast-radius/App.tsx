@@ -487,17 +487,15 @@ export function App() {
       <div className="blast-graph">
         <svg
           ref={svgRef}
-          width="100%"
-          height={svgH}
           viewBox={
             viewBox
               ? `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`
               : `0 0 ${svgW} ${svgH}`
           }
-          preserveAspectRatio="xMidYMid meet"
           style={{
             display: "block",
             width: "100%",
+            aspectRatio: `${svgW} / ${svgH}`,
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",

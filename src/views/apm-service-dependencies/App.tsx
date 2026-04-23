@@ -885,18 +885,19 @@ export function App() {
       <div className="dep-graph">
         <svg
           ref={panZoom.svgRef}
-          width="100%"
-          height={svgH}
           viewBox={
             panZoom.viewBox
               ? `${panZoom.viewBox.x} ${panZoom.viewBox.y} ${panZoom.viewBox.w} ${panZoom.viewBox.h}`
               : `0 0 ${svgW} ${svgH}`
           }
           {...panZoom.svgHandlers}
-          preserveAspectRatio="xMidYMid meet"
           style={{
             display: "block",
             width: "100%",
+            // Aspect-ratio matches the viewBox so the element dimensions and
+            // the content coordinate system agree — no letterbox whitespace
+            // when the graph is wider than tall (horizontal layout).
+            aspectRatio: `${svgW} / ${svgH}`,
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",
