@@ -16,6 +16,6 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src/**/*", "main.ts", "vite.config.ts", "scripts/**/*"],
+  "include": ["src/**/*", "main.ts", "vite.config.ts", "vite.harness.config.ts", "harness/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist"]
 }
