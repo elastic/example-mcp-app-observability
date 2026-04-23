@@ -16,11 +16,13 @@ import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme, theme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
 import {
+  Dropdown,
   InvestigationActions,
   InvestigationAction,
   QueryPill,
   RerunContext,
   ZoomControls,
+  type DropdownOption,
 } from "@shared/components";
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { usePanZoom } from "@shared/use-pan-zoom";
@@ -135,7 +137,13 @@ interface LayoutNode {
   y: number;
 }
 
-function computeLayout(services: ServiceNode[], edges: Edge[]) {
+export type GraphDirection = "vertical" | "horizontal";
+
+function computeLayout(
+  services: ServiceNode[],
+  edges: Edge[],
+  direction: GraphDirection = "vertical",
+) {
   const outgoing = new Map<string, string[]>();
   const incoming = new Map<string, string[]>();
   const svcMap = new Map<string, ServiceNode>();
@@ -183,28 +191,57 @@ function computeLayout(services: ServiceNode[], edges: Edge[]) {
     });
   }
 
-  const svgW = Math.max(maxPerLayer * (NODE_W + NODE_GAP_X) + PAD_X * 2, 500);
-  const svgH = numLayers * (NODE_H + LAYER_GAP_Y) + PAD_TOP * 2;
-
   const nodes: LayoutNode[] = [];
-  for (const [layer, names] of byLayer) {
-    const totalW = names.length * NODE_W + (names.length - 1) * NODE_GAP_X;
-    const startX = (svgW - totalW) / 2;
-    names.forEach((name, col) => {
-      const svc = svcMap.get(name);
-      if (!svc) return;
-      nodes.push({
-        name,
-        svc,
-        layer,
-        col,
-        x: startX + col * (NODE_W + NODE_GAP_X),
-        y: PAD_TOP + layer * (NODE_H + LAYER_GAP_Y),
+  let svgW: number, svgH: number;
+
+  if (direction === "horizontal") {
+    // Layers flow L -> R; nodes within a layer stack vertically.
+    // Vertical inter-node spacing mirrors NODE_GAP_X from vertical mode;
+    // inter-layer horizontal spacing mirrors LAYER_GAP_Y.
+    const INTER_NODE = NODE_GAP_X;
+    const INTER_LAYER_X = LAYER_GAP_Y + NODE_W; // column-to-column distance
+    svgH = Math.max(maxPerLayer * (NODE_H + INTER_NODE) + PAD_TOP * 2, 360);
+    svgW = numLayers * INTER_LAYER_X + PAD_X * 2;
+
+    for (const [layer, names] of byLayer) {
+      const totalH = names.length * NODE_H + (names.length - 1) * INTER_NODE;
+      const startY = (svgH - totalH) / 2;
+      names.forEach((name, col) => {
+        const svc = svcMap.get(name);
+        if (!svc) return;
+        nodes.push({
+          name,
+          svc,
+          layer,
+          col,
+          x: PAD_X + layer * INTER_LAYER_X,
+          y: startY + col * (NODE_H + INTER_NODE),
+        });
       });
-    });
+    }
+  } else {
+    svgW = Math.max(maxPerLayer * (NODE_W + NODE_GAP_X) + PAD_X * 2, 500);
+    svgH = numLayers * (NODE_H + LAYER_GAP_Y) + PAD_TOP * 2;
+
+    for (const [layer, names] of byLayer) {
+      const totalW = names.length * NODE_W + (names.length - 1) * NODE_GAP_X;
+      const startX = (svgW - totalW) / 2;
+      names.forEach((name, col) => {
+        const svc = svcMap.get(name);
+        if (!svc) return;
+        nodes.push({
+          name,
+          svc,
+          layer,
+          col,
+          x: startX + col * (NODE_W + NODE_GAP_X),
+          y: PAD_TOP + layer * (NODE_H + LAYER_GAP_Y),
+        });
+      });
+    }
   }
 
-  return { nodes, svgW, svgH };
+  return { nodes, svgW, svgH, direction };
 }
 
 function connectedSet(name: string, edges: Edge[]): Set<string> {
@@ -282,6 +319,7 @@ function EdgePath({
   dstNode,
   maxCalls,
   dimmed,
+  direction,
   onHover,
   onLeave,
 }: {
@@ -290,18 +328,22 @@ function EdgePath({
   dstNode: LayoutNode;
   maxCalls: number;
   dimmed: boolean;
+  direction: GraphDirection;
   onHover: (e: React.MouseEvent) => void;
   onLeave: () => void;
 }) {
-  const x1 = srcNode.x + NODE_W / 2;
-  const y1 = srcNode.y + NODE_H;
-  const x2 = dstNode.x + NODE_W / 2;
-  const y2 = dstNode.y;
+  const horizontal = direction === "horizontal";
+  const x1 = horizontal ? srcNode.x + NODE_W        : srcNode.x + NODE_W / 2;
+  const y1 = horizontal ? srcNode.y + NODE_H / 2    : srcNode.y + NODE_H;
+  const x2 = horizontal ? dstNode.x                 : dstNode.x + NODE_W / 2;
+  const y2 = horizontal ? dstNode.y + NODE_H / 2    : dstNode.y;
 
-  const dy = Math.abs(y2 - y1);
-  const cpOff = Math.max(dy * 0.4, 30);
+  const primaryDelta = horizontal ? Math.abs(x2 - x1) : Math.abs(y2 - y1);
+  const cpOff = Math.max(primaryDelta * 0.4, 30);
 
-  const d = `M ${x1} ${y1} C ${x1} ${y1 + cpOff}, ${x2} ${y2 - cpOff}, ${x2} ${y2}`;
+  const d = horizontal
+    ? `M ${x1} ${y1} C ${x1 + cpOff} ${y1}, ${x2 - cpOff} ${y2}, ${x2} ${y2}`
+    : `M ${x1} ${y1} C ${x1} ${y1 + cpOff}, ${x2} ${y2 - cpOff}, ${x2} ${y2}`;
   const w = edgeWidth(edge.call_count, maxCalls);
   const label = edgeLabel(edge);
 
@@ -334,7 +376,11 @@ function EdgePath({
       />
       {!dimmed && (
         <polygon
-          points={`${x2},${y2} ${x2 - 4},${y2 - 8} ${x2 + 4},${y2 - 8}`}
+          points={
+            horizontal
+              ? `${x2},${y2} ${x2 - 8},${y2 - 4} ${x2 - 8},${y2 + 4}`
+              : `${x2},${y2} ${x2 - 4},${y2 - 8} ${x2 + 4},${y2 - 8}`
+          }
           fill={theme.blue}
           opacity={0.6}
         />
@@ -530,10 +576,16 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   );
 }
 
+const DIRECTION_OPTIONS: DropdownOption<GraphDirection>[] = [
+  { value: "vertical", label: "Vertical (top → bottom)" },
+  { value: "horizontal", label: "Horizontal (left → right)" },
+];
+
 export function App() {
   const [data, setData] = useState<DepData | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [pinned, setPinned] = useState<string | null>(null);
+  const [direction, setDirection] = useState<GraphDirection>("vertical");
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
@@ -567,8 +619,8 @@ export function App() {
 
   const layout = useMemo(() => {
     if (!data) return null;
-    return computeLayout(data.services, data.edges);
-  }, [data]);
+    return computeLayout(data.services, data.edges, direction);
+  }, [data, direction]);
 
   const panZoom = usePanZoom({
     baseW: layout?.svgW,
@@ -704,6 +756,13 @@ export function App() {
       <h1 className="ds-header-title">Service dependencies</h1>
       <div className="ds-header-actions">
         {headerPills}
+        <Dropdown<GraphDirection>
+          value={direction}
+          onChange={setDirection}
+          options={DIRECTION_OPTIONS}
+          label="Graph layout"
+          triggerPrefix="Layout:"
+        />
         <button
           type="button"
           className="ds-btn-icon"
@@ -842,6 +901,7 @@ export function App() {
                 dstNode={dst}
                 maxCalls={maxCalls}
                 dimmed={dim}
+                direction={direction}
                 onHover={(e) => handleEdgeHover(e, edge)}
                 onLeave={clearEdgeTooltip}
               />
