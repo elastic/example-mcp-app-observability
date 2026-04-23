@@ -25,15 +25,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp, AppLike } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
-import { theme, baseStyles } from "@shared/theme";
+import { applyTheme, theme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
   InvestigationActions,
   InvestigationAction,
-  TimeRangeHeader,
-  BadgeTone,
+  QueryPill,
+  type Severity as DSSeverity,
+  SeverityChip,
   ZoomControls,
 } from "@shared/components";
+import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { usePanZoom } from "@shared/use-pan-zoom";
+import { viewStyles } from "./styles";
 
 interface Deployment {
   deployment: string;
@@ -93,11 +97,11 @@ function statusStyle(status: string): { color: string; label: string } {
   return { color: theme.textMuted, label: status };
 }
 
-function statusTone(status: string): BadgeTone {
+function statusSeverity(status: string): DSSeverity {
   if (status === "AT RISK") return "critical";
   if (status === "PARTIAL RISK") return "major";
   if (status === "SAFE") return "ok";
-  return "neutral";
+  return "minor";
 }
 
 function clamp(v: number, min: number, max: number) {
@@ -145,10 +149,13 @@ export function App() {
   const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
 
+  const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
+
   useEffect(() => {
     const style = document.createElement("style");
-    style.textContent = baseStyles;
+    style.textContent = viewStyles;
     document.head.appendChild(style);
+    applyTheme();
     return () => style.remove();
   }, []);
 
@@ -398,16 +405,49 @@ export function App() {
   }, [isDragging]);
   const clearHover = useCallback(() => setTooltip(null), []);
 
+  const headerNode = (data?.node ?? "").trim();
+  const Header = (
+    <header className="ds-header">
+      <AppGlyph size={20} />
+      <h1 className="ds-header-title">Blast radius</h1>
+      <div className="ds-header-actions">
+        {headerNode && <QueryPill>node: {headerNode}</QueryPill>}
+        {data && (
+          <SeverityChip
+            severity={statusSeverity(data.status)}
+            label={statusStyle(data.status).label}
+          />
+        )}
+        <button
+          type="button"
+          className="ds-btn-icon"
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+        >
+          {isFullscreen ? <ExitFullscreenIcon size={14} /> : <FullscreenIcon size={14} />}
+        </button>
+      </div>
+    </header>
+  );
+
   if (error) {
-    return <div style={{ padding: 16, color: theme.red, fontSize: 12 }}>Error: {error.message}</div>;
+    return (
+      <div className="ds-view">
+        {Header}
+        <div className="blast-empty">
+          <div className="blast-empty-title">Error</div>
+          <div className="blast-empty-sub">{error.message}</div>
+        </div>
+      </div>
+    );
   }
   if (!isConnected || !data) {
     return (
-      <div style={{ padding: 24, color: theme.textMuted, fontSize: 12, textAlign: "center" }}>
-        <div style={{ fontSize: 22, marginBottom: 8 }}>◎</div>
-        <div>Waiting for blast-radius data…</div>
-        <div style={{ marginTop: 8, fontSize: 10, color: theme.textDim }}>
-          Call the k8s-blast-radius tool with a node name
+      <div className="ds-view">
+        {Header}
+        <div className="blast-empty">
+          <div className="blast-empty-title">Waiting for blast-radius data…</div>
+          <div className="blast-empty-sub">Call the k8s-blast-radius tool with a node name.</div>
         </div>
       </div>
     );
@@ -423,14 +463,9 @@ export function App() {
     reschedFeasible === true ? theme.greenSoft : reschedFeasible === false ? theme.redSoft : theme.textMuted;
 
   return (
-    <div style={{ padding: "12px 14px", background: theme.bg, position: "relative", maxWidth: svgW + 20 }}>
-      <TimeRangeHeader
-        title={<span className="mono">{data.node}</span>}
-        subtitle="K8s blast-radius analysis"
-        status={{ tone: statusTone(data.status), label: status.label }}
-      />
-      {/* SVG diagram */}
-      <div style={{ position: "relative" }}>
+    <div className="ds-view">
+      {Header}
+      <div className="blast-graph">
         <svg
           ref={svgRef}
           width="100%"
@@ -703,41 +738,18 @@ export function App() {
           </text>
         </svg>
 
-        {/* Floating summary card — top-left */}
-        <div
-          style={{
-            position: "absolute",
-            top: 8,
-            left: 8,
-            background: `${theme.bgSecondary}ee`,
-            border: `1px solid ${theme.borderStrong}`,
-            borderRadius: 6,
-            padding: "10px 12px",
-            minWidth: 220,
-            backdropFilter: "blur(4px)",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 10,
-              fontWeight: 700,
-              color: theme.textMuted,
-              textTransform: "uppercase",
-              letterSpacing: 0.8,
-              marginBottom: 8,
-            }}
-          >
-            blast radius summary
-          </div>
-          <SummaryRow color={theme.redSoft} value={data.full_outage.length} label="deployments" sub="full outage" />
-          <SummaryRow color={theme.amber} value={data.degraded.length} label="deployments" sub="degraded" />
-          <SummaryRow color={theme.greenSoft} value={data.unaffected_count} label="deployments" sub="unaffected" />
-          <div style={{ height: 1, background: theme.border, margin: "8px 0" }} />
-          <SummaryRow color={theme.redSoft} value={data.pods_at_risk} label="pods at risk" />
+        {/* Floating summary card — top-left of the radial graph */}
+        <div className="blast-summary-card">
+          <div className="blast-summary-card-title">Blast radius summary</div>
+          <SummaryRow color={theme.redSoft}   value={data.full_outage.length}   label="deployments" sub="full outage" />
+          <SummaryRow color={theme.amber}     value={data.degraded.length}      label="deployments" sub="degraded" />
+          <SummaryRow color={theme.greenSoft} value={data.unaffected_count}     label="deployments" sub="unaffected" />
+          <div className="blast-summary-card-divider" />
+          <SummaryRow color={theme.redSoft}   value={data.pods_at_risk}         label="pods at risk" />
           {hasRing2 && (
-            <SummaryRow color={theme.blue} value={downstreamCount} label="downstream services" sub="user-facing" />
+            <SummaryRow color={theme.blue}    value={downstreamCount}           label="downstream services" sub="user-facing" />
           )}
-          <div style={{ marginTop: 8, fontSize: 11, color: theme.textMuted, display: "flex", gap: 6, alignItems: "center" }}>
+          <div className="blast-summary-card-foot">
             <span>rescheduling:</span>
             <span style={{ color: reschedColor, fontWeight: 600 }}>
               {reschedFeasible === true ? "feasible" : reschedFeasible === false ? "infeasible" : "unknown"}
@@ -758,21 +770,21 @@ export function App() {
         />
       </div>
 
-      {/* Rescheduling detail + actions */}
-      <div style={{ marginTop: 12, fontSize: 11, color: theme.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
-        {resched.memory_required} required / {resched.memory_available} available across{" "}
-        {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
-      </div>
-
-      {data.downstream_services_note && (
-        <div style={{ marginTop: 10, fontSize: 11, color: theme.textMuted, lineHeight: 1.5 }}>
-          {data.downstream_services_note}
+      <div className="blast-meta">
+        <div className="blast-meta-row">
+          {resched.memory_required} required / {resched.memory_available} available across{" "}
+          {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
         </div>
-      )}
-
-      <div style={{ marginTop: 12 }}>
-        <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+        {data.downstream_services_note && (
+          <div className="blast-meta-note">{data.downstream_services_note}</div>
+        )}
       </div>
+
+      {data.investigation_actions?.length ? (
+        <div className="blast-actions">
+          <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+        </div>
+      ) : null}
     </div>
   );
 }

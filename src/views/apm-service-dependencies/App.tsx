@@ -10,18 +10,21 @@
  * hover to highlight full upstream/downstream path.
  */
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { useApp, AppLike } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
-import { theme } from "@shared/theme";
+import { applyTheme, theme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
   InvestigationActions,
   InvestigationAction,
-  TimeRangeHeader,
+  QueryPill,
   RerunContext,
   ZoomControls,
 } from "@shared/components";
+import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { usePanZoom } from "@shared/use-pan-zoom";
+import { viewStyles } from "./styles";
 
 interface ServiceHealth {
   span_count: number;
@@ -524,6 +527,15 @@ export function App() {
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
+
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.textContent = viewStyles;
+    document.head.appendChild(style);
+    applyTheme();
+    return () => style.remove();
+  }, []);
 
   const { isConnected, error } = useApp({
     appInfo: { name: "APM Service Dependencies", version: "1.0.0" },
@@ -659,15 +671,52 @@ export function App() {
 
   const clearNodeTooltip = useCallback(() => setNodeTooltip(null), []);
 
+  const headerPills = (
+    <>
+      {data?.focal_service && <QueryPill>focal: {data.focal_service}</QueryPill>}
+      {data?.filters?.namespace && <QueryPill>namespace: {data.filters.namespace}</QueryPill>}
+      {data?.filters?.lookback && <QueryPill>lookback: {data.filters.lookback}</QueryPill>}
+    </>
+  );
+
+  const Header = (
+    <header className="ds-header">
+      <AppGlyph size={20} />
+      <h1 className="ds-header-title">Service dependencies</h1>
+      <div className="ds-header-actions">
+        {headerPills}
+        <button
+          type="button"
+          className="ds-btn-icon"
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+        >
+          {isFullscreen ? <ExitFullscreenIcon size={14} /> : <FullscreenIcon size={14} />}
+        </button>
+      </div>
+    </header>
+  );
+
   if (error) {
-    return <div style={{ padding: 16, color: theme.red, fontSize: 12 }}>Error: {error.message}</div>;
+    return (
+      <div className="ds-view">
+        {Header}
+        <div className="dep-empty">
+          <div className="dep-empty-title">Error</div>
+          <div className="dep-empty-sub">{error.message}</div>
+        </div>
+      </div>
+    );
   }
   if (!isConnected || !data) {
     return (
-      <div style={{ padding: 20, color: theme.textMuted, fontSize: 12, textAlign: "center" }}>
-        <div>Waiting for service dependency data…</div>
-        <div style={{ marginTop: 8, fontSize: 10, color: theme.textDim }}>
-          Call apm-service-dependencies to map the topology.
+      <div className="ds-view">
+        {Header}
+        <div className="dep-empty">
+          <div className="dep-empty-title">Waiting for service dependency data…</div>
+          <div className="dep-empty-sub">
+            Call apm-service-dependencies to map the topology.
+          </div>
         </div>
       </div>
     );
@@ -675,13 +724,14 @@ export function App() {
 
   if (!data.services.length || !data.edges.length) {
     return (
-      <div style={{ padding: 20, color: theme.textMuted, fontSize: 12 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6, color: theme.amber }}>
-          No service dependency data
-        </div>
-        <div style={{ fontSize: 11, lineHeight: 1.6, color: theme.textMuted }}>
-          {data.hint ||
-            "No APM spans with destination service resources found in the selected window."}
+      <div className="ds-view">
+        {Header}
+        <div className="dep-empty">
+          <div className="dep-empty-title">No service dependency data</div>
+          <div className="dep-empty-sub">
+            {data.hint ||
+              "No APM spans with destination service resources found in the selected window."}
+          </div>
         </div>
       </div>
     );
@@ -694,76 +744,24 @@ export function App() {
   for (const n of nodes) nodeMap.set(n.name, n);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div
-        style={{
-          padding: "12px 14px 8px",
-          borderBottom: `1px solid ${theme.border}`,
-          background: "#0d0f14",
-        }}
-      >
-        <TimeRangeHeader
-          title={
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              Service Dependencies
-              {data.focal_service && (
-                <span
-                  className="mono"
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: theme.cyan,
-                    padding: "2px 8px",
-                    borderRadius: 10,
-                    background: `${theme.cyan}18`,
-                  }}
-                >
-                  focal: {data.focal_service}
-                </span>
-              )}
-            </span>
-          }
-          subtitle={
-            data.filters?.namespace ? (
-              <span className="mono">namespace: {data.filters.namespace}</span>
-            ) : undefined
-          }
-          rerunContext={data.rerun_context}
-          onSend={onSend}
-        />
+    <div className="ds-view">
+      {Header}
 
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <StatChip label="services" value={data.service_count} color={theme.blue} />
-          <StatChip label="edges" value={data.edge_count} color={theme.cyan} />
-          <StatChip label="roots" value={stats.roots} color={theme.green} />
-          <StatChip label="leaves" value={stats.leaves} color={theme.amber} />
-          {stats.unhealthy > 0 && (
-            <StatChip label="unhealthy" value={stats.unhealthy} color={theme.red} />
-          )}
-        </div>
-
-        {data.data_coverage_note && (
-          <div
-            style={{
-              marginTop: 4,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: `${theme.amber}14`,
-              border: `1px solid ${theme.amber}44`,
-              color: theme.textMuted,
-              fontSize: 11,
-              lineHeight: 1.4,
-            }}
-          >
-            <span style={{ color: theme.amber, fontWeight: 600, marginRight: 6 }}>
-              Data coverage
-            </span>
-            {data.data_coverage_note}
-          </div>
+      <div className="dep-stats">
+        <StatChip label="services" value={data.service_count} color={theme.blue} />
+        <StatChip label="edges" value={data.edge_count} color={theme.cyan} />
+        <StatChip label="roots" value={stats.roots} color={theme.green} />
+        <StatChip label="leaves" value={stats.leaves} color={theme.amber} />
+        {stats.unhealthy > 0 && (
+          <StatChip label="unhealthy" value={stats.unhealthy} color={theme.red} />
         )}
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "8px 14px", position: "relative" }}>
+      {data.data_coverage_note && (
+        <div className="dep-coverage"><strong>Data coverage</strong>{data.data_coverage_note}</div>
+      )}
+
+      <div className="dep-graph">
         <svg
           ref={panZoom.svgRef}
           width="100%"
@@ -868,16 +866,7 @@ export function App() {
         />
       </div>
 
-      <div
-        style={{
-          padding: "8px 14px",
-          borderTop: `1px solid ${theme.border}`,
-          display: "flex",
-          gap: 14,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
+      <div className="dep-legend">
         <LegendDot color={theme.green} label="Root (no upstream)" />
         <LegendDot color={theme.blue} label="Internal" />
         <LegendDot color={theme.amber} label="Leaf (no downstream)" />
@@ -891,21 +880,15 @@ export function App() {
               opacity: 0.6,
             }}
           />
-          <span style={{ fontSize: 9, color: theme.textMuted }}>Call edge</span>
+          <span style={{ fontSize: 9, color: "var(--text-muted)" }}>Call edge</span>
         </div>
       </div>
 
       {data.investigation_actions?.length ? (
-        <div style={{ padding: "8px 14px", borderTop: `1px solid ${theme.border}` }}>
+        <div className="dep-actions">
           <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
         </div>
       ) : null}
-
-      <style>{`
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 2px; }
-      `}</style>
     </div>
   );
 }
