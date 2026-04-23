@@ -156,7 +156,7 @@ function TagList({ tags }: { tags?: string[] }) {
 function RuleDetailCard({ summary }: { summary: RuleSummary }) {
   return (
     <SectionCard>
-      <KVRow label="Rule ID" value={<span className="mono">{summary.id}</span>} />
+      <KVRow label="Alert rule ID" value={<span className="mono">{summary.id}</span>} />
       <KVRow label="Type" value={<span className="mono">{summary.rule_type_id}</span>} />
       {summary.condition && <KVRow label="Condition" value={summary.condition} />}
       {summary.window && <KVRow label="Window" value={summary.window} />}
@@ -391,7 +391,7 @@ export function App() {
           status={{ tone: "ok", label: "created" }}
         />
         <SectionCard>
-          <KVRow label="Rule ID" value={<span className="mono">{d.rule_id}</span>} />
+          <KVRow label="Alert rule ID" value={<span className="mono">{d.rule_id}</span>} />
           <KVRow label="Condition" value={conditionStr} />
           <KVRow label="Window" value={windowStr(d.time_size, d.time_unit)} />
           <KVRow label="Check interval" value={`every ${d.check_interval || "5m"}`} />
@@ -453,8 +453,8 @@ export function App() {
                 borderRadius: 4,
               }}
             >
-              <strong>This is irreversible.</strong> The rule below will be permanently removed
-              from Kibana. Confirm with the user before dispatching the delete.
+              <strong>This is irreversible.</strong> The alert rule below will be permanently
+              removed from Kibana. Confirm with the user before dispatching the delete.
             </div>
           </SectionCard>
           <RuleDetailCard summary={d.preview} />
@@ -469,13 +469,13 @@ export function App() {
     return (
       <div style={{ padding: "14px 16px", maxWidth: 620 }}>
         <TimeRangeHeader
-          title="Rule deleted"
+          title="Alert rule deleted"
           subtitle={<span className="mono">{d.rule_id}</span>}
           status={{ tone: "neutral", label: "deleted" }}
         />
         <SectionCard>
           <div style={{ fontSize: 12, color: theme.text }}>
-            {d.message || `Rule ${d.rule_id} has been permanently deleted.`}
+            {d.message || `Alert rule ${d.rule_id} has been permanently deleted.`}
           </div>
         </SectionCard>
         <InvestigationActions
@@ -494,7 +494,7 @@ export function App() {
       <TimeRangeHeader
         title={
           <span>
-            {d.total} rule{d.total === 1 ? "" : "s"}
+            {d.total} alert rule{d.total === 1 ? "" : "s"}
             {d.total > d.returned ? (
               <span style={{ color: theme.textMuted, fontWeight: 400 }}>
                 {" "}
@@ -509,7 +509,7 @@ export function App() {
       {d.rules.length === 0 ? (
         <SectionCard>
           <div style={{ fontSize: 12, color: theme.textMuted }}>
-            {d.message || "No rules matched the filter."}
+            {d.message || "No alert rules matched the filter."}
           </div>
         </SectionCard>
       ) : (
