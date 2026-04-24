@@ -35,6 +35,8 @@ import {
   InvestigationAction,
   TimeRangeHeader,
   RerunContext,
+  SectionTitleWithToggle,
+  CondensedChips,
 } from "@shared/components";
 
 interface MetricTimelineBucket {
@@ -280,7 +282,10 @@ function AnomalyHeatmap({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(120px, 22%) 1fr",
+          // Label column gets ~45% so longer entity names like
+          // "host.name=node-us-east-4" have breathing room; cells take the
+          // remaining ~55% (down from ~78% — roughly 1/3 narrower per cell).
+          gridTemplateColumns: "minmax(180px, 45%) 1fr",
           rowGap: 4,
           alignItems: "center",
         }}
@@ -623,7 +628,13 @@ function SparkBars({
   );
 }
 
-function KpiTileCard({ tile }: { tile: KpiTile }) {
+function KpiTileCard({
+  tile,
+  window,
+}: {
+  tile: KpiTile;
+  window?: TimelineWindow;
+}) {
   const accent = tile.status ? STATUS_COLOR[tile.status] : theme.blue;
   const values = tile.timeline?.map((b) => b.value) ?? [];
   return (
@@ -689,11 +700,28 @@ function KpiTileCard({ tile }: { tile: KpiTile }) {
       </div>
 
       {values.length > 0 ? (
-        tile.spark === "bar" ? (
-          <SparkBars values={values} color={accent} />
-        ) : (
-          <Sparkline values={values} color={accent} showPeak={false} />
-        )
+        <>
+          {tile.spark === "bar" ? (
+            <SparkBars values={values} color={accent} />
+          ) : (
+            <Sparkline values={values} color={accent} showPeak={false} />
+          )}
+          {window && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 9,
+                color: theme.textDim,
+                fontFamily: "'JetBrains Mono', monospace",
+                marginTop: -2,
+              }}
+            >
+              <span>{fmtAxisTime(window.start_ms)}</span>
+              <span>{fmtAxisTime(window.end_ms)}</span>
+            </div>
+          )}
+        </>
       ) : (
         // Reserve sparkline-height space so cards in the row align even when
         // a card has no timeline (e.g. counts).
@@ -727,7 +755,7 @@ function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         {group.tiles.map((t) => (
-          <KpiTileCard key={t.key} tile={t} />
+          <KpiTileCard key={t.key} tile={t} window={group.timeline_window} />
         ))}
       </div>
     </div>
@@ -737,6 +765,10 @@ function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  // Default to detail (sparklines / bars) — that's the headline view. Toggle
+  // collapses to a CondensedChips summary strip for compact scanning.
+  const [memDetailed, setMemDetailed] = useState(true);
+  const [svcDetailed, setSvcDetailed] = useState(true);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -889,36 +921,56 @@ export function App() {
         </SectionCard>
       ) : null}
 
-      {/* Top pods by memory — sparkline per row when the tool returned
-       * per-pod timelines, plain HBarRow list as fallback otherwise. */}
+      {/* Top pods by memory — sparkline-per-row detail by default, with a
+       * "Show summary" toggle that swaps in the compact CondensedChips
+       * view. Falls back to HBarRow when the payload has no timelines. */}
       {pods.length ? (
-        <SectionCard title="Top pods by memory">
-          {pods.some((p) => p.timeline?.length) ? (
-            pods.slice(0, 6).map((p) => {
-              const vals = p.timeline?.map((b) => b.value) ?? [];
-              const peak = p.peak_memory_mb ?? (vals.length ? Math.max(...vals) : p.avg_memory_mb);
-              return (
-                <SparklineRow
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label="Top pods by memory"
+              detailed={memDetailed}
+              onToggle={() => setMemDetailed((v) => !v)}
+            />
+          }
+        >
+          {memDetailed ? (
+            pods.some((p) => p.timeline?.length) ? (
+              pods.slice(0, 6).map((p) => {
+                const vals = p.timeline?.map((b) => b.value) ?? [];
+                const peak = p.peak_memory_mb ?? (vals.length ? Math.max(...vals) : p.avg_memory_mb);
+                return (
+                  <SparklineRow
+                    key={p.pod}
+                    label={shortenPod(p.pod)}
+                    values={vals.length ? vals : [p.avg_memory_mb]}
+                    color={podMemColor(p.avg_memory_mb, maxMem)}
+                    currentLabel={`${p.avg_memory_mb.toFixed(0)} MB`}
+                    peakLabel={`${peak.toFixed(0)} MB`}
+                  />
+                );
+              })
+            ) : (
+              pods.slice(0, 6).map((p) => (
+                <HBarRow
                   key={p.pod}
                   label={shortenPod(p.pod)}
-                  values={vals.length ? vals : [p.avg_memory_mb]}
+                  value={p.avg_memory_mb}
+                  valueLabel={`${p.avg_memory_mb.toFixed(1)} MB`}
+                  max={maxMem}
                   color={podMemColor(p.avg_memory_mb, maxMem)}
-                  currentLabel={`${p.avg_memory_mb.toFixed(0)} MB`}
-                  peakLabel={`${peak.toFixed(0)} MB`}
                 />
-              );
-            })
+              ))
+            )
           ) : (
-            pods.slice(0, 6).map((p) => (
-              <HBarRow
-                key={p.pod}
-                label={shortenPod(p.pod)}
-                value={p.avg_memory_mb}
-                valueLabel={`${p.avg_memory_mb.toFixed(1)} MB`}
-                max={maxMem}
-                color={podMemColor(p.avg_memory_mb, maxMem)}
-              />
-            ))
+            <CondensedChips
+              items={pods.slice(0, 6).map((p) => ({
+                key: p.pod,
+                label: shortenPod(p.pod),
+                value: `${p.avg_memory_mb.toFixed(0)} MB`,
+                color: podMemColor(p.avg_memory_mb, maxMem),
+              }))}
+            />
           )}
         </SectionCard>
       ) : data.pods_note ? (
@@ -927,36 +979,56 @@ export function App() {
         </SectionCard>
       ) : null}
 
-      {/* Service throughput — same pattern: sparkline per row when the tool
-       * returned per-service timelines, HBarRow list fallback otherwise. */}
+      {/* Service throughput — same toggle: sparkline-per-row detail or
+       * compact CondensedChips summary. Falls back to HBarRow when no
+       * timelines are available. */}
       {services.length > 0 && (
-        <SectionCard title={`Service throughput · last ${data.lookback}`}>
-          {services.some((s) => s.timeline?.length) ? (
-            services.slice(0, 8).map((s) => {
-              const vals = s.timeline?.map((b) => b.value) ?? [];
-              const peak = s.peak_throughput ?? (vals.length ? Math.max(...vals) : s.throughput);
-              return (
-                <SparklineRow
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label={`Service throughput · last ${data.lookback}`}
+              detailed={svcDetailed}
+              onToggle={() => setSvcDetailed((v) => !v)}
+            />
+          }
+        >
+          {svcDetailed ? (
+            services.some((s) => s.timeline?.length) ? (
+              services.slice(0, 8).map((s) => {
+                const vals = s.timeline?.map((b) => b.value) ?? [];
+                const peak = s.peak_throughput ?? (vals.length ? Math.max(...vals) : s.throughput);
+                return (
+                  <SparklineRow
+                    key={s.service}
+                    label={s.service}
+                    values={vals.length ? vals : [s.throughput]}
+                    color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
+                    currentLabel={`${fmtThroughput(s.throughput)} rpm`}
+                    peakLabel={`${fmtThroughput(peak)} rpm`}
+                  />
+                );
+              })
+            ) : (
+              services.slice(0, 8).map((s) => (
+                <HBarRow
                   key={s.service}
                   label={s.service}
-                  values={vals.length ? vals : [s.throughput]}
+                  value={s.throughput}
+                  valueLabel={`${s.throughput} rpm`}
+                  max={maxThroughput}
                   color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
-                  currentLabel={`${fmtThroughput(s.throughput)} rpm`}
-                  peakLabel={`${fmtThroughput(peak)} rpm`}
                 />
-              );
-            })
+              ))
+            )
           ) : (
-            services.slice(0, 8).map((s) => (
-              <HBarRow
-                key={s.service}
-                label={s.service}
-                value={s.throughput}
-                valueLabel={`${s.throughput} rpm`}
-                max={maxThroughput}
-                color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
-              />
-            ))
+            <CondensedChips
+              items={services.slice(0, 8).map((s) => ({
+                key: s.service,
+                label: s.service,
+                value: `${fmtThroughput(s.throughput)} rpm`,
+                color: degradedSet.has(s.service) ? theme.redSoft : theme.textMuted,
+              }))}
+            />
           )}
         </SectionCard>
       )}
