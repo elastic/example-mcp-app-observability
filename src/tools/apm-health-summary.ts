@@ -52,6 +52,71 @@ interface PodRow {
 const METRIC_TIMELINE_SPAN_MIN = 5;
 const METRIC_TIMELINE_SPAN_MS = METRIC_TIMELINE_SPAN_MIN * 60 * 1000;
 
+// ─── KPI tile shape + status-chip thresholds ────────────────────────────────
+
+export type TileStatus = "ok" | "degraded" | "critical";
+export type TileSpark = "line" | "bar";
+
+export interface KpiTile {
+  key: string;
+  label: string;
+  value_display: string;          // pre-formatted (e.g. "13.7K", "412 ms", "—")
+  unit?: string;                  // separate from value when useful (e.g. "rpm")
+  secondary?: string;             // second-line text (e.g. "3 degraded", "5 nodes")
+  timeline?: MetricTimelineBucket[];
+  peak?: number;
+  spark?: TileSpark;              // default "line"; "bar" for discrete-rate metrics
+  status?: TileStatus;            // omitted when no universal threshold (e.g. throughput)
+}
+
+/** Defaults are documented; callers can swap in customer-tuned thresholds later. */
+function statusForLatency(p99Ms: number): TileStatus {
+  if (p99Ms >= 1000) return "critical";
+  if (p99Ms >= 500) return "degraded";
+  return "ok";
+}
+function statusForErrorRate(pct: number): TileStatus {
+  if (pct >= 2) return "critical";
+  if (pct >= 1) return "degraded";
+  return "ok";
+}
+function statusForDegradedCount(n: number): TileStatus {
+  if (n >= 3) return "critical";
+  if (n >= 1) return "degraded";
+  return "ok";
+}
+function statusForCpuUtil(pct: number): TileStatus {
+  if (pct >= 90) return "critical";
+  if (pct >= 80) return "degraded";
+  return "ok";
+}
+function statusForMemUtil(pct: number): TileStatus {
+  if (pct >= 95) return "critical";
+  if (pct >= 90) return "degraded";
+  return "ok";
+}
+function statusForRestarts(n: number): TileStatus {
+  if (n >= 5) return "critical";
+  if (n >= 1) return "degraded";
+  return "ok";
+}
+function statusForPods(pending: number, failed: number): TileStatus {
+  if (failed >= 1) return "critical";
+  if (pending >= 1) return "degraded";
+  return "ok";
+}
+function statusForNodes(notReady: number): TileStatus {
+  if (notReady >= 2) return "critical";
+  if (notReady >= 1) return "degraded";
+  return "ok";
+}
+
+function fmtThroughput(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return `${Math.round(v)}`;
+}
+
 async function queryServiceTransactionRollup(
   serviceFilter: string,
   lookback: string,
@@ -194,6 +259,150 @@ async function queryPodsMemoryTimeline(
   return out;
 }
 
+// ─── Aggregate timeline queries for KPI tiles ───────────────────────────────
+
+async function queryApmAggregateTimeline(
+  serviceFilter: string,
+  lookback: string,
+  errors: string[]
+): Promise<MetricTimelineBucket[]> {
+  const trimmed = serviceFilter.trim();
+  const clause = trimmed ? ` ${trimmed} ` : "";
+  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS rpm = COUNT(*) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{ rpm?: number; bucket?: string | number }>(esql, errors, {
+    optional: true,
+  });
+  return rows
+    .filter((r) => r.bucket != null)
+    .map((r) => {
+      const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
+      return { ts, value: r.rpm ?? 0 };
+    })
+    .filter((b) => !Number.isNaN(b.ts));
+}
+
+async function queryApmLatencyTimeline(
+  serviceFilter: string,
+  lookback: string,
+  errors: string[]
+): Promise<MetricTimelineBucket[]> {
+  const trimmed = serviceFilter.trim();
+  const clause = trimmed ? ` ${trimmed} ` : "";
+  // traces-apm* + traces-*.otel-* both carry transaction.duration.us;
+  // PERCENTILE on either yields a per-bucket p99 in microseconds.
+  const esql = `FROM traces-apm*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS p99_us = PERCENTILE(transaction.duration.us, 99) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{ p99_us?: number; bucket?: string | number }>(esql, errors, {
+    optional: true,
+  });
+  return rows
+    .filter((r) => r.bucket != null)
+    .map((r) => {
+      const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
+      return { ts, value: Math.round((r.p99_us ?? 0) / 1000) }; // µs → ms
+    })
+    .filter((b) => !Number.isNaN(b.ts));
+}
+
+async function queryApmErrorRateTimeline(
+  serviceFilter: string,
+  lookback: string,
+  errors: string[]
+): Promise<MetricTimelineBucket[]> {
+  const trimmed = serviceFilter.trim();
+  const clause = trimmed ? ` ${trimmed} ` : "";
+  const esql = `FROM traces-apm*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS errs = COUNT(*) WHERE event.outcome == "failure", total = COUNT(*) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{
+    errs?: number;
+    total?: number;
+    bucket?: string | number;
+  }>(esql, errors, { optional: true });
+  return rows
+    .filter((r) => r.bucket != null)
+    .map((r) => {
+      const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
+      const total = r.total ?? 0;
+      const errs = r.errs ?? 0;
+      const pct = total > 0 ? (errs / total) * 100 : 0;
+      return { ts, value: Math.round(pct * 10) / 10 };
+    })
+    .filter((b) => !Number.isNaN(b.ts));
+}
+
+// ─── K8s aggregate timelines + node counts ──────────────────────────────────
+
+async function queryK8sUtilizationTimeline(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<{
+  cpu: MetricTimelineBucket[];
+  mem: MetricTimelineBucket[];
+}> {
+  const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  // Sums per bucket over the cluster: usage / limit yields utilization %.
+  // If limits aren't populated, the divide returns 0/null and we surface the
+  // raw usage instead in the calling code.
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS cpu_use = SUM(metrics.k8s.pod.cpu.usage), cpu_lim = SUM(metrics.k8s.pod.cpu.limit), mem_use = SUM(metrics.k8s.pod.memory.working_set), mem_lim = SUM(metrics.k8s.pod.memory.limit) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{
+    cpu_use?: number;
+    cpu_lim?: number;
+    mem_use?: number;
+    mem_lim?: number;
+    bucket?: string | number;
+  }>(esql, errors, { optional: true });
+  const cpu: MetricTimelineBucket[] = [];
+  const mem: MetricTimelineBucket[] = [];
+  for (const r of rows) {
+    if (r.bucket == null) continue;
+    const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
+    if (Number.isNaN(ts)) continue;
+    const cpuPct = r.cpu_lim && r.cpu_lim > 0 ? ((r.cpu_use ?? 0) / r.cpu_lim) * 100 : 0;
+    const memPct = r.mem_lim && r.mem_lim > 0 ? ((r.mem_use ?? 0) / r.mem_lim) * 100 : 0;
+    cpu.push({ ts, value: Math.round(cpuPct * 10) / 10 });
+    mem.push({ ts, value: Math.round(memPct * 10) / 10 });
+  }
+  return { cpu, mem };
+}
+
+async function queryK8sRestartTimeline(
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<MetricTimelineBucket[]> {
+  const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  // restart_count is a monotonic counter per container; SUM per bucket gives a
+  // rough activity proxy without diffing. Good enough for a sparkline; can
+  // refine to deltas later if needed.
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS restarts = MAX(metrics.k8s.container.restart_count) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{ restarts?: number; bucket?: string | number }>(esql, errors, {
+    optional: true,
+  });
+  // Convert the cumulative max into per-bucket deltas (clamped to ≥ 0).
+  let prev: number | null = null;
+  const out: MetricTimelineBucket[] = [];
+  for (const r of rows) {
+    if (r.bucket == null) continue;
+    const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
+    if (Number.isNaN(ts)) continue;
+    const cur = r.restarts ?? 0;
+    const delta = prev == null ? 0 : Math.max(0, cur - prev);
+    prev = cur;
+    out.push({ ts, value: delta });
+  }
+  return out;
+}
+
+async function queryK8sNodeRollup(
+  errors: string[]
+): Promise<{ total: number; not_ready: number }> {
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - 5m | STATS nodes = COUNT_DISTINCT(k8s.node.name)`;
+  const rows = await safeEsqlRows<{ nodes?: number }>(esql, errors, { optional: true });
+  const total = rows[0]?.nodes ?? 0;
+  // not-ready needs a node phase / condition signal; kubeletstats doesn't
+  // carry it directly. Leave at 0 for now and surface a follow-up ticket.
+  return { total, not_ready: 0 };
+}
+
 function deriveTimelineWindow(
   timelinesByKey: Map<string, MetricTimelineBucket[]>
 ): { start_ms: number; end_ms: number; bucket_span_ms: number } | undefined {
@@ -204,6 +413,22 @@ function deriveTimelineWindow(
     end_ms: first[first.length - 1].ts + METRIC_TIMELINE_SPAN_MS,
     bucket_span_ms: METRIC_TIMELINE_SPAN_MS,
   };
+}
+
+function deriveWindowFromBuckets(
+  buckets: MetricTimelineBucket[]
+): { start_ms: number; end_ms: number; bucket_span_ms: number } | undefined {
+  if (!buckets.length) return undefined;
+  return {
+    start_ms: buckets[0].ts,
+    end_ms: buckets[buckets.length - 1].ts + METRIC_TIMELINE_SPAN_MS,
+    bucket_span_ms: METRIC_TIMELINE_SPAN_MS,
+  };
+}
+
+function peakOf(buckets: MetricTimelineBucket[] | undefined): number | undefined {
+  if (!buckets || !buckets.length) return undefined;
+  return buckets.reduce((m, b) => (b.value > m ? b.value : m), -Infinity);
 }
 
 async function queryPodResources(
@@ -565,13 +790,29 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         queryActiveAnomalies(effectiveNs, job_filter, exclude_entities),
       ]);
 
-      // Fetch per-item timelines for the top rows the view actually renders.
-      // Limited to the same slice counts to avoid over-querying.
+      // Fetch per-item timelines for the top rows the view actually renders +
+      // aggregate timelines for the KPI tile rows. Run them in parallel so the
+      // overall round-trip stays close to the slowest single query.
       const topServiceNames = services.slice(0, 15).map((s) => s.service);
       const topPodNames = pods.slice(0, 5).map((p) => p.pod);
-      const [serviceTimelines, podTimelines] = await Promise.all([
+      const [
+        serviceTimelines,
+        podTimelines,
+        apmThroughputTl,
+        apmLatencyTl,
+        apmErrorRateTl,
+        k8sUtil,
+        k8sRestartTl,
+        k8sNodes,
+      ] = await Promise.all([
         queryServicesTimeline(topServiceNames, serviceFilter, lb, queryErrors),
         queryPodsMemoryTimeline(topPodNames, effectiveNs, lb, queryErrors),
+        queryApmAggregateTimeline(serviceFilter, lb, queryErrors),
+        queryApmLatencyTimeline(serviceFilter, lb, queryErrors),
+        queryApmErrorRateTimeline(serviceFilter, lb, queryErrors),
+        queryK8sUtilizationTimeline(effectiveNs, lb, queryErrors),
+        queryK8sRestartTimeline(effectiveNs, lb, queryErrors),
+        queryK8sNodeRollup(queryErrors),
       ]);
 
       // Attach timeline + peak to each row we're going to return.
@@ -621,6 +862,113 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       if (nsResolution.note) result.namespace_note = nsResolution.note;
       if (nsResolution.candidates) result.namespace_candidates = nsResolution.candidates;
       if (exclude_entities) result.exclude_filter = exclude_entities;
+
+      // ─── APM KPI tiles ───────────────────────────────────────────────────
+      if (services.length) {
+        const totalRpm = services.reduce((s, x) => s + x.throughput, 0);
+        const peakLatency = peakOf(apmLatencyTl) ?? 0;
+        const currentP99 = apmLatencyTl.length
+          ? apmLatencyTl[apmLatencyTl.length - 1].value
+          : 0;
+        const peakErr = peakOf(apmErrorRateTl) ?? 0;
+        const currentErr = apmErrorRateTl.length
+          ? apmErrorRateTl[apmErrorRateTl.length - 1].value
+          : 0;
+        const apmTiles: KpiTile[] = [
+          {
+            key: "throughput",
+            label: "Throughput",
+            value_display: fmtThroughput(totalRpm),
+            unit: "rpm",
+            timeline: apmThroughputTl,
+            peak: peakOf(apmThroughputTl),
+            // Throughput has no universal threshold — no status chip.
+          },
+          {
+            key: "latency_p99",
+            label: "p99 latency",
+            value_display: `${currentP99}`,
+            unit: "ms",
+            timeline: apmLatencyTl,
+            peak: peakLatency,
+            status: currentP99 > 0 ? statusForLatency(currentP99) : undefined,
+          },
+          {
+            key: "error_rate",
+            label: "Error rate",
+            value_display: `${currentErr.toFixed(2)}`,
+            unit: "%",
+            timeline: apmErrorRateTl,
+            peak: peakErr,
+            status: statusForErrorRate(currentErr),
+          },
+          {
+            key: "services",
+            label: "Services",
+            value_display: `${services.length}`,
+            secondary: degraded.length ? `${degraded.length} degraded` : "all healthy",
+            status: statusForDegradedCount(degraded.length),
+          },
+        ];
+        const apmTilesWindow = deriveWindowFromBuckets(apmThroughputTl);
+        result.apm_tiles = {
+          tiles: apmTiles,
+          ...(apmTilesWindow ? { timeline_window: apmTilesWindow } : {}),
+        };
+      }
+
+      // ─── K8s KPI tiles ───────────────────────────────────────────────────
+      if (pods.length) {
+        const cpuLatest = k8sUtil.cpu.length ? k8sUtil.cpu[k8sUtil.cpu.length - 1].value : 0;
+        const memLatest = k8sUtil.mem.length ? k8sUtil.mem[k8sUtil.mem.length - 1].value : 0;
+        const restartTotal = k8sRestartTl.reduce((s, b) => s + b.value, 0);
+        const k8sTiles: KpiTile[] = [
+          {
+            key: "cpu",
+            label: "CPU",
+            value_display: cpuLatest > 0 ? `${cpuLatest.toFixed(0)}` : "—",
+            unit: cpuLatest > 0 ? "%" : undefined,
+            timeline: k8sUtil.cpu,
+            peak: peakOf(k8sUtil.cpu),
+            status: cpuLatest > 0 ? statusForCpuUtil(cpuLatest) : undefined,
+          },
+          {
+            key: "memory",
+            label: "Memory",
+            value_display: memLatest > 0 ? `${memLatest.toFixed(0)}` : "—",
+            unit: memLatest > 0 ? "%" : undefined,
+            timeline: k8sUtil.mem,
+            peak: peakOf(k8sUtil.mem),
+            status: memLatest > 0 ? statusForMemUtil(memLatest) : undefined,
+          },
+          {
+            key: "restarts",
+            label: "Restarts",
+            value_display: `${restartTotal}`,
+            secondary: `last ${lb}`,
+            timeline: k8sRestartTl,
+            peak: peakOf(k8sRestartTl),
+            spark: "bar",
+            status: statusForRestarts(restartTotal),
+          },
+          {
+            key: "nodes",
+            label: "Nodes",
+            value_display: `${k8sNodes.total || pods.length}`,
+            secondary: k8sNodes.not_ready
+              ? `${k8sNodes.not_ready} not ready`
+              : k8sNodes.total
+                ? "all ready"
+                : `${pods.length} pods`,
+            status: k8sNodes.total ? statusForNodes(k8sNodes.not_ready) : undefined,
+          },
+        ];
+        const k8sTilesWindow = deriveWindowFromBuckets(k8sUtil.cpu.length ? k8sUtil.cpu : k8sRestartTl);
+        result.k8s_tiles = {
+          tiles: k8sTiles,
+          ...(k8sTilesWindow ? { timeline_window: k8sTilesWindow } : {}),
+        };
+      }
 
       if (pods.length) {
         result.pods = {

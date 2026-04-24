@@ -88,6 +88,26 @@ interface AnomalyInfo {
   timeline_window?: TimelineWindow;
 }
 
+type TileStatus = "ok" | "degraded" | "critical";
+type TileSpark = "line" | "bar";
+
+interface KpiTile {
+  key: string;
+  label: string;
+  value_display: string;
+  unit?: string;
+  secondary?: string;
+  timeline?: MetricTimelineBucket[];
+  peak?: number;
+  spark?: TileSpark;
+  status?: TileStatus;
+}
+
+interface KpiTileGroup {
+  tiles: KpiTile[];
+  timeline_window?: TimelineWindow;
+}
+
 interface DataCoverage {
   apm: boolean;
   kubernetes: boolean;
@@ -107,6 +127,8 @@ interface HealthData {
   };
   degraded_services: DegradedService[];
   pods?: { total: number; top_memory: PodDetail[]; timeline_window?: TimelineWindow };
+  apm_tiles?: KpiTileGroup;
+  k8s_tiles?: KpiTileGroup;
   pods_note?: string;
   anomalies?: AnomalyInfo;
   anomalies_note?: string;
@@ -558,6 +580,160 @@ function fmtThroughput(v: number): string {
   return `${Math.round(v)}`;
 }
 
+const STATUS_COLOR: Record<TileStatus, string> = {
+  ok: SEV_COLORS.minor,        // sky blue (passive ok)
+  degraded: SEV_COLORS.major,
+  critical: SEV_COLORS.critical,
+};
+
+/** Mini bar chart sized identically to Sparkline for the restarts tile. */
+function SparkBars({
+  values,
+  color,
+  height = 22,
+}: {
+  values: number[];
+  color: string;
+  height?: number;
+}) {
+  if (!values.length) return null;
+  const W = 120;
+  const H = height;
+  const max = Math.max(...values, 1);
+  const barW = W / values.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
+      {values.map((v, i) => {
+        const h = (v / max) * (H - 2);
+        const x = i * barW + barW * 0.15;
+        const w = barW * 0.7;
+        return (
+          <rect
+            key={i}
+            x={x.toFixed(1)}
+            y={(H - h).toFixed(1)}
+            width={w.toFixed(1)}
+            height={h.toFixed(1)}
+            fill={color}
+            opacity={v > 0 ? 0.85 : 0.15}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+function KpiTileCard({ tile }: { tile: KpiTile }) {
+  const accent = tile.status ? STATUS_COLOR[tile.status] : theme.blue;
+  const values = tile.timeline?.map((b) => b.value) ?? [];
+  return (
+    <div
+      style={{
+        flex: "1 1 200px",
+        minWidth: 0,
+        padding: "12px 14px",
+        background: theme.bgSecondary,
+        border: `1px solid ${theme.border}`,
+        borderLeft: tile.status ? `3px solid ${accent}` : `1px solid ${theme.border}`,
+        borderRadius: 6,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: theme.textMuted,
+            textTransform: "uppercase",
+            letterSpacing: 0.4,
+          }}
+        >
+          {tile.label}
+        </div>
+        {tile.status && (
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 600,
+              color: accent,
+              textTransform: "lowercase",
+              padding: "1px 6px",
+              borderRadius: 999,
+              border: `1px solid ${accent}55`,
+              background: `${accent}18`,
+            }}
+          >
+            {tile.status}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <span
+          className="mono"
+          style={{
+            fontSize: 22,
+            fontWeight: 700,
+            color: theme.text,
+            lineHeight: 1.05,
+          }}
+        >
+          {tile.value_display}
+        </span>
+        {tile.unit && (
+          <span style={{ fontSize: 12, color: theme.textMuted }}>{tile.unit}</span>
+        )}
+      </div>
+
+      {values.length > 0 ? (
+        tile.spark === "bar" ? (
+          <SparkBars values={values} color={accent} />
+        ) : (
+          <Sparkline values={values} color={accent} showPeak={false} />
+        )
+      ) : (
+        // Reserve sparkline-height space so cards in the row align even when
+        // a card has no timeline (e.g. counts).
+        <div style={{ height: 22 }} />
+      )}
+
+      {tile.secondary && (
+        <div style={{ fontSize: 11, color: theme.textMuted, lineHeight: 1.3 }}>
+          {tile.secondary}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          color: theme.textDim,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          marginBottom: 8,
+          paddingLeft: 2,
+        }}
+      >
+        {label}
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {group.tiles.map((t) => (
+          <KpiTileCard key={t.key} tile={t} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
@@ -664,27 +840,31 @@ export function App() {
         onSend={onSend}
       />
 
-      {/* Stat grid */}
-      <StatGrid>
-        <StatCard label="Total pods" value={data.pods?.total ?? 0} />
-        <StatCard label="Services" value={data.services.total} />
-        <StatCard
-          label="Degraded services"
-          value={data.services.degraded_count}
-          tone={data.services.degraded_count > 0 ? "critical" : "ok"}
-        />
-        <StatCard
-          label="Active anomalies"
-          value={data.anomalies?.total ?? 0}
-          tone={
-            (data.anomalies?.by_severity?.critical ?? 0) > 0
-              ? "critical"
-              : (data.anomalies?.total ?? 0) > 0
-              ? "major"
-              : "ok"
-          }
-        />
-      </StatGrid>
+      {/* KPI tile rows — one per backend. Each tile = headline value + optional
+       * sparkline (or bars for discrete-rate metrics) + status chip when a
+       * universal threshold exists. The legacy four-StatCard row was retired
+       * because (a) lots of horizontal whitespace, (b) the active-anomalies
+       * count was redundant with the dedicated anomaly section below.
+       *
+       * Falls back to the legacy StatGrid when neither tile group is in the
+       * payload (e.g. older cached results / non-MCP consumers). */}
+      {data.apm_tiles ? (
+        <KpiRow label="APM" group={data.apm_tiles} />
+      ) : null}
+      {data.k8s_tiles ? (
+        <KpiRow label="Kubernetes" group={data.k8s_tiles} />
+      ) : null}
+      {!data.apm_tiles && !data.k8s_tiles && (
+        <StatGrid>
+          <StatCard label="Total pods" value={data.pods?.total ?? 0} />
+          <StatCard label="Services" value={data.services.total} />
+          <StatCard
+            label="Degraded services"
+            value={data.services.degraded_count}
+            tone={data.services.degraded_count > 0 ? "critical" : "ok"}
+          />
+        </StatGrid>
+      )}
 
       {/* Warning / recommendation */}
       {data.warning && (
