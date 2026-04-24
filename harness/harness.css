@@ -181,9 +181,12 @@ html, body, #root {
   border: 1px solid rgba(255, 255, 255, 0.04);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
   background: var(--bg-primary, #0f1117);
-  min-height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
+  /* Sizes to content. Refreshed views (.ds-view at 100vh) make the frame
+   * viewport-tall. Legacy views (plain div) make the frame their content
+   * height — no forced empty space below. Fullscreen adds its own sizing
+   * via .harness-view-frame-fullscreen below. */
 }
 [data-harness-theme="light"] .harness-view-frame { box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15); }
 

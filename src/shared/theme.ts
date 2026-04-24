@@ -206,6 +206,12 @@ const DS_STYLESHEET = `
    * .ds-* utility layer
    * ────────────────────────────────────────────────────────────────── */
 
+  /* App-shell: the view fills the viewport and child panes handle their own
+   * scroll. Content-sizing felt right for graph views but regressed list
+   * views (no internal scroll → page-level scroll trap in the harness, and
+   * an iframe sizing feedback loop risk in Claude Desktop). Graph views
+   * that want the SVG to scale with the viewport use CSS aspect-ratio on
+   * the SVG itself rather than opting the shell into content-sizing. */
   .ds-view {
     height: 100vh;
     min-height: 500px;
@@ -221,7 +227,9 @@ const DS_STYLESHEET = `
   .ds-header {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 24px;
+    row-gap: 10px;
     padding: 16px;
     background: var(--bg-primary);
     border-bottom: 1px solid var(--border);
@@ -242,9 +250,11 @@ const DS_STYLESHEET = `
   .ds-header-actions {
     display: flex;
     align-items: center;
-    gap: 16px;
-    flex-shrink: 0;
-    margin-left: auto;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    min-width: 0;
   }
 
   .ds-card {
@@ -608,6 +618,9 @@ const DS_STYLESHEET = `
   .ds-sev-chip-ok       .ds-sev-chip-dot { background: var(--severity-ok); }
 
   /* List → detail pane layout */
+  /* List / detail split — fills the remaining vertical space in the shell
+   * and scrolls each pane internally. Keeps a single scroll target per
+   * pane so the user always knows which column owns the scrollbar. */
   .ds-list-detail { display: flex; flex: 1 1 0; min-height: 0; overflow: hidden; }
   .ds-list-detail-list { flex: 1 1 0; min-width: 0; overflow-y: auto; }
   .ds-list-detail-list.narrow { flex: 0 0 360px; border-right: 1px solid var(--border); }

@@ -10,18 +10,23 @@
  * hover to highlight full upstream/downstream path.
  */
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { useApp, AppLike } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
-import { theme } from "@shared/theme";
+import { applyTheme, theme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
+  Dropdown,
   InvestigationActions,
   InvestigationAction,
-  TimeRangeHeader,
+  QueryPill,
   RerunContext,
   ZoomControls,
+  type DropdownOption,
 } from "@shared/components";
+import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { usePanZoom } from "@shared/use-pan-zoom";
+import { viewStyles } from "./styles";
 
 interface ServiceHealth {
   span_count: number;
@@ -132,7 +137,13 @@ interface LayoutNode {
   y: number;
 }
 
-function computeLayout(services: ServiceNode[], edges: Edge[]) {
+export type GraphDirection = "vertical" | "horizontal";
+
+function computeLayout(
+  services: ServiceNode[],
+  edges: Edge[],
+  direction: GraphDirection = "vertical",
+) {
   const outgoing = new Map<string, string[]>();
   const incoming = new Map<string, string[]>();
   const svcMap = new Map<string, ServiceNode>();
@@ -180,28 +191,57 @@ function computeLayout(services: ServiceNode[], edges: Edge[]) {
     });
   }
 
-  const svgW = Math.max(maxPerLayer * (NODE_W + NODE_GAP_X) + PAD_X * 2, 500);
-  const svgH = numLayers * (NODE_H + LAYER_GAP_Y) + PAD_TOP * 2;
-
   const nodes: LayoutNode[] = [];
-  for (const [layer, names] of byLayer) {
-    const totalW = names.length * NODE_W + (names.length - 1) * NODE_GAP_X;
-    const startX = (svgW - totalW) / 2;
-    names.forEach((name, col) => {
-      const svc = svcMap.get(name);
-      if (!svc) return;
-      nodes.push({
-        name,
-        svc,
-        layer,
-        col,
-        x: startX + col * (NODE_W + NODE_GAP_X),
-        y: PAD_TOP + layer * (NODE_H + LAYER_GAP_Y),
+  let svgW: number, svgH: number;
+
+  if (direction === "horizontal") {
+    // Layers flow L -> R; nodes within a layer stack vertically.
+    // Vertical inter-node spacing mirrors NODE_GAP_X from vertical mode;
+    // inter-layer horizontal spacing mirrors LAYER_GAP_Y.
+    const INTER_NODE = NODE_GAP_X;
+    const INTER_LAYER_X = LAYER_GAP_Y + NODE_W; // column-to-column distance
+    svgH = Math.max(maxPerLayer * (NODE_H + INTER_NODE) + PAD_TOP * 2, 360);
+    svgW = numLayers * INTER_LAYER_X + PAD_X * 2;
+
+    for (const [layer, names] of byLayer) {
+      const totalH = names.length * NODE_H + (names.length - 1) * INTER_NODE;
+      const startY = (svgH - totalH) / 2;
+      names.forEach((name, col) => {
+        const svc = svcMap.get(name);
+        if (!svc) return;
+        nodes.push({
+          name,
+          svc,
+          layer,
+          col,
+          x: PAD_X + layer * INTER_LAYER_X,
+          y: startY + col * (NODE_H + INTER_NODE),
+        });
       });
-    });
+    }
+  } else {
+    svgW = Math.max(maxPerLayer * (NODE_W + NODE_GAP_X) + PAD_X * 2, 500);
+    svgH = numLayers * (NODE_H + LAYER_GAP_Y) + PAD_TOP * 2;
+
+    for (const [layer, names] of byLayer) {
+      const totalW = names.length * NODE_W + (names.length - 1) * NODE_GAP_X;
+      const startX = (svgW - totalW) / 2;
+      names.forEach((name, col) => {
+        const svc = svcMap.get(name);
+        if (!svc) return;
+        nodes.push({
+          name,
+          svc,
+          layer,
+          col,
+          x: startX + col * (NODE_W + NODE_GAP_X),
+          y: PAD_TOP + layer * (NODE_H + LAYER_GAP_Y),
+        });
+      });
+    }
   }
 
-  return { nodes, svgW, svgH };
+  return { nodes, svgW, svgH, direction };
 }
 
 function connectedSet(name: string, edges: Edge[]): Set<string> {
@@ -279,6 +319,7 @@ function EdgePath({
   dstNode,
   maxCalls,
   dimmed,
+  direction,
   onHover,
   onLeave,
 }: {
@@ -287,18 +328,22 @@ function EdgePath({
   dstNode: LayoutNode;
   maxCalls: number;
   dimmed: boolean;
+  direction: GraphDirection;
   onHover: (e: React.MouseEvent) => void;
   onLeave: () => void;
 }) {
-  const x1 = srcNode.x + NODE_W / 2;
-  const y1 = srcNode.y + NODE_H;
-  const x2 = dstNode.x + NODE_W / 2;
-  const y2 = dstNode.y;
+  const horizontal = direction === "horizontal";
+  const x1 = horizontal ? srcNode.x + NODE_W        : srcNode.x + NODE_W / 2;
+  const y1 = horizontal ? srcNode.y + NODE_H / 2    : srcNode.y + NODE_H;
+  const x2 = horizontal ? dstNode.x                 : dstNode.x + NODE_W / 2;
+  const y2 = horizontal ? dstNode.y + NODE_H / 2    : dstNode.y;
 
-  const dy = Math.abs(y2 - y1);
-  const cpOff = Math.max(dy * 0.4, 30);
+  const primaryDelta = horizontal ? Math.abs(x2 - x1) : Math.abs(y2 - y1);
+  const cpOff = Math.max(primaryDelta * 0.4, 30);
 
-  const d = `M ${x1} ${y1} C ${x1} ${y1 + cpOff}, ${x2} ${y2 - cpOff}, ${x2} ${y2}`;
+  const d = horizontal
+    ? `M ${x1} ${y1} C ${x1 + cpOff} ${y1}, ${x2 - cpOff} ${y2}, ${x2} ${y2}`
+    : `M ${x1} ${y1} C ${x1} ${y1 + cpOff}, ${x2} ${y2 - cpOff}, ${x2} ${y2}`;
   const w = edgeWidth(edge.call_count, maxCalls);
   const label = edgeLabel(edge);
 
@@ -331,7 +376,11 @@ function EdgePath({
       />
       {!dimmed && (
         <polygon
-          points={`${x2},${y2} ${x2 - 4},${y2 - 8} ${x2 + 4},${y2 - 8}`}
+          points={
+            horizontal
+              ? `${x2},${y2} ${x2 - 8},${y2 - 4} ${x2 - 8},${y2 + 4}`
+              : `${x2},${y2} ${x2 - 4},${y2 - 8} ${x2 + 4},${y2 - 8}`
+          }
           fill={theme.blue}
           opacity={0.6}
         />
@@ -370,23 +419,41 @@ function NodeCard({
   node,
   dimmed,
   isHovered,
+  isPinned,
+  isInspected,
+  canInspect,
   fanIn,
   fanOut,
   onHover,
   onMove,
   onLeave,
+  onClick,
+  onToggleInspect,
 }: {
   node: LayoutNode;
   dimmed: boolean;
   isHovered: boolean;
+  isPinned: boolean;
+  isInspected: boolean;
+  canInspect: boolean;
   fanIn: number;
   fanOut: number;
   onHover: (e: React.MouseEvent) => void;
   onMove: (e: React.MouseEvent) => void;
   onLeave: () => void;
+  onClick: (e: React.MouseEvent) => void;
+  onToggleInspect: () => void;
 }) {
   const color = roleColor(node.svc.role);
   const hi = healthIndicator(node.svc);
+  const focused = isHovered || isPinned;
+  const showBadge = isHovered || isInspected;
+  const badgeDisabled = !isInspected && !canInspect;
+  const badgeTitle = isInspected
+    ? "Remove from compare"
+    : canInspect
+      ? "Add to compare"
+      : "Compare panel is full (max 4)";
 
   return (
     <foreignObject x={node.x} y={node.y} width={NODE_W} height={NODE_H}>
@@ -396,12 +463,18 @@ function NodeCard({
         onMouseEnter={onHover}
         onMouseMove={onMove}
         onMouseLeave={onLeave}
+        onClick={onClick}
+        role="button"
+        aria-pressed={isPinned}
+        className={isInspected ? "dep-node-inspected" : undefined}
         style={{
+          position: "relative",
           width: NODE_W,
           height: NODE_H,
-          background: isHovered ? "#1a1d28" : theme.bgSecondary,
+          background: focused ? "#1a1d28" : theme.bgSecondary,
           borderRadius: 8,
-          border: `1px solid ${isHovered ? color : dimmed ? `${theme.border}60` : theme.border}`,
+          border: `1px solid ${isPinned ? "var(--accent)" : focused ? color : dimmed ? `${theme.border}60` : theme.border}`,
+          boxShadow: isPinned ? "0 0 0 1px var(--accent-dim) inset" : undefined,
           padding: "6px 10px",
           cursor: "pointer",
           transition: "all 0.15s",
@@ -412,6 +485,21 @@ function NodeCard({
           boxSizing: "border-box",
         }}
       >
+        {showBadge && (
+          <button
+            className={`dep-inspect-badge${isInspected ? " on" : ""}`}
+            aria-label={badgeTitle}
+            title={badgeTitle}
+            disabled={badgeDisabled}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleInspect();
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {isInspected ? "✓" : "+"}
+          </button>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <div
             style={{
@@ -518,12 +606,45 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   );
 }
 
+const DIRECTION_OPTIONS: DropdownOption<GraphDirection>[] = [
+  { value: "vertical", label: "Vertical (top → bottom)" },
+  { value: "horizontal", label: "Horizontal (left → right)" },
+];
+
 export function App() {
   const [data, setData] = useState<DepData | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<string | null>(null);
+  const [inspected, setInspected] = useState<string[]>([]);
+  const [direction, setDirection] = useState<GraphDirection>("vertical");
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
+
+  // Hover wins for in-motion feedback; pinned takes over once the cursor
+  // leaves so the dim/focus state persists for comparison work.
+  const focusTarget = hovered ?? pinned;
+
+  const inspectedSet = useMemo(() => new Set(inspected), [inspected]);
+  const MAX_INSPECT = 4;
+  const canInspectMore = inspected.length < MAX_INSPECT;
+
+  const toggleInspect = useCallback((name: string) => {
+    setInspected((prev) => {
+      if (prev.includes(name)) return prev.filter((n) => n !== name);
+      if (prev.length >= MAX_INSPECT) return prev;
+      return [...prev, name];
+    });
+  }, []);
+
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.textContent = viewStyles;
+    document.head.appendChild(style);
+    applyTheme();
+    return () => style.remove();
+  }, []);
 
   const { isConnected, error } = useApp({
     appInfo: { name: "APM Service Dependencies", version: "1.0.0" },
@@ -541,8 +662,8 @@ export function App() {
 
   const layout = useMemo(() => {
     if (!data) return null;
-    return computeLayout(data.services, data.edges);
-  }, [data]);
+    return computeLayout(data.services, data.edges, direction);
+  }, [data, direction]);
 
   const panZoom = usePanZoom({
     baseW: layout?.svgW,
@@ -550,9 +671,9 @@ export function App() {
   });
 
   const connected = useMemo(() => {
-    if (!hovered || !data) return null;
-    return connectedSet(hovered, data.edges);
-  }, [hovered, data]);
+    if (!focusTarget || !data) return null;
+    return connectedSet(focusTarget, data.edges);
+  }, [focusTarget, data]);
 
   const maxCalls = useMemo(() => {
     if (!data) return 0;
@@ -659,15 +780,64 @@ export function App() {
 
   const clearNodeTooltip = useCallback(() => setNodeTooltip(null), []);
 
+  const headerPills = (
+    <>
+      {pinned && (
+        <QueryPill onClear={() => setPinned(null)} label="Clear pin">
+          focus: {pinned}
+        </QueryPill>
+      )}
+      {data?.focal_service && <QueryPill>focal: {data.focal_service}</QueryPill>}
+      {data?.filters?.namespace && <QueryPill>namespace: {data.filters.namespace}</QueryPill>}
+      {data?.filters?.lookback && <QueryPill>lookback: {data.filters.lookback}</QueryPill>}
+    </>
+  );
+
+  const Header = (
+    <header className="ds-header">
+      <AppGlyph size={20} />
+      <h1 className="ds-header-title">Service dependencies</h1>
+      <div className="ds-header-actions">
+        {headerPills}
+        <Dropdown<GraphDirection>
+          value={direction}
+          onChange={setDirection}
+          options={DIRECTION_OPTIONS}
+          label="Graph layout"
+          triggerPrefix="Layout:"
+        />
+        <button
+          type="button"
+          className="ds-btn-icon"
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+        >
+          {isFullscreen ? <ExitFullscreenIcon size={14} /> : <FullscreenIcon size={14} />}
+        </button>
+      </div>
+    </header>
+  );
+
   if (error) {
-    return <div style={{ padding: 16, color: theme.red, fontSize: 12 }}>Error: {error.message}</div>;
+    return (
+      <div className="ds-view">
+        {Header}
+        <div className="dep-empty">
+          <div className="dep-empty-title">Error</div>
+          <div className="dep-empty-sub">{error.message}</div>
+        </div>
+      </div>
+    );
   }
   if (!isConnected || !data) {
     return (
-      <div style={{ padding: 20, color: theme.textMuted, fontSize: 12, textAlign: "center" }}>
-        <div>Waiting for service dependency data…</div>
-        <div style={{ marginTop: 8, fontSize: 10, color: theme.textDim }}>
-          Call apm-service-dependencies to map the topology.
+      <div className="ds-view">
+        {Header}
+        <div className="dep-empty">
+          <div className="dep-empty-title">Waiting for service dependency data…</div>
+          <div className="dep-empty-sub">
+            Call apm-service-dependencies to map the topology.
+          </div>
         </div>
       </div>
     );
@@ -675,13 +845,14 @@ export function App() {
 
   if (!data.services.length || !data.edges.length) {
     return (
-      <div style={{ padding: 20, color: theme.textMuted, fontSize: 12 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6, color: theme.amber }}>
-          No service dependency data
-        </div>
-        <div style={{ fontSize: 11, lineHeight: 1.6, color: theme.textMuted }}>
-          {data.hint ||
-            "No APM spans with destination service resources found in the selected window."}
+      <div className="ds-view">
+        {Header}
+        <div className="dep-empty">
+          <div className="dep-empty-title">No service dependency data</div>
+          <div className="dep-empty-sub">
+            {data.hint ||
+              "No APM spans with destination service resources found in the selected window."}
+          </div>
         </div>
       </div>
     );
@@ -694,90 +865,42 @@ export function App() {
   for (const n of nodes) nodeMap.set(n.name, n);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div
-        style={{
-          padding: "12px 14px 8px",
-          borderBottom: `1px solid ${theme.border}`,
-          background: "#0d0f14",
-        }}
-      >
-        <TimeRangeHeader
-          title={
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              Service Dependencies
-              {data.focal_service && (
-                <span
-                  className="mono"
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    color: theme.cyan,
-                    padding: "2px 8px",
-                    borderRadius: 10,
-                    background: `${theme.cyan}18`,
-                  }}
-                >
-                  focal: {data.focal_service}
-                </span>
-              )}
-            </span>
-          }
-          subtitle={
-            data.filters?.namespace ? (
-              <span className="mono">namespace: {data.filters.namespace}</span>
-            ) : undefined
-          }
-          rerunContext={data.rerun_context}
-          onSend={onSend}
-        />
+    <div className="ds-view">
+      {Header}
 
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <StatChip label="services" value={data.service_count} color={theme.blue} />
-          <StatChip label="edges" value={data.edge_count} color={theme.cyan} />
-          <StatChip label="roots" value={stats.roots} color={theme.green} />
-          <StatChip label="leaves" value={stats.leaves} color={theme.amber} />
-          {stats.unhealthy > 0 && (
-            <StatChip label="unhealthy" value={stats.unhealthy} color={theme.red} />
-          )}
-        </div>
-
-        {data.data_coverage_note && (
-          <div
-            style={{
-              marginTop: 4,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: `${theme.amber}14`,
-              border: `1px solid ${theme.amber}44`,
-              color: theme.textMuted,
-              fontSize: 11,
-              lineHeight: 1.4,
-            }}
-          >
-            <span style={{ color: theme.amber, fontWeight: 600, marginRight: 6 }}>
-              Data coverage
-            </span>
-            {data.data_coverage_note}
-          </div>
+      <div className="dep-stats">
+        <StatChip label="services" value={data.service_count} color={theme.blue} />
+        <StatChip label="edges" value={data.edge_count} color={theme.cyan} />
+        <StatChip label="roots" value={stats.roots} color={theme.green} />
+        <StatChip label="leaves" value={stats.leaves} color={theme.amber} />
+        {stats.unhealthy > 0 && (
+          <StatChip label="unhealthy" value={stats.unhealthy} color={theme.red} />
         )}
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "8px 14px", position: "relative" }}>
+      {data.data_coverage_note && (
+        <div className="dep-coverage"><strong>Data coverage</strong>{data.data_coverage_note}</div>
+      )}
+
+      <div className="dep-graph">
         <svg
           ref={panZoom.svgRef}
-          width="100%"
-          height={svgH}
           viewBox={
             panZoom.viewBox
               ? `${panZoom.viewBox.x} ${panZoom.viewBox.y} ${panZoom.viewBox.w} ${panZoom.viewBox.h}`
               : `0 0 ${svgW} ${svgH}`
           }
+          preserveAspectRatio="xMidYMid meet"
           {...panZoom.svgHandlers}
           style={{
             display: "block",
-            margin: "0 auto",
-            maxWidth: svgW,
+            // SVG fills the graph container both ways. viewBox content stays
+            // at its natural aspect and is centered via preserveAspectRatio;
+            // any whitespace lives inside the SVG and blends with the
+            // container background, so the graph canvas fills the available
+            // vertical space cleanly even when the compare strip is empty.
+            width: "100%",
+            height: "100%",
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",
@@ -805,13 +928,23 @@ export function App() {
               setHovered(null);
               panZoom.bgHandlers.onMouseDown(e);
             }}
+            onClick={() => {
+              // Click on empty space (no drag) clears the pin. If the user
+              // panned, React doesn't fire onClick so the pin persists.
+              setPinned(null);
+            }}
           />
 
           {data.edges.map((edge, i) => {
             const src = nodeMap.get(edge.source);
             const dst = nodeMap.get(edge.target);
             if (!src || !dst) return null;
-            const dim = hovered !== null && (!connected || !isEdgeConnected(edge, connected));
+            const edgeTouchesInspected =
+              inspectedSet.has(edge.source) || inspectedSet.has(edge.target);
+            const dim =
+              focusTarget !== null &&
+              !edgeTouchesInspected &&
+              (!connected || !isEdgeConnected(edge, connected));
             return (
               <EdgePath
                 key={`e-${i}`}
@@ -820,6 +953,7 @@ export function App() {
                 dstNode={dst}
                 maxCalls={maxCalls}
                 dimmed={dim}
+                direction={direction}
                 onHover={(e) => handleEdgeHover(e, edge)}
                 onLeave={clearEdgeTooltip}
               />
@@ -827,16 +961,29 @@ export function App() {
           })}
 
           {nodes.map((node) => {
-            const dim = hovered !== null && (!connected || !connected.has(node.name));
+            const isIns = inspectedSet.has(node.name);
+            const dim =
+              focusTarget !== null &&
+              !isIns &&
+              (!connected || !connected.has(node.name));
             const isHov = hovered === node.name;
+            const isPin = pinned === node.name;
             return (
               <NodeCard
                 key={node.name}
                 node={node}
                 dimmed={dim}
                 isHovered={isHov}
+                isPinned={isPin}
+                isInspected={isIns}
+                canInspect={canInspectMore}
                 fanIn={fanMap.get(node.name)?.in ?? 0}
                 fanOut={fanMap.get(node.name)?.out ?? 0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPinned((prev) => (prev === node.name ? null : node.name));
+                }}
+                onToggleInspect={() => toggleInspect(node.name)}
                 onHover={(e) => {
                   if (isDragging) return;
                   setHovered(node.name);
@@ -868,16 +1015,79 @@ export function App() {
         />
       </div>
 
-      <div
-        style={{
-          padding: "8px 14px",
-          borderTop: `1px solid ${theme.border}`,
-          display: "flex",
-          gap: 14,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
+      {inspected.length > 0 && (
+        <div className="dep-inspect-strip" role="region" aria-label="Compare panel">
+          {inspected.map((name) => {
+            const svc = data.services.find((s) => s.name === name);
+            if (!svc) return null;
+            const isFocused = pinned === name;
+            const fan = fanMap.get(name);
+            const hi = healthIndicator(svc);
+            return (
+              <div
+                key={name}
+                className={`dep-inspect-card${isFocused ? " focused" : ""}`}
+              >
+                <div className="dep-inspect-card-head">
+                  <span className="dep-inspect-card-name" title={name}>{name}</span>
+                  {isFocused && <span className="dep-inspect-card-focused-badge">focus</span>}
+                  <button
+                    type="button"
+                    className="dep-inspect-card-close"
+                    aria-label={`Remove ${name} from compare`}
+                    onClick={() => toggleInspect(name)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="dep-inspect-card-meta">
+                  <div className="dep-inspect-card-meta-row">
+                    <strong>{svc.role}</strong>
+                    {svc.language ? ` · ${svc.language}` : ""}
+                    {svc.namespace ? ` · ns: ${svc.namespace}` : ""}
+                  </div>
+                  {svc.health && svc.health.span_count > 0 && (
+                    <div className="dep-inspect-card-meta-row">
+                      <strong>{formatCount(svc.health.span_count)}</strong> spans
+                      {(svc.health.error_count ?? 0) > 0 && (
+                        <>
+                          {" · "}
+                          <span style={{ color: hi.color }}>{hi.label}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {svc.health?.avg_duration_us != null && (
+                    <div className="dep-inspect-card-meta-row">
+                      avg <strong>{formatDuration(svc.health.avg_duration_us)}</strong>
+                      {svc.health.p99_duration_us != null && (
+                        <> · p99 <strong>{formatDuration(svc.health.p99_duration_us)}</strong></>
+                      )}
+                    </div>
+                  )}
+                  {fan && (
+                    <div className="dep-inspect-card-meta-row">
+                      <strong>{fan.in}</strong> upstream · <strong>{fan.out}</strong> downstream
+                    </div>
+                  )}
+                </div>
+                <div className="dep-inspect-card-foot">
+                  <button
+                    type="button"
+                    className="dep-inspect-card-action"
+                    onClick={() => setPinned(isFocused ? null : name)}
+                    disabled={isFocused}
+                  >
+                    {isFocused ? "Focused" : "Make focus"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="dep-legend">
         <LegendDot color={theme.green} label="Root (no upstream)" />
         <LegendDot color={theme.blue} label="Internal" />
         <LegendDot color={theme.amber} label="Leaf (no downstream)" />
@@ -891,21 +1101,15 @@ export function App() {
               opacity: 0.6,
             }}
           />
-          <span style={{ fontSize: 9, color: theme.textMuted }}>Call edge</span>
+          <span style={{ fontSize: 9, color: "var(--text-muted)" }}>Call edge</span>
         </div>
       </div>
 
       {data.investigation_actions?.length ? (
-        <div style={{ padding: "8px 14px", borderTop: `1px solid ${theme.border}` }}>
+        <div className="dep-actions">
           <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
         </div>
       ) : null}
-
-      <style>{`
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 2px; }
-      `}</style>
     </div>
   );
 }
