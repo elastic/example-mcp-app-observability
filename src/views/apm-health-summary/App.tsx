@@ -233,7 +233,7 @@ function AnomalyHeatmap({
   const bucketCount = rows[0].timeline!.length;
 
   return (
-    <div style={{ marginTop: 14 }}>
+    <div>
       <div
         style={{
           fontSize: 11,
@@ -334,62 +334,68 @@ function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
     );
   }
 
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-        <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}>
-          <Donut segments={segments} size={96} />
-        </div>
-        <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: "6px 12px" }}>
-          {segments.map((s) => (
-            <div
-              key={s.label}
+  const hasHeatmap = !!(anomalies.top_entities?.length && anomalies.timeline_window);
+
+  // Summary column: donut on the left, stacked severity pills on the right.
+  // When a heatmap is present the whole block sits beside it on a single
+  // row (flex-wrap makes it fall back to stacked on narrow viewports).
+  const SummaryBlock = (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: "0 0 auto" }}>
+      <Donut segments={segments} size={96} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {segments.map((s) => (
+          <div
+            key={s.label}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "2px 10px",
+              background: `${s.color}18`,
+              border: `1px solid ${s.color}40`,
+              borderRadius: 999,
+            }}
+          >
+            <span
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "2px 10px",
-                background: `${s.color}18`,
-                border: `1px solid ${s.color}40`,
-                borderRadius: 999,
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: s.color,
+                display: "inline-block",
+              }}
+            />
+            <span
+              style={{
+                fontSize: 11,
+                color: s.color,
+                textTransform: "lowercase",
+                fontWeight: 600,
+                letterSpacing: 0.3,
               }}
             >
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: s.color,
-                  display: "inline-block",
-                }}
-              />
-              <span
-                style={{
-                  fontSize: 11,
-                  color: s.color,
-                  textTransform: "lowercase",
-                  fontWeight: 600,
-                  letterSpacing: 0.3,
-                }}
-              >
-                {s.label}
-              </span>
-              <span
-                className="mono"
-                style={{ fontSize: 12, fontWeight: 600, color: s.color }}
-              >
-                {s.value}
-              </span>
-            </div>
-          ))}
-        </div>
+              {s.label}
+            </span>
+            <span className="mono" style={{ fontSize: 12, fontWeight: 600, color: s.color, marginLeft: "auto" }}>
+              {s.value}
+            </span>
+          </div>
+        ))}
       </div>
-      {anomalies.top_entities && anomalies.timeline_window && (
+    </div>
+  );
+
+  if (!hasHeatmap) return SummaryBlock;
+
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 24, alignItems: "flex-start" }}>
+      {SummaryBlock}
+      <div style={{ flex: "1 1 360px", minWidth: 280 }}>
         <AnomalyHeatmap
-          entities={anomalies.top_entities}
-          window={anomalies.timeline_window}
+          entities={anomalies.top_entities!}
+          window={anomalies.timeline_window!}
         />
-      )}
+      </div>
     </div>
   );
 }
