@@ -24,20 +24,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
-import { theme, baseStyles } from "@shared/theme";
+import { theme, baseStyles, applyTheme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
   StatCard,
   StatGrid,
   SectionCard,
-  BadgeTone,
   HBarRow,
   InvestigationActions,
   InvestigationAction,
-  TimeRangeHeader,
   RerunContext,
   SectionTitleWithToggle,
   CondensedChips,
+  SeverityChip,
+  Severity as DSSeverity,
+  QueryPill,
 } from "@shared/components";
+import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
+import { viewStyles } from "./styles";
 
 interface MetricTimelineBucket {
   ts: number;
@@ -157,7 +161,7 @@ const SEV_COLORS: Record<string, string> = {
   minor: "#56B4E9",
 };
 const SEV_ORDER = ["critical", "major", "minor"];
-const HEALTH_TONE: Record<string, BadgeTone> = {
+const HEALTH_SEVERITY: Record<string, DSSeverity> = {
   critical: "critical",
   degraded: "major",
   healthy: "ok",
@@ -965,6 +969,7 @@ function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
   // Default to detail (sparklines / bars) — that's the headline view. Toggle
   // collapses to a CondensedChips summary strip for compact scanning.
   const [memDetailed, setMemDetailed] = useState(true);
@@ -972,8 +977,9 @@ export function App() {
 
   useEffect(() => {
     const style = document.createElement("style");
-    style.textContent = baseStyles;
+    style.textContent = baseStyles + viewStyles;
     document.head.appendChild(style);
+    applyTheme();
     return () => style.remove();
   }, []);
 
@@ -1007,70 +1013,82 @@ export function App() {
     [data]
   );
 
+  const severity: DSSeverity | null = data
+    ? HEALTH_SEVERITY[data.overall_health] ?? "minor"
+    : null;
+
+  const Header = (
+    <header className="ds-header">
+      <AppGlyph size={20} />
+      <h1 className="ds-header-title">Health summary</h1>
+      <div className="ds-header-actions">
+        {severity && data && (
+          <SeverityChip severity={severity} label={data.overall_health} />
+        )}
+        {data?.namespace && <QueryPill>namespace: {data.namespace}</QueryPill>}
+        {data?.lookback && <QueryPill>lookback: {data.lookback}</QueryPill>}
+        {data?.exclude_filter && <QueryPill>excluded: {data.exclude_filter}</QueryPill>}
+        <button
+          type="button"
+          className="ds-btn-icon"
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+        >
+          {isFullscreen ? <ExitFullscreenIcon size={14} /> : <FullscreenIcon size={14} />}
+        </button>
+      </div>
+    </header>
+  );
+
   if (!data) {
     return (
-      <div style={{ padding: 24, textAlign: "center", color: theme.textMuted }}>
-        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for health data…</div>
-        <div style={{ fontSize: 11 }}>Call apm-health-summary to populate this view.</div>
+      <div className="ds-view">
+        {Header}
+        <div className="health-empty">
+          <div className="health-empty-title">Waiting for health data…</div>
+          <div className="health-empty-sub">Call apm-health-summary to populate this view.</div>
+        </div>
       </div>
     );
   }
 
-  const tone = HEALTH_TONE[data.overall_health] || "neutral";
-
   return (
-    <div style={{ padding: "14px 16px" }}>
-      {data.namespace_candidates?.length ? (
-        <div
-          style={{
-            marginBottom: 10,
-            padding: "8px 12px",
-            background: `${theme.amber}18`,
-            border: `1px solid ${theme.amber}55`,
-            borderRadius: 6,
-            fontSize: 11,
-            color: theme.text,
-          }}
-        >
-          <div style={{ fontWeight: 700, color: theme.amber, marginBottom: 4 }}>
-            Namespace not found
+    <div className="ds-view">
+      {Header}
+      <div className="health-body">
+        {data.namespace_candidates?.length ? (
+          <div className="health-namespace-warn">
+            <div className="health-namespace-warn-title">Namespace not found</div>
+            <div>
+              "{data.namespace_requested || data.namespace}" did not match. Did you mean:{" "}
+              {data.namespace_candidates.slice(0, 5).map((c, i) => (
+                <span key={c} className="mono">
+                  {i > 0 ? ", " : ""}
+                  {c}
+                </span>
+              ))}
+              ?
+            </div>
           </div>
-          <div>
-            "{data.namespace_requested || data.namespace}" did not match. Did you mean:{" "}
-            {data.namespace_candidates.slice(0, 5).map((c, i) => (
-              <span key={c} className="mono">
-                {i > 0 ? ", " : ""}
-                {c}
-              </span>
-            ))}
-            ?
-          </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      {/* Header */}
-      <TimeRangeHeader
-        title={<span className="mono">{data.namespace}</span>}
-        subtitle={
-          <>
-            {data.exclude_filter ? `${data.exclude_filter} excluded` : null}
-            {data.namespace_requested && (
-              <span
-                style={{
-                  marginLeft: data.exclude_filter ? 8 : 0,
-                  color: theme.amber,
-                  fontStyle: "italic",
-                }}
-              >
-                resolved from "{data.namespace_requested}"
-              </span>
-            )}
-          </>
-        }
-        status={{ tone, label: data.overall_health }}
-        rerunContext={data.rerun_context}
-        onSend={onSend}
-      />
+        {data.namespace_requested && !data.namespace_candidates?.length && (
+          <div
+            className="mono"
+            style={{
+              fontSize: 11,
+              color: theme.amber,
+              fontStyle: "italic",
+              marginBottom: 10,
+            }}
+          >
+            resolved from "{data.namespace_requested}"
+          </div>
+        )}
+
+        {data.rerun_context && (
+          <RerunPresets context={data.rerun_context} onSend={onSend} />
+        )}
 
       {/* KPI tile rows — one per backend. Each tile = headline value + optional
        * sparkline (or bars for discrete-rate metrics) + status chip when a
@@ -1239,7 +1257,57 @@ export function App() {
         </SectionCard>
       )}
 
-      <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+        <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Compact lookback-preset strip. Replaces the chip row that used to live
+ * inside TimeRangeHeader — same rerun semantics (substitutes `{lookback}`
+ * into the provided `prompt_template` and fires `onSend`) but no longer
+ * wrapped in a card, since the header now carries the title + status.
+ */
+const DEFAULT_RERUN_PRESETS = ["15m", "1h", "6h", "24h"];
+
+function RerunPresets({
+  context,
+  onSend,
+}: {
+  context: RerunContext;
+  onSend?: (prompt: string) => void;
+}) {
+  const presets = context.presets ?? DEFAULT_RERUN_PRESETS;
+  const current = context.current_lookback;
+  const canRerun = !!onSend;
+  return (
+    <div className="health-rerun-strip">
+      <span className="health-rerun-label">Time range</span>
+      <div className="health-rerun-presets">
+        {presets.map((p) => {
+          const active = p === current;
+          return (
+            <button
+              key={p}
+              type="button"
+              disabled={!canRerun || active}
+              className={`health-rerun-btn${active ? " is-active" : ""}`}
+              onClick={() => {
+                if (!canRerun || active) return;
+                onSend!(context.prompt_template.replace(/\{lookback\}/g, p));
+              }}
+            >
+              {p}
+            </button>
+          );
+        })}
+      </div>
+      {current && !presets.includes(current) && (
+        <span className="mono" style={{ fontSize: 10, color: theme.textMuted }}>
+          current: {current}
+        </span>
+      )}
     </div>
   );
 }
