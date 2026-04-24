@@ -21,7 +21,7 @@
  * user clicks a time-range chip); that reset is intentional and acceptable.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { theme, baseStyles } from "@shared/theme";
@@ -260,12 +260,43 @@ function AnomalyHeatmap({
   window: TimelineWindow;
 }) {
   const rows = entities.filter((e) => (e.timeline?.length ?? 0) > 0);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = useState<{
+    entity: string;
+    ts: number;
+    score: number;
+    severity: "critical" | "major" | "minor" | "none";
+    x: number;
+    y: number;
+  } | null>(null);
+
   if (rows.length === 0) return null;
 
   const bucketCount = rows[0].timeline!.length;
 
+  const onCellEnter = (
+    e: React.MouseEvent,
+    entity: string,
+    ts: number,
+    score: number,
+    severity: "critical" | "major" | "minor" | "none",
+  ) => {
+    if (!wrapRef.current) return;
+    const cell = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const wrap = wrapRef.current.getBoundingClientRect();
+    setHover({
+      entity,
+      ts,
+      score,
+      severity,
+      x: cell.left - wrap.left + cell.width / 2,
+      y: cell.top - wrap.top,
+    });
+  };
+  const onCellLeave = () => setHover(null);
+
   return (
-    <div>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       <div
         style={{
           fontSize: 11,
@@ -282,10 +313,11 @@ function AnomalyHeatmap({
       <div
         style={{
           display: "grid",
-          // Label column gets ~45% so longer entity names like
-          // "host.name=node-us-east-4" have breathing room; cells take the
-          // remaining ~55% (down from ~78% — roughly 1/3 narrower per cell).
-          gridTemplateColumns: "minmax(180px, 45%) 1fr",
+          // Label column auto-sizes to the longest visible entity name (capped
+          // at 280px with ellipsis) so the heatmap starts right after the
+          // labels — no awkward gap to scan across when names are short.
+          gridTemplateColumns: "minmax(0, fit-content(280px)) 1fr",
+          columnGap: 12,
           rowGap: 4,
           alignItems: "center",
         }}
@@ -300,7 +332,6 @@ function AnomalyHeatmap({
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                paddingRight: 10,
               }}
               title={row.entity}
             >
@@ -316,19 +347,22 @@ function AnomalyHeatmap({
               {row.timeline!.map((b, i) => {
                 const sev = severityFromScore(b.max_score);
                 const color = sev === "none" ? undefined : SEV_COLORS[sev];
+                const isHovered =
+                  hover?.entity === row.entity && hover?.ts === b.ts;
                 return (
                   <div
                     key={i}
-                    title={
-                      sev === "none"
-                        ? `${fmtAxisTime(b.ts)} · no anomaly`
-                        : `${fmtAxisTime(b.ts)} · max score ${b.max_score}`
-                    }
+                    onMouseEnter={(e) => onCellEnter(e, row.entity, b.ts, b.max_score, sev)}
+                    onMouseLeave={onCellLeave}
                     style={{
                       height: 20,
                       borderRadius: 3,
+                      cursor: "pointer",
                       background: color ?? "var(--bg-tertiary)",
                       border: color ? `1px solid ${color}88` : "1px solid var(--border-subtle)",
+                      outline: isHovered ? `2px solid ${theme.text}` : undefined,
+                      outlineOffset: isHovered ? -1 : undefined,
+                      transition: "outline 0.08s",
                     }}
                   />
                 );
@@ -352,6 +386,22 @@ function AnomalyHeatmap({
           <span>{fmtAxisTime(window.end_ms)}</span>
         </div>
       </div>
+
+      {hover && (
+        <ChartTooltip x={hover.x} y={hover.y}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: "center" }}>
+            <div style={{ color: theme.text, fontWeight: 600 }}>{shortenEntity(hover.entity)}</div>
+            <div style={{ color: theme.textMuted }}>{fmtAxisTime(hover.ts)}</div>
+            {hover.severity === "none" ? (
+              <div style={{ color: theme.textMuted }}>no anomaly</div>
+            ) : (
+              <div style={{ color: SEV_COLORS[hover.severity] }}>
+                {hover.severity} · score {hover.score}
+              </div>
+            )}
+          </div>
+        </ChartTooltip>
+      )}
     </div>
   );
 }
@@ -449,21 +499,72 @@ function podMemColor(mb: number, max: number): string {
 }
 
 /**
+ * Floating tooltip used by hover-enabled charts (Sparkline, SparkBars,
+ * AnomalyHeatmap). Positioned absolutely relative to a `position: relative`
+ * parent. Uses pointer-events: none so it never intercepts the cursor.
+ */
+function ChartTooltip({
+  x,
+  y,
+  children,
+}: {
+  x: number;
+  y: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x,
+        top: y - 36,
+        transform: "translateX(-50%)",
+        background: theme.bgTertiary,
+        border: `1px solid ${theme.borderStrong}`,
+        borderRadius: 4,
+        padding: "4px 8px",
+        fontSize: 10,
+        fontFamily: "'JetBrains Mono', monospace",
+        color: theme.text,
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+        zIndex: 50,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
  * Small SVG sparkline. Fixed-height row artifact — width flexes via a parent
  * container. Renders a line with an optional filled area under it; peak
- * marker drops a small dot on the highest sample.
+ * marker drops a small dot on the highest sample. When `timestamps` and
+ * `formatValue` are provided, hover shows a tooltip with the value at the
+ * nearest bucket plus a vertical cursor guide line.
  */
 function Sparkline({
   values,
+  timestamps,
   color,
   height = 22,
   showPeak = true,
+  formatValue,
+  formatTime,
 }: {
   values: number[];
+  timestamps?: number[];
   color: string;
   height?: number;
   showPeak?: boolean;
+  formatValue?: (v: number) => string;
+  formatTime?: (ts: number) => string;
 }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = useState<{ idx: number; x: number } | null>(null);
+  const interactive = !!timestamps && !!formatValue;
+
   if (!values.length) return null;
   const W = 120;
   const H = height;
@@ -472,22 +573,51 @@ function Sparkline({
   const max = Math.max(...values);
   const min = Math.min(...values);
   const range = max - min || 1;
-  // Anchor at the cell top (PAD_Y) so identical values map to the midline
-  // when range is 0, avoiding a divide-by-zero flatline at the bottom.
   const y = (v: number) => PAD_Y + plotH - ((v - min) / range) * plotH;
   const x = (i: number) =>
     values.length === 1 ? W / 2 : (i / (values.length - 1)) * W;
   const line = values.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
   const area = `${line} L ${W} ${H} L 0 ${H} Z`;
   const peakIdx = values.indexOf(max);
+
+  const onMove = (e: React.MouseEvent) => {
+    if (!interactive || !wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const xPx = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const ratio = rect.width === 0 ? 0 : xPx / rect.width;
+    const idx = Math.max(0, Math.min(values.length - 1, Math.round(ratio * (values.length - 1))));
+    setHover({ idx, x: (idx / Math.max(1, values.length - 1)) * rect.width });
+  };
+  const onLeave = () => setHover(null);
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
-      <path d={area} fill={color} opacity={0.12} />
-      <path d={line} fill="none" stroke={color} strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      {showPeak && peakIdx >= 0 && (
-        <circle cx={x(peakIdx)} cy={y(max)} r={1.8} fill={color} vectorEffect="non-scaling-stroke" />
+    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        onMouseMove={interactive ? onMove : undefined}
+        onMouseLeave={interactive ? onLeave : undefined}
+        style={{ width: "100%", height: H, display: "block", cursor: interactive ? "crosshair" : "default" }}
+      >
+        <path d={area} fill={color} opacity={0.12} />
+        <path d={line} fill="none" stroke={color} strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        {showPeak && peakIdx >= 0 && (
+          <circle cx={x(peakIdx)} cy={y(max)} r={1.8} fill={color} vectorEffect="non-scaling-stroke" />
+        )}
+        {hover && (
+          <>
+            <line x1={x(hover.idx)} x2={x(hover.idx)} y1={0} y2={H} stroke={color} strokeWidth={1} opacity={0.5} vectorEffect="non-scaling-stroke" />
+            <circle cx={x(hover.idx)} cy={y(values[hover.idx])} r={2.6} fill={color} vectorEffect="non-scaling-stroke" />
+          </>
+        )}
+      </svg>
+      {hover && timestamps && formatValue && (
+        <ChartTooltip x={hover.x} y={0}>
+          {formatTime ? `${formatTime(timestamps[hover.idx])} · ` : ""}
+          {formatValue(values[hover.idx])}
+        </ChartTooltip>
       )}
-    </svg>
+    </div>
   );
 }
 
@@ -499,16 +629,20 @@ function Sparkline({
 function SparklineRow({
   label,
   values,
+  timestamps,
   color,
   currentLabel,
   peakLabel,
+  formatValue,
   inspect,
 }: {
   label: React.ReactNode;
   values: number[];
+  timestamps?: number[];
   color: string;
   currentLabel: string;
   peakLabel?: string;
+  formatValue?: (v: number) => string;
   inspect?: { onClick: () => void; title?: string };
 }) {
   return (
@@ -535,7 +669,13 @@ function SparklineRow({
         {label}
       </div>
       <div style={{ flex: "1 1 0", minWidth: 0 }}>
-        <Sparkline values={values} color={color} />
+        <Sparkline
+          values={values}
+          timestamps={timestamps}
+          color={color}
+          formatValue={formatValue}
+          formatTime={fmtAxisTime}
+        />
       </div>
       <div
         className="mono"
@@ -585,46 +725,93 @@ function fmtThroughput(v: number): string {
   return `${Math.round(v)}`;
 }
 
+/** Format a KPI tile value for the hover tooltip. Uses the tile's unit hint
+ *  to pick a display ("412 ms", "62%", "13.7K rpm", etc). */
+function formatTileValue(v: number, unit?: string): string {
+  if (unit === "rpm") return `${fmtThroughput(v)} rpm`;
+  if (unit === "ms") return `${Math.round(v)} ms`;
+  if (unit === "%") return `${v.toFixed(1)}%`;
+  return v % 1 === 0 ? `${v}` : v.toFixed(1);
+}
+
 const STATUS_COLOR: Record<TileStatus, string> = {
   ok: SEV_COLORS.minor,        // sky blue (passive ok)
   degraded: SEV_COLORS.major,
   critical: SEV_COLORS.critical,
 };
 
-/** Mini bar chart sized identically to Sparkline for the restarts tile. */
+/** Mini bar chart sized identically to Sparkline for the restarts tile.
+ *  Hover shows a tooltip with the bucket value when timestamps + formatter
+ *  are provided. */
 function SparkBars({
   values,
+  timestamps,
   color,
   height = 22,
+  formatValue,
+  formatTime,
 }: {
   values: number[];
+  timestamps?: number[];
   color: string;
   height?: number;
+  formatValue?: (v: number) => string;
+  formatTime?: (ts: number) => string;
 }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = useState<{ idx: number; x: number } | null>(null);
+  const interactive = !!timestamps && !!formatValue;
+
   if (!values.length) return null;
   const W = 120;
   const H = height;
   const max = Math.max(...values, 1);
   const barW = W / values.length;
+
+  const onMove = (e: React.MouseEvent) => {
+    if (!interactive || !wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const xPx = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const ratio = rect.width === 0 ? 0 : xPx / rect.width;
+    const idx = Math.max(0, Math.min(values.length - 1, Math.floor(ratio * values.length)));
+    setHover({ idx, x: ((idx + 0.5) / values.length) * rect.width });
+  };
+  const onLeave = () => setHover(null);
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
-      {values.map((v, i) => {
-        const h = (v / max) * (H - 2);
-        const x = i * barW + barW * 0.15;
-        const w = barW * 0.7;
-        return (
-          <rect
-            key={i}
-            x={x.toFixed(1)}
-            y={(H - h).toFixed(1)}
-            width={w.toFixed(1)}
-            height={h.toFixed(1)}
-            fill={color}
-            opacity={v > 0 ? 0.85 : 0.15}
-          />
-        );
-      })}
-    </svg>
+    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        onMouseMove={interactive ? onMove : undefined}
+        onMouseLeave={interactive ? onLeave : undefined}
+        style={{ width: "100%", height: H, display: "block", cursor: interactive ? "crosshair" : "default" }}
+      >
+        {values.map((v, i) => {
+          const h = (v / max) * (H - 2);
+          const x = i * barW + barW * 0.15;
+          const w = barW * 0.7;
+          const isHovered = hover?.idx === i;
+          return (
+            <rect
+              key={i}
+              x={x.toFixed(1)}
+              y={(H - h).toFixed(1)}
+              width={w.toFixed(1)}
+              height={h.toFixed(1)}
+              fill={color}
+              opacity={isHovered ? 1 : v > 0 ? 0.85 : 0.15}
+            />
+          );
+        })}
+      </svg>
+      {hover && timestamps && formatValue && (
+        <ChartTooltip x={hover.x} y={0}>
+          {formatTime ? `${formatTime(timestamps[hover.idx])} · ` : ""}
+          {formatValue(values[hover.idx])}
+        </ChartTooltip>
+      )}
+    </div>
   );
 }
 
@@ -702,9 +889,22 @@ function KpiTileCard({
       {values.length > 0 ? (
         <>
           {tile.spark === "bar" ? (
-            <SparkBars values={values} color={accent} />
+            <SparkBars
+              values={values}
+              timestamps={tile.timeline?.map((b) => b.ts)}
+              color={accent}
+              formatValue={(v) => formatTileValue(v, tile.unit)}
+              formatTime={fmtAxisTime}
+            />
           ) : (
-            <Sparkline values={values} color={accent} showPeak={false} />
+            <Sparkline
+              values={values}
+              timestamps={tile.timeline?.map((b) => b.ts)}
+              color={accent}
+              showPeak={false}
+              formatValue={(v) => formatTileValue(v, tile.unit)}
+              formatTime={fmtAxisTime}
+            />
           )}
           {window && (
             <div
@@ -938,15 +1138,18 @@ export function App() {
             pods.some((p) => p.timeline?.length) ? (
               pods.slice(0, 6).map((p) => {
                 const vals = p.timeline?.map((b) => b.value) ?? [];
+                const tss = p.timeline?.map((b) => b.ts);
                 const peak = p.peak_memory_mb ?? (vals.length ? Math.max(...vals) : p.avg_memory_mb);
                 return (
                   <SparklineRow
                     key={p.pod}
                     label={shortenPod(p.pod)}
                     values={vals.length ? vals : [p.avg_memory_mb]}
+                    timestamps={tss}
                     color={podMemColor(p.avg_memory_mb, maxMem)}
                     currentLabel={`${p.avg_memory_mb.toFixed(0)} MB`}
                     peakLabel={`${peak.toFixed(0)} MB`}
+                    formatValue={(v) => `${v.toFixed(0)} MB`}
                   />
                 );
               })
@@ -996,15 +1199,18 @@ export function App() {
             services.some((s) => s.timeline?.length) ? (
               services.slice(0, 8).map((s) => {
                 const vals = s.timeline?.map((b) => b.value) ?? [];
+                const tss = s.timeline?.map((b) => b.ts);
                 const peak = s.peak_throughput ?? (vals.length ? Math.max(...vals) : s.throughput);
                 return (
                   <SparklineRow
                     key={s.service}
                     label={s.service}
                     values={vals.length ? vals : [s.throughput]}
+                    timestamps={tss}
                     color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
                     currentLabel={`${fmtThroughput(s.throughput)} rpm`}
                     peakLabel={`${fmtThroughput(peak)} rpm`}
+                    formatValue={(v) => `${fmtThroughput(v)} rpm`}
                   />
                 );
               })
