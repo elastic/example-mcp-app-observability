@@ -35,15 +35,20 @@ import {
   InvestigationAction,
   TimeRangeHeader,
   RerunContext,
-  SectionTitleWithToggle,
-  CondensedChips,
 } from "@shared/components";
+
+interface MetricTimelineBucket {
+  ts: number;
+  value: number;
+}
 
 interface ServiceDetail {
   service: string;
   throughput: number;
   avg_latency_ms?: number;
   error_rate_pct?: number;
+  timeline?: MetricTimelineBucket[];
+  peak_throughput?: number;
 }
 
 interface DegradedService {
@@ -55,6 +60,8 @@ interface PodDetail {
   pod: string;
   avg_memory_mb: number;
   avg_cpu_cores?: number;
+  timeline?: MetricTimelineBucket[];
+  peak_memory_mb?: number;
 }
 
 interface TimelineBucket {
@@ -96,9 +103,10 @@ interface HealthData {
     total: number;
     degraded_count: number;
     details: ServiceDetail[];
+    timeline_window?: TimelineWindow;
   };
   degraded_services: DegradedService[];
-  pods?: { total: number; top_memory: PodDetail[] };
+  pods?: { total: number; top_memory: PodDetail[]; timeline_window?: TimelineWindow };
   pods_note?: string;
   anomalies?: AnomalyInfo;
   anomalies_note?: string;
@@ -413,11 +421,146 @@ function podMemColor(mb: number, max: number): string {
   return theme.textDim;
 }
 
+/**
+ * Small SVG sparkline. Fixed-height row artifact — width flexes via a parent
+ * container. Renders a line with an optional filled area under it; peak
+ * marker drops a small dot on the highest sample.
+ */
+function Sparkline({
+  values,
+  color,
+  height = 22,
+  showPeak = true,
+}: {
+  values: number[];
+  color: string;
+  height?: number;
+  showPeak?: boolean;
+}) {
+  if (!values.length) return null;
+  const W = 120;
+  const H = height;
+  const PAD_Y = 2;
+  const plotH = H - PAD_Y * 2;
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = max - min || 1;
+  // Anchor at the cell top (PAD_Y) so identical values map to the midline
+  // when range is 0, avoiding a divide-by-zero flatline at the bottom.
+  const y = (v: number) => PAD_Y + plotH - ((v - min) / range) * plotH;
+  const x = (i: number) =>
+    values.length === 1 ? W / 2 : (i / (values.length - 1)) * W;
+  const line = values.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
+  const peakIdx = values.indexOf(max);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: H, display: "block" }}>
+      <path d={area} fill={color} opacity={0.12} />
+      <path d={line} fill="none" stroke={color} strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      {showPeak && peakIdx >= 0 && (
+        <circle cx={x(peakIdx)} cy={y(max)} r={1.8} fill={color} vectorEffect="non-scaling-stroke" />
+      )}
+    </svg>
+  );
+}
+
+/**
+ * Row for a metric list (top pods / services by throughput etc.) with a
+ * sparkline occupying the middle flex slot. Right side shows the current
+ * value + optional peak.
+ */
+function SparklineRow({
+  label,
+  values,
+  color,
+  currentLabel,
+  peakLabel,
+  inspect,
+}: {
+  label: React.ReactNode;
+  values: number[];
+  color: string;
+  currentLabel: string;
+  peakLabel?: string;
+  inspect?: { onClick: () => void; title?: string };
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "6px 0",
+        borderBottom: `1px solid ${theme.border}`,
+      }}
+    >
+      <div
+        style={{
+          flex: "0 0 32%",
+          minWidth: 0,
+          fontSize: 12,
+          color: theme.text,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </div>
+      <div style={{ flex: "1 1 0", minWidth: 0 }}>
+        <Sparkline values={values} color={color} />
+      </div>
+      <div
+        className="mono"
+        style={{
+          flex: "0 0 auto",
+          fontSize: 11,
+          color: theme.text,
+          textAlign: "right",
+          whiteSpace: "nowrap",
+          minWidth: 72,
+        }}
+      >
+        {currentLabel}
+        {peakLabel && (
+          <div style={{ fontSize: 10, color: theme.textMuted }}>peak {peakLabel}</div>
+        )}
+      </div>
+      {inspect && (
+        <button
+          onClick={inspect.onClick}
+          title={inspect.title ?? "Inspect"}
+          aria-label={inspect.title ?? "Inspect"}
+          style={{
+            flex: "0 0 auto",
+            width: 22,
+            height: 22,
+            padding: 0,
+            background: "transparent",
+            border: "none",
+            color: theme.textMuted,
+            cursor: "pointer",
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="M10.5 10.5 L14 14" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+function fmtThroughput(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return `${Math.round(v)}`;
+}
+
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
-  const [memDetailed, setMemDetailed] = useState(false);
-  const [svcDetailed, setSvcDetailed] = useState(false);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -566,53 +709,36 @@ export function App() {
         </SectionCard>
       ) : null}
 
-      {/* Top pods by memory — condensed chip strip by default, toggle to HBarRow list */}
+      {/* Top pods by memory — sparkline per row when the tool returned
+       * per-pod timelines, plain HBarRow list as fallback otherwise. */}
       {pods.length ? (
-        <SectionCard
-          title={
-            <SectionTitleWithToggle
-              label="Top pods by memory"
-              detailed={memDetailed}
-              onToggle={() => setMemDetailed((v) => !v)}
-            />
-          }
-        >
-          {memDetailed ? (
-            <>
-              <div
-                style={{
-                  display: "flex",
-                  fontSize: 10,
-                  color: theme.textDim,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.3,
-                  padding: "2px 0 4px",
-                }}
-              >
-                <div style={{ flex: "0 0 35%" }}>pod</div>
-                <div style={{ flex: "0 0 auto", minWidth: 70, textAlign: "right" }}>memory</div>
-                <div style={{ flex: 1, paddingLeft: 10 }}>usage</div>
-              </div>
-              {pods.slice(0, 6).map((p) => (
-                <HBarRow
+        <SectionCard title="Top pods by memory">
+          {pods.some((p) => p.timeline?.length) ? (
+            pods.slice(0, 6).map((p) => {
+              const vals = p.timeline?.map((b) => b.value) ?? [];
+              const peak = p.peak_memory_mb ?? (vals.length ? Math.max(...vals) : p.avg_memory_mb);
+              return (
+                <SparklineRow
                   key={p.pod}
                   label={shortenPod(p.pod)}
-                  value={p.avg_memory_mb}
-                  valueLabel={`${p.avg_memory_mb.toFixed(1)} MB`}
-                  max={maxMem}
+                  values={vals.length ? vals : [p.avg_memory_mb]}
                   color={podMemColor(p.avg_memory_mb, maxMem)}
+                  currentLabel={`${p.avg_memory_mb.toFixed(0)} MB`}
+                  peakLabel={`${peak.toFixed(0)} MB`}
                 />
-              ))}
-            </>
+              );
+            })
           ) : (
-            <CondensedChips
-              items={pods.slice(0, 6).map((p) => ({
-                key: p.pod,
-                label: shortenPod(p.pod),
-                value: `${p.avg_memory_mb.toFixed(0)} MB`,
-                color: podMemColor(p.avg_memory_mb, maxMem),
-              }))}
-            />
+            pods.slice(0, 6).map((p) => (
+              <HBarRow
+                key={p.pod}
+                label={shortenPod(p.pod)}
+                value={p.avg_memory_mb}
+                valueLabel={`${p.avg_memory_mb.toFixed(1)} MB`}
+                max={maxMem}
+                color={podMemColor(p.avg_memory_mb, maxMem)}
+              />
+            ))
           )}
         </SectionCard>
       ) : data.pods_note ? (
@@ -621,18 +747,26 @@ export function App() {
         </SectionCard>
       ) : null}
 
-      {/* Service throughput — condensed chip strip by default, toggle to HBarRow list */}
+      {/* Service throughput — same pattern: sparkline per row when the tool
+       * returned per-service timelines, HBarRow list fallback otherwise. */}
       {services.length > 0 && (
-        <SectionCard
-          title={
-            <SectionTitleWithToggle
-              label={`Service throughput (rpm, last ${data.lookback})`}
-              detailed={svcDetailed}
-              onToggle={() => setSvcDetailed((v) => !v)}
-            />
-          }
-        >
-          {svcDetailed ? (
+        <SectionCard title={`Service throughput · last ${data.lookback}`}>
+          {services.some((s) => s.timeline?.length) ? (
+            services.slice(0, 8).map((s) => {
+              const vals = s.timeline?.map((b) => b.value) ?? [];
+              const peak = s.peak_throughput ?? (vals.length ? Math.max(...vals) : s.throughput);
+              return (
+                <SparklineRow
+                  key={s.service}
+                  label={s.service}
+                  values={vals.length ? vals : [s.throughput]}
+                  color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
+                  currentLabel={`${fmtThroughput(s.throughput)} rpm`}
+                  peakLabel={`${fmtThroughput(peak)} rpm`}
+                />
+              );
+            })
+          ) : (
             services.slice(0, 8).map((s) => (
               <HBarRow
                 key={s.service}
@@ -643,15 +777,6 @@ export function App() {
                 color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
               />
             ))
-          ) : (
-            <CondensedChips
-              items={services.slice(0, 8).map((s) => ({
-                key: s.service,
-                label: s.service,
-                value: `${s.throughput} rpm`,
-                color: degradedSet.has(s.service) ? theme.redSoft : theme.textMuted,
-              }))}
-            />
           )}
         </SectionCard>
       )}

@@ -25,18 +25,32 @@ import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
 
+interface MetricTimelineBucket {
+  ts: number;    // bucket start, epoch ms
+  value: number; // MAX in bucket for gauge metrics, SUM/COUNT for rates
+}
+
 interface ServiceRow {
   service: string;
   throughput: number;
   error_rate_pct?: number;
   avg_latency_ms?: number;
+  timeline?: MetricTimelineBucket[];
+  peak_throughput?: number;
 }
 
 interface PodRow {
   pod: string;
   avg_memory_mb: number;
   avg_cpu_cores: number;
+  timeline?: MetricTimelineBucket[];
+  peak_memory_mb?: number;
 }
+
+// Timeline bucket span for pods/services sparklines. 12 cells over a 1h
+// lookback — same density as the anomaly heatmap.
+const METRIC_TIMELINE_SPAN_MIN = 5;
+const METRIC_TIMELINE_SPAN_MS = METRIC_TIMELINE_SPAN_MIN * 60 * 1000;
 
 async function queryServiceTransactionRollup(
   serviceFilter: string,
@@ -107,6 +121,89 @@ async function queryServices(
   const otel = await queryServiceTraces(serviceFilter, lookback, errors);
   if (otel.length) return otel;
   return queryServiceTracesClassic(serviceFilter, lookback, errors);
+}
+
+/**
+ * Per-service throughput bucketed over the lookback so each service row can
+ * render a sparkline. Always pulls from the service-transaction rollup, which
+ * is also the preferred source in queryServices — when the main query fell
+ * back to traces/classic APM this may return empty, and the view degrades
+ * the row to no-sparkline. Acceptable trade-off for now.
+ */
+async function queryServicesTimeline(
+  serviceNames: string[],
+  serviceFilter: string,
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, MetricTimelineBucket[]>> {
+  const out = new Map<string, MetricTimelineBucket[]>();
+  if (serviceNames.length === 0) return out;
+  const trimmed = serviceFilter.trim();
+  const clause = trimmed ? ` ${trimmed} ` : "";
+  const esql = `FROM metrics-service_transaction.1m.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS count = COUNT(*) BY service.name, bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{
+    "service.name"?: string;
+    count?: number;
+    bucket?: string | number;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const name = r["service.name"];
+    if (!name || r.bucket == null) continue;
+    const ts = typeof r.bucket === "number" ? r.bucket : Date.parse(r.bucket);
+    if (Number.isNaN(ts)) continue;
+    const arr = out.get(name) ?? [];
+    arr.push({ ts, value: r.count ?? 0 });
+    out.set(name, arr);
+  }
+  return out;
+}
+
+/**
+ * Per-pod memory working-set bucketed over the lookback so each pod row can
+ * render a sparkline with a peak marker. MAX inside the bucket matches the
+ * aggregate-metric-double storage (same reason the top-level query uses MAX).
+ */
+async function queryPodsMemoryTimeline(
+  podNames: string[],
+  namespace: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, MetricTimelineBucket[]>> {
+  const out = new Map<string, MetricTimelineBucket[]>();
+  if (podNames.length === 0) return out;
+  const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  const inList = podNames.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(", ");
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}AND k8s.pod.name IN (${inList}) | STATS mem = MAX(metrics.k8s.pod.memory.working_set) BY k8s.pod.name, bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const rows = await safeEsqlRows<{
+    "k8s.pod.name"?: string;
+    mem?: number;
+    bucket?: string | number;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const pod = r["k8s.pod.name"];
+    if (!pod || r.bucket == null) continue;
+    const ts = typeof r.bucket === "number" ? r.bucket : Date.parse(r.bucket);
+    if (Number.isNaN(ts)) continue;
+    const arr = out.get(pod) ?? [];
+    arr.push({
+      ts,
+      value: Math.round(((r.mem || 0) / (1024 * 1024)) * 10) / 10,
+    });
+    out.set(pod, arr);
+  }
+  return out;
+}
+
+function deriveTimelineWindow(
+  timelinesByKey: Map<string, MetricTimelineBucket[]>
+): { start_ms: number; end_ms: number; bucket_span_ms: number } | undefined {
+  const first = [...timelinesByKey.values()].find((t) => t.length > 0);
+  if (!first) return undefined;
+  return {
+    start_ms: first[0].ts,
+    end_ms: first[first.length - 1].ts + METRIC_TIMELINE_SPAN_MS,
+    bucket_span_ms: METRIC_TIMELINE_SPAN_MS,
+  };
 }
 
 async function queryPodResources(
@@ -468,6 +565,33 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         queryActiveAnomalies(effectiveNs, job_filter, exclude_entities),
       ]);
 
+      // Fetch per-item timelines for the top rows the view actually renders.
+      // Limited to the same slice counts to avoid over-querying.
+      const topServiceNames = services.slice(0, 15).map((s) => s.service);
+      const topPodNames = pods.slice(0, 5).map((p) => p.pod);
+      const [serviceTimelines, podTimelines] = await Promise.all([
+        queryServicesTimeline(topServiceNames, serviceFilter, lb, queryErrors),
+        queryPodsMemoryTimeline(topPodNames, effectiveNs, lb, queryErrors),
+      ]);
+
+      // Attach timeline + peak to each row we're going to return.
+      for (const svc of services) {
+        const tl = serviceTimelines.get(svc.service);
+        if (tl && tl.length) {
+          svc.timeline = tl;
+          svc.peak_throughput = Math.max(...tl.map((b) => b.value));
+        }
+      }
+      for (const pod of pods) {
+        const tl = podTimelines.get(pod.pod);
+        if (tl && tl.length) {
+          pod.timeline = tl;
+          pod.peak_memory_mb = Math.round(Math.max(...tl.map((b) => b.value)) * 10) / 10;
+        }
+      }
+      const servicesTimelineWindow = deriveTimelineWindow(serviceTimelines);
+      const podsTimelineWindow = deriveTimelineWindow(podTimelines);
+
       const { health, degraded } = assessHealth(services, anomalies);
 
       const anomalyJobsSeen = (anomalies.total || 0) > 0 || Object.keys(anomalies.by_severity).length > 0;
@@ -487,6 +611,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
           total: services.length,
           degraded_count: degraded.length,
           details: services.slice(0, 15),
+          ...(servicesTimelineWindow ? { timeline_window: servicesTimelineWindow } : {}),
         },
         degraded_services: degraded,
       };
@@ -498,7 +623,11 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       if (exclude_entities) result.exclude_filter = exclude_entities;
 
       if (pods.length) {
-        result.pods = { total: pods.length, top_memory: pods.slice(0, 5) };
+        result.pods = {
+          total: pods.length,
+          top_memory: pods.slice(0, 5),
+          ...(podsTimelineWindow ? { timeline_window: podsTimelineWindow } : {}),
+        };
       } else {
         result.pods_note =
           "No Kubernetes pod metrics found (metrics-kubeletstatsreceiver.otel-* with k8s.pod.name populated). " +

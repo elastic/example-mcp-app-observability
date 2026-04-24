@@ -23,6 +23,20 @@ function timeline(scores: number[]) {
   }));
 }
 
+/** Metric timeline (throughput or memory) — value field, same buckets. */
+function metricTimeline(values: number[]) {
+  return values.map((v, i) => ({
+    ts: bucketStart + i * BUCKET_SPAN_MS,
+    value: v,
+  }));
+}
+
+const METRIC_WINDOW = {
+  start_ms: bucketStart,
+  end_ms: now,
+  bucket_span_ms: BUCKET_SPAN_MS,
+};
+
 export const apmHealthSummaryFixtures: FixtureSet = {
   degraded: fixture("Degraded cluster", {
     overall_health: "degraded",
@@ -33,13 +47,56 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       total: 18,
       degraded_count: 3,
       details: [
-        { service: "checkout", throughput: 1203, avg_latency_ms: 412, error_rate_pct: 2.3 },
-        { service: "frontend", throughput: 5620, avg_latency_ms: 118, error_rate_pct: 0.1 },
-        { service: "search", throughput: 3210, avg_latency_ms: 89, error_rate_pct: 0.05 },
-        { service: "payments", throughput: 980, avg_latency_ms: 245, error_rate_pct: 1.8 },
-        { service: "inventory", throughput: 2104, avg_latency_ms: 56, error_rate_pct: 0 },
-        { service: "shipping", throughput: 420, avg_latency_ms: 302, error_rate_pct: 3.5 },
+        {
+          service: "checkout",
+          throughput: 1203,
+          avg_latency_ms: 412,
+          error_rate_pct: 2.3,
+          timeline: metricTimeline([1100, 1120, 1180, 1240, 1290, 1310, 1280, 1220, 1190, 1170, 1190, 1203]),
+          peak_throughput: 1310,
+        },
+        {
+          service: "frontend",
+          throughput: 5620,
+          avg_latency_ms: 118,
+          error_rate_pct: 0.1,
+          timeline: metricTimeline([5100, 5180, 5260, 5340, 5420, 5500, 5580, 5620, 5680, 5700, 5690, 5620]),
+          peak_throughput: 5700,
+        },
+        {
+          service: "search",
+          throughput: 3210,
+          avg_latency_ms: 89,
+          error_rate_pct: 0.05,
+          timeline: metricTimeline([3100, 3180, 3240, 3280, 3300, 3280, 3260, 3240, 3220, 3210, 3200, 3210]),
+          peak_throughput: 3300,
+        },
+        {
+          service: "payments",
+          throughput: 980,
+          avg_latency_ms: 245,
+          error_rate_pct: 1.8,
+          timeline: metricTimeline([920, 940, 960, 985, 1010, 1020, 1000, 990, 970, 975, 985, 980]),
+          peak_throughput: 1020,
+        },
+        {
+          service: "inventory",
+          throughput: 2104,
+          avg_latency_ms: 56,
+          error_rate_pct: 0,
+          timeline: metricTimeline([2100, 2098, 2105, 2110, 2108, 2104, 2101, 2099, 2103, 2106, 2104, 2104]),
+          peak_throughput: 2110,
+        },
+        {
+          service: "shipping",
+          throughput: 420,
+          avg_latency_ms: 302,
+          error_rate_pct: 3.5,
+          timeline: metricTimeline([500, 480, 470, 460, 450, 440, 430, 425, 420, 418, 419, 420]),
+          peak_throughput: 500,
+        },
       ],
+      timeline_window: METRIC_WINDOW,
     },
     degraded_services: [
       { service: "checkout", reasons: ["p99 latency > 800ms", "error rate 2.3%"] },
@@ -49,11 +106,36 @@ export const apmHealthSummaryFixtures: FixtureSet = {
     pods: {
       total: 147,
       top_memory: [
-        { pod: "checkout-api-7fd9-xk12", avg_memory_mb: 1820, avg_cpu_cores: 0.9 },
-        { pod: "payments-worker-3ab0-qq7p", avg_memory_mb: 1640, avg_cpu_cores: 0.55 },
-        { pod: "frontend-6f4d-11zz", avg_memory_mb: 1410, avg_cpu_cores: 0.4 },
-        { pod: "search-indexer-aa12-k0ll", avg_memory_mb: 1280, avg_cpu_cores: 0.7 },
+        {
+          pod: "checkout-api-7fd9-xk12",
+          avg_memory_mb: 1820,
+          avg_cpu_cores: 0.9,
+          timeline: metricTimeline([1620, 1660, 1690, 1720, 1760, 1790, 1810, 1830, 1850, 1890, 1870, 1820]),
+          peak_memory_mb: 1890,
+        },
+        {
+          pod: "payments-worker-3ab0-qq7p",
+          avg_memory_mb: 1640,
+          avg_cpu_cores: 0.55,
+          timeline: metricTimeline([1580, 1595, 1610, 1620, 1625, 1630, 1640, 1650, 1660, 1655, 1645, 1640]),
+          peak_memory_mb: 1660,
+        },
+        {
+          pod: "frontend-6f4d-11zz",
+          avg_memory_mb: 1410,
+          avg_cpu_cores: 0.4,
+          timeline: metricTimeline([1380, 1385, 1392, 1398, 1402, 1406, 1410, 1412, 1415, 1418, 1414, 1410]),
+          peak_memory_mb: 1418,
+        },
+        {
+          pod: "search-indexer-aa12-k0ll",
+          avg_memory_mb: 1280,
+          avg_cpu_cores: 0.7,
+          timeline: metricTimeline([1200, 1210, 1220, 1235, 1250, 1260, 1270, 1280, 1285, 1290, 1295, 1280]),
+          peak_memory_mb: 1295,
+        },
       ],
+      timeline_window: METRIC_WINDOW,
     },
     anomalies: {
       total: 11,
