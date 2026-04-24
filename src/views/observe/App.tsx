@@ -21,17 +21,21 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
 import { parseToolResult } from "@shared/parse-tool-result";
-import { theme, baseStyles } from "@shared/theme";
+import { applyTheme, theme } from "@shared/theme";
+import { useDisplayMode } from "@shared/use-display-mode";
 import {
   StatCard,
   StatGrid,
   SectionCard,
-  StatusBadge,
-  BadgeTone,
+  QueryPill,
+  SeverityChip,
+  type Severity as DSSeverity,
   HBarRow,
   InvestigationActions,
   InvestigationAction,
 } from "@shared/components";
+import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
+import { viewStyles } from "./styles";
 
 type TrendPoint = { elapsed_seconds: number; value: number; timestamp_ms?: number };
 
@@ -340,28 +344,6 @@ function NowView({ data, onSend }: { data: NowResult; onSend: (p: string) => voi
       <SectionCard>
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            marginBottom: 14,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-              {data.description || "Metric"}
-            </div>
-            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-              {data.esql ? data.esql.split("|")[0]?.trim() : "ES|QL metric"}
-              {data.namespace ? ` · ${data.namespace}` : ""}
-            </div>
-          </div>
-          <StatusBadge tone="ok">now</StatusBadge>
-        </div>
-
-        <div
-          style={{
             fontSize: 40,
             fontWeight: 700,
             color: hasValue ? theme.text : theme.textMuted,
@@ -417,28 +399,6 @@ function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) =>
   return (
     <>
       <SectionCard>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            marginBottom: 14,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-              {data.description || "ES|QL table"}
-            </div>
-            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-              {data.esql ? data.esql.split("|")[0]?.trim() : "ES|QL table"}
-              {data.namespace ? ` · ${data.namespace}` : ""}
-            </div>
-          </div>
-          <StatusBadge tone="ok">table</StatusBadge>
-        </div>
-
         <div style={{ fontSize: 11, color: theme.textDim, marginBottom: 10 }}>
           {data.row_count} row{data.row_count === 1 ? "" : "s"}
           {data.truncated ? ` (showing first ${rows.length})` : ""}
@@ -536,28 +496,6 @@ function ErrorView({ data }: { data: ErrorResult }) {
   return (
     <SectionCard>
       <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          gap: 12,
-          marginBottom: 10,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-            {data.description || "Query failed"}
-          </div>
-          {data.esql && (
-            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-              {data.esql.split("|")[0]?.trim()}
-            </div>
-          )}
-        </div>
-        <StatusBadge tone="critical">error</StatusBadge>
-      </div>
-      <div
         className="mono"
         style={{
           fontSize: 11,
@@ -592,17 +530,8 @@ function MetricView({
   const conditionMet = data.status === "CONDITION_MET";
   const sampling = data.status === "SAMPLED";
 
-  const tone: BadgeTone = conditionMet ? "ok" : sampling ? "ok" : "major";
-  const badgeText = conditionMet ? "condition met" : sampling ? "sampling" : "timeout";
-
   const elapsed = data.detected_after_seconds ?? data.elapsed_seconds ?? 0;
   const pollCount = trend.length || data.polls;
-
-  const subtitle = data.esql
-    ? `${data.esql.split("|")[0]?.trim()}${data.condition ? ` · ${data.condition}` : ""}`
-    : data.condition
-    ? `condition ${data.condition}`
-    : "live sample";
 
   // Derive peak from accumulated trend when server didn't send one (live mode).
   const computedPeak =
@@ -615,28 +544,6 @@ function MetricView({
   return (
     <>
       <SectionCard>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            marginBottom: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: theme.text, marginBottom: 2 }}>
-              {data.description || "Observed metric"}
-            </div>
-            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-              {subtitle}
-              {data.namespace ? ` · ${data.namespace}` : ""}
-            </div>
-          </div>
-          <StatusBadge tone={tone}>{badgeText}</StatusBadge>
-        </div>
-
         <StatGrid>
           <StatCard
             label="Current"
@@ -703,7 +610,7 @@ function AnomalyAlertView({ data, onSend }: { data: AnomalyAlert; onSend: (p: st
 
   const top = (data.top_anomalies || [])[0] as any;
   const topScore = top?.recordScore ?? 0;
-  const tone: BadgeTone =
+  const topTone: DSSeverity =
     topScore >= 90 ? "critical" : topScore >= 75 ? "major" : "minor";
 
   const actions: InvestigationAction[] =
@@ -721,32 +628,15 @@ function AnomalyAlertView({ data, onSend }: { data: AnomalyAlert; onSend: (p: st
   return (
     <>
       <SectionCard>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 12,
-            marginBottom: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: theme.text, marginBottom: 4 }}>
-              {data.headline}
-            </div>
-            <div className="mono" style={{ fontSize: 11, color: theme.textMuted }}>
-              fired after {data.detected_after_seconds}s · {data.anomaly_count} anomalies
-            </div>
-          </div>
-          <StatusBadge tone={tone}>alert</StatusBadge>
+        <div className="observe-subdescription" style={{ marginBottom: 12 }}>
+          fired after {data.detected_after_seconds}s · {data.anomaly_count} anomalies
         </div>
 
         <StatGrid>
           <StatCard
             label="Top score"
             value={topScore ? topScore.toFixed(1) : "—"}
-            tone={tone === "critical" ? "critical" : tone === "major" ? "major" : undefined}
+            tone={topTone === "critical" ? "critical" : topTone === "major" ? "major" : undefined}
           />
           <StatCard label="Anomalies" value={data.anomaly_count ?? 0} />
           <StatCard label="Affected entities" value={data.affected_entities?.length ?? 0} />
@@ -807,16 +697,55 @@ function AnomalyAlertView({ data, onSend }: { data: AnomalyAlert; onSend: (p: st
 
 // ── Main App ───────────────────────────────────────────────────────────────
 
+// Status → SeverityChip + label derived from the result's discriminant.
+function headerStatus(data: ObserveResult): { severity: DSSeverity; label: string } {
+  if (isError(data)) return { severity: "critical", label: "error" };
+  if (isTable(data)) return { severity: "minor", label: "table" };
+  if (isNow(data)) return { severity: "minor", label: "now" };
+  if (isMetric(data)) {
+    if (data.status === "CONDITION_MET") return { severity: "critical", label: "condition met" };
+    if (data.status === "SAMPLED") return { severity: "minor", label: "sampling" };
+    return { severity: "major", label: "timeout" }; // TIMEOUT
+  }
+  // Anomaly alert modes
+  if (data.status === "ALERT") {
+    const topScore = (data.top_anomalies?.[0] as any)?.recordScore ?? 0;
+    const sev: DSSeverity = topScore >= 90 ? "critical" : topScore >= 75 ? "major" : "minor";
+    return { severity: sev, label: "alert" };
+  }
+  return { severity: "minor", label: (data as { status?: string }).status?.toLowerCase() ?? "—" };
+}
+
+function headerEsqlFrom(data: ObserveResult): string | undefined {
+  const q = (data as { esql?: string }).esql;
+  if (!q) return undefined;
+  const first = q.split("|")[0]?.trim();
+  if (!first) return undefined;
+  // Trim to keep the pill compact — full query is in the body below.
+  return first.length > 64 ? first.slice(0, 63) + "…" : first;
+}
+
+function headerDescription(data: ObserveResult): string | undefined {
+  if (isError(data)) return data.description || "Query failed";
+  if (isMetric(data) || isNow(data) || isTable(data)) return data.description || undefined;
+  if (data.status === "ALERT") return data.headline;
+  if (data.status === "QUIET") return "No anomalies fired";
+  if (data.status === "NO_ML_JOBS") return "Observation could not run";
+  return undefined;
+}
+
 export function App() {
   const [data, setData] = useState<ObserveResult | null>(null);
   const [accumulated, setAccumulated] = useState<TrendPoint[]>([]);
   const [lastKey, setLastKey] = useState<string | undefined>();
   const [app, setApp] = useState<AppLike | null>(null);
+  const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   useEffect(() => {
     const style = document.createElement("style");
-    style.textContent = baseStyles;
+    style.textContent = viewStyles;
     document.head.appendChild(style);
+    applyTheme();
     return () => style.remove();
   }, []);
 
@@ -868,28 +797,65 @@ export function App() {
 
   const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
+  const status = data ? headerStatus(data) : null;
+  const esqlFrom = data ? headerEsqlFrom(data) : undefined;
+  const namespace = data
+    ? (data as { namespace?: string }).namespace
+    : undefined;
+  const description = data ? headerDescription(data) : undefined;
+  const fullEsql = data ? (data as { esql?: string }).esql : undefined;
+
+  const Header = (
+    <header className="ds-header">
+      <AppGlyph size={20} />
+      <h1 className="ds-header-title">Observe</h1>
+      <div className="ds-header-actions">
+        {status && <SeverityChip severity={status.severity} label={status.label} />}
+        {esqlFrom && <QueryPill>{esqlFrom}</QueryPill>}
+        {namespace && <QueryPill>namespace: {namespace}</QueryPill>}
+        <button
+          type="button"
+          className="ds-btn-icon"
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          onClick={toggleFullscreen}
+        >
+          {isFullscreen ? <ExitFullscreenIcon size={14} /> : <FullscreenIcon size={14} />}
+        </button>
+      </div>
+    </header>
+  );
+
   if (!data) {
     return (
-      <div style={{ padding: 24, textAlign: "center", color: theme.textMuted }}>
-        <div style={{ fontSize: 14, marginBottom: 8 }}>Waiting for observe result…</div>
-        <div style={{ fontSize: 11 }}>Call the observe tool to populate this view.</div>
+      <div className="ds-view">
+        {Header}
+        <div className="observe-empty">
+          <div className="observe-empty-title">Waiting for observe result…</div>
+          <div className="observe-empty-sub">Call the observe tool to populate this view.</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: "14px 16px", maxWidth: 620 }}>
-      {isError(data) ? (
-        <ErrorView data={data} />
-      ) : isTable(data) ? (
-        <TableView data={data} onSend={onSend} />
-      ) : isNow(data) ? (
-        <NowView data={data} onSend={onSend} />
-      ) : isMetric(data) ? (
-        <MetricView data={data} trend={accumulated} onSend={onSend} />
-      ) : (
-        <AnomalyAlertView data={data} onSend={onSend} />
-      )}
+    <div className="ds-view">
+      {Header}
+      <div className="observe-body">
+        {description && <div className="observe-description">{description}</div>}
+        {fullEsql && <div className="observe-subdescription">{fullEsql}</div>}
+
+        {isError(data) ? (
+          <ErrorView data={data} />
+        ) : isTable(data) ? (
+          <TableView data={data} onSend={onSend} />
+        ) : isNow(data) ? (
+          <NowView data={data} onSend={onSend} />
+        ) : isMetric(data) ? (
+          <MetricView data={data} trend={accumulated} onSend={onSend} />
+        ) : (
+          <AnomalyAlertView data={data} onSend={onSend} />
+        )}
+      </div>
     </div>
   );
 }

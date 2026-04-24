@@ -1,0 +1,248 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ *
+ * Harness chrome styles — intentionally distinct from `.ds-*` so the harness
+ * frame never visually contaminates the view being previewed.
+ */
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #0a0c12;
+  color: #d6d8df;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-harness-theme="light"] html,
+[data-harness-theme="light"] body,
+[data-harness-theme="light"] #root {
+  background: #e8e9ec;
+  color: #1f2128;
+}
+
+.harness-shell {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.harness-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #23262e;
+  background: #0f1117;
+  overflow-y: auto;
+}
+
+.harness-sidebar h1 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8f939b;
+  padding: 16px;
+  margin: 0;
+  border-bottom: 1px solid #23262e;
+}
+
+.harness-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid #1a1d24;
+}
+
+.harness-section h2 {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b6f78;
+  margin: 0 0 8px 0;
+}
+
+.harness-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.harness-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.harness-item:hover { background: #1a1d24; }
+.harness-item.active { background: #1e2230; border-color: #2c3145; color: #ffffff; }
+
+.harness-toggle-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.harness-toggle-row button {
+  flex: 1;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid #2c3145;
+  border-radius: 4px;
+  color: #8f939b;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.harness-toggle-row button.active { background: #1e2230; color: #fff; border-color: #3b4166; }
+
+.harness-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: #1a1d24;
+  border: 1px solid #2c3145;
+  border-radius: 4px;
+  color: #d6d8df;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.harness-action:hover { background: #23273a; }
+.harness-action:disabled { opacity: 0.5; cursor: default; }
+
+.harness-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+}
+
+.harness-stage-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: #8f939b;
+  border-bottom: 1px solid #23262e;
+  background: #0a0c12;
+}
+
+.harness-stage-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  background: #15181f;
+}
+[data-harness-theme="light"] .harness-stage-body { background: #d8dae0; }
+
+/* When a view requests fullscreen via app.requestDisplayMode({mode:"fullscreen"})
+ * the harness simulates Claude Desktop's behavior: the view expands to fill the
+ * viewport. */
+.harness-display-fullscreen .harness-view-frame-fullscreen {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  max-width: none;
+  width: 100vw;
+  min-height: 100vh;
+  z-index: 999;
+  border: none;
+  box-shadow: none;
+}
+
+.harness-view-frame {
+  margin: 0 auto;
+  max-width: 1120px;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  background: var(--bg-primary, #0f1117);
+  display: flex;
+  flex-direction: column;
+  /* Sizes to content. Refreshed views (.ds-view at 100vh) make the frame
+   * viewport-tall. Legacy views (plain div) make the frame their content
+   * height — no forced empty space below. Fullscreen adds its own sizing
+   * via .harness-view-frame-fullscreen below. */
+}
+[data-harness-theme="light"] .harness-view-frame { box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15); }
+
+.harness-axe-panel {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  width: 360px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: #0f1117;
+  border: 1px solid #2c3145;
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+  z-index: 1000;
+  font-size: 12px;
+}
+.harness-axe-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2c3145;
+  font-size: 11px;
+  color: #8f939b;
+}
+.harness-axe-panel-body { padding: 8px 12px; display: flex; flex-direction: column; gap: 10px; }
+.harness-axe-pass { color: #5aba6f; }
+.harness-axe-violation {
+  padding: 8px;
+  background: #1a1d24;
+  border: 1px solid #2c3145;
+  border-left: 3px solid #D55E00;
+  border-radius: 4px;
+}
+.harness-axe-violation-impact {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #E69F00;
+  margin-bottom: 4px;
+}
+.harness-axe-violation-impact.critical { color: #D55E00; }
+.harness-axe-violation-impact.serious  { color: #E69F00; }
+.harness-axe-violation-impact.moderate { color: #56B4E9; }
+.harness-axe-violation-impact.minor    { color: #8f939b; }
+.harness-axe-violation-help { font-size: 11px; color: #d6d8df; margin-bottom: 4px; }
+.harness-axe-violation-target { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 10px; color: #8f939b; word-break: break-all; }
+
+.harness-close-btn {
+  background: transparent;
+  border: none;
+  color: #8f939b;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.harness-close-btn:hover { color: #fff; }
