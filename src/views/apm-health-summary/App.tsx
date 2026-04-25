@@ -70,6 +70,10 @@ interface PodDetail {
   pod: string;
   avg_memory_mb: number;
   avg_cpu_cores?: number;
+  /** APM service running in this pod (when correlatable). */
+  service?: string;
+  /** Application label, matches scope.service_groups[].label. */
+  app?: string;
   timeline?: MetricTimelineBucket[];
   peak_memory_mb?: number;
 }

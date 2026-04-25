@@ -60,6 +60,20 @@ interface PodRow {
   pod: string;
   avg_memory_mb: number;
   avg_cpu_cores: number;
+  /**
+   * APM service running in this pod, derived from OTel trace resource
+   * attributes (k8s.pod.name + service.name correlation). Undefined for
+   * pods with no APM service (sidecars, infra pods).
+   */
+  service?: string;
+  /**
+   * Application label this pod belongs to. Resolved by chaining
+   * `service` -> APM `service.namespace`. Same vocabulary as
+   * scope.service_groups[].label and services.details[].app — a
+   * single, view-side filter on the app axis filters services + pods
+   * consistently.
+   */
+  app?: string;
   timeline?: MetricTimelineBucket[];
   peak_memory_mb?: number;
 }
@@ -452,6 +466,58 @@ async function queryServiceNamespaceFootprint(
     const ns = r["service.namespace"];
     if (!ns) continue;
     out.set(ns, r.service_count ?? 0);
+  }
+  return out;
+}
+
+// ─── Pod → service correlation ──────────────────────────────────────────────
+//
+// Maps each `k8s.pod.name` to the APM `service.name` running inside it,
+// derived from OTel resource attributes carried on traces. Used to:
+//   1. Decorate pods.top_memory[] rows with `service` + `app` so the view
+//      knows how to filter pods when an app chip is toggled.
+//   2. Derive pod→app for the pods.by_app rollup (next commit).
+//
+// Pure-OTel only — classic-APM `traces-apm*` doesn't carry `k8s.pod.name`
+// reliably, and pod metrics index family is OTel anyway, so we don't
+// bother with a classic fallback. A pod with no APM service running
+// (sidecars, infra pods like nginx-ingress) won't be in the map and ends
+// up `app: undefined` in the response, which the view buckets under the
+// "ungrouped" pseudo-app.
+//
+// 1:N pods (multiple services per pod, e.g. service-mesh sidecars) — we
+// pick the dominant service by trace volume. Sub-services collapse into
+// the dominant one, which is a small loss vs. the alternative (string
+// arrays everywhere). Revisit if we see real misclassification in the
+// field.
+
+async function queryPodServiceMap(
+  namespace: string | undefined,
+  cluster: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace.replace(/"/g, '\\"')}"` : "";
+  const clusterFilter = cluster ? `\n  AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}"` : "";
+  const esql = `FROM traces-*.otel-*
+| WHERE @timestamp > NOW() - ${lookback}
+  AND k8s.pod.name IS NOT NULL
+  AND service.name IS NOT NULL${nsFilter}${clusterFilter}
+| STATS c = COUNT(*) BY k8s.pod.name, service.name
+| SORT c DESC
+| LIMIT 1000`;
+  const rows = await safeEsqlRows<{
+    "k8s.pod.name"?: string;
+    "service.name"?: string;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const pod = r["k8s.pod.name"];
+    const svc = r["service.name"];
+    if (!pod || !svc) continue;
+    // First-write-wins (rows pre-sorted by COUNT desc) — dominant service
+    // claims the pod, sub-services drop.
+    if (!out.has(pod)) out.set(pod, svc);
   }
   return out;
 }
@@ -1064,6 +1130,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         serviceKpis,
         serviceNamespaceMap,
         serviceNamespaceFootprint,
+        podServiceMap,
       ] = await Promise.all([
         queryServicesTimeline(topServiceNames, serviceFilter, lb, queryErrors),
         queryPodsMemoryTimeline(topPodNames, effectiveNs, effectiveCluster, lb, queryErrors),
@@ -1080,6 +1147,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         // whether each app extends beyond the current scope so we can flag
         // partial-app chips with the ⤴ indicator.
         queryServiceNamespaceFootprint(lb, queryErrors),
+        queryPodServiceMap(effectiveNs, effectiveCluster, lb, queryErrors),
       ]);
 
       // Attach timeline + peak + per-service KPIs + app group to each row.
@@ -1103,6 +1171,12 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         if (tl && tl.length) {
           pod.timeline = tl;
           pod.peak_memory_mb = Math.round(Math.max(...tl.map((b) => b.value)) * 10) / 10;
+        }
+        const svc = podServiceMap.get(pod.pod);
+        if (svc) {
+          pod.service = svc;
+          const app = serviceNamespaceMap.get(svc);
+          if (app) pod.app = app;
         }
       }
       const servicesTimelineWindow = deriveTimelineWindow(serviceTimelines);
