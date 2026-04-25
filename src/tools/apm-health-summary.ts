@@ -39,6 +39,19 @@ interface ServiceRow {
   throughput: number;
   error_rate_pct?: number;
   avg_latency_ms?: number;
+  /**
+   * p99 transaction duration in ms over the lookback window. Reported per
+   * service so the view can recompute the namespace-aggregate p99 tile
+   * from a filtered subset of services without a tool re-invocation.
+   */
+  p99_latency_ms?: number;
+  /**
+   * Application this service belongs to. Resolved from APM service.namespace
+   * → labels['app.kubernetes.io/name'] → naming prefix. Undefined when no
+   * grouping signal is present; the view buckets these under 'ungrouped'.
+   * The same vocabulary appears in scope.service_groups[].label.
+   */
+  app?: string;
   timeline?: MetricTimelineBucket[];
   peak_throughput?: number;
 }
@@ -140,6 +153,50 @@ function intersectServiceSets(
   if (!b) return a;
   const setB = new Set(b);
   return a.filter((s) => setB.has(s));
+}
+
+interface ServiceGroup {
+  label: string;
+  services: string[];
+  /**
+   * Total service count for this app across the entire cluster (regardless
+   * of current scope). Set when greater than `services.length` so the view
+   * can flag the chip with a ⤴ indicator showing the app extends beyond
+   * the active scope.
+   */
+  total?: number;
+}
+
+/**
+ * Bucket the in-scope services by their resolved app label and decorate
+ * each bucket with the cluster-wide footprint when it differs. Sorted by
+ * in-scope service count (descending) so the most-relevant apps render
+ * first in the chip strip.
+ */
+function buildServiceGroups(
+  services: ServiceRow[],
+  appMap: Map<string, string>,
+  footprint: Map<string, number>
+): ServiceGroup[] {
+  const buckets = new Map<string, string[]>();
+  for (const s of services) {
+    const app = appMap.get(s.service);
+    if (!app) continue;
+    const arr = buckets.get(app) ?? [];
+    arr.push(s.service);
+    buckets.set(app, arr);
+  }
+  const out: ServiceGroup[] = [];
+  for (const [label, list] of buckets) {
+    const group: ServiceGroup = { label, services: list };
+    const fullFootprint = footprint.get(label);
+    if (fullFootprint !== undefined && fullFootprint > list.length) {
+      group.total = fullFootprint;
+    }
+    out.push(group);
+  }
+  out.sort((a, b) => b.services.length - a.services.length);
+  return out;
 }
 
 async function queryServiceTransactionRollup(
@@ -282,6 +339,119 @@ async function queryPodsMemoryTimeline(
       value: Math.round(((r.mem || 0) / (1024 * 1024)) * 10) / 10,
     });
     out.set(pod, arr);
+  }
+  return out;
+}
+
+// ─── Per-service KPI rollup ─────────────────────────────────────────────────
+//
+// Returns p99 latency, error_rate_pct, and avg_latency_ms keyed by
+// service.name over the lookback window. The view uses these so client-side
+// filtering on application chips can recompute the namespace-aggregate KPI
+// tiles from the filtered service set without a tool re-invocation.
+//
+// We hit `traces-apm*,traces-*.otel-*` (same as the aggregate timeline
+// queries) so OTel + classic-APM environments both populate. PERCENTILE
+// in ES|QL works on numeric scalars; transaction.duration.us is the field
+// universally carried in both schemas.
+
+interface ServiceKpiRow {
+  service: string;
+  p99_latency_ms: number;
+  error_rate_pct: number;
+  avg_latency_ms: number;
+}
+
+async function queryServiceKpis(
+  serviceFilter: string,
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, ServiceKpiRow>> {
+  const out = new Map<string, ServiceKpiRow>();
+  const trimmed = serviceFilter.trim();
+  const clause = trimmed ? ` ${trimmed} ` : "";
+  const esql = `FROM traces-apm*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback}${clause}| STATS p99_us = PERCENTILE(transaction.duration.us, 99), avg_us = AVG(transaction.duration.us), errs = COUNT(*) WHERE event.outcome == "failure", total = COUNT(*) BY service.name | SORT total DESC | LIMIT 100`;
+  const rows = await safeEsqlRows<{
+    "service.name"?: string;
+    p99_us?: number;
+    avg_us?: number;
+    errs?: number;
+    total?: number;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const name = r["service.name"];
+    if (!name) continue;
+    const total = r.total ?? 0;
+    const errPct = total > 0 ? ((r.errs ?? 0) / total) * 100 : 0;
+    out.set(name, {
+      service: name,
+      p99_latency_ms: Math.round((r.p99_us ?? 0) / 1000),
+      avg_latency_ms: Math.round((r.avg_us ?? 0) / 1000),
+      error_rate_pct: Math.round(errPct * 100) / 100,
+    });
+  }
+  return out;
+}
+
+// ─── Service → app (service.namespace) mapping ──────────────────────────────
+//
+// Resolves each service to its `service.namespace` value when set. This is
+// the OTel-canonical "logical app" axis — falls back to undefined when the
+// agent doesn't populate it (common). The view's scope card uses this to
+// build the applications strip; the tool's response carries the same
+// mapping per-service for client-side filtering.
+//
+// We query the most authoritative source per index family:
+//   - OTel:    traces-*.otel-*       (resource.attributes.service.namespace
+//                                     is flattened to service.namespace by
+//                                     the indexer)
+//   - Classic: traces-apm*           (service.environment is sometimes
+//                                     misused for app grouping; we ignore
+//                                     it here and stick to service.namespace
+//                                     so the signal stays consistent)
+
+async function queryServiceNamespaces(
+  serviceFilter: string,
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const trimmed = serviceFilter.trim();
+  const clause = trimmed ? ` ${trimmed} ` : "";
+  const esql = `FROM traces-apm*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} AND service.namespace IS NOT NULL${clause}| STATS c = COUNT(*) BY service.name, service.namespace | SORT c DESC | LIMIT 500`;
+  const rows = await safeEsqlRows<{
+    "service.name"?: string;
+    "service.namespace"?: string;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const name = r["service.name"];
+    const ns = r["service.namespace"];
+    if (!name || !ns) continue;
+    // First-write-wins (rows are sorted by count) — if a service emits under
+    // multiple namespaces, the most-frequent one is the one we trust.
+    if (!out.has(name)) out.set(name, ns);
+  }
+  return out;
+}
+
+// Counts each service.namespace's full footprint across all visible services
+// (regardless of whether they're in the current scope's filtered set). Used
+// to populate `service_groups[].total` so the view can flag apps that
+// extend beyond the current scope with a ⤴ chip indicator.
+async function queryServiceNamespaceFootprint(
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const esql = `FROM traces-apm*,traces-*.otel-* | WHERE @timestamp > NOW() - ${lookback} AND service.namespace IS NOT NULL | STATS service_count = COUNT_DISTINCT(service.name) BY service.namespace | LIMIT 200`;
+  const rows = await safeEsqlRows<{
+    "service.namespace"?: string;
+    service_count?: number;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const ns = r["service.namespace"];
+    if (!ns) continue;
+    out.set(ns, r.service_count ?? 0);
   }
   return out;
 }
@@ -891,6 +1061,9 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         k8sRestartTl,
         k8sNodes,
         clustersAvailable,
+        serviceKpis,
+        serviceNamespaceMap,
+        serviceNamespaceFootprint,
       ] = await Promise.all([
         queryServicesTimeline(topServiceNames, serviceFilter, lb, queryErrors),
         queryPodsMemoryTimeline(topPodNames, effectiveNs, effectiveCluster, lb, queryErrors),
@@ -901,15 +1074,29 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         queryK8sRestartTimeline(effectiveNs, effectiveCluster, lb, queryErrors),
         queryK8sNodeRollup(queryErrors),
         listAvailableClusters(lb, queryErrors),
+        queryServiceKpis(serviceFilter, lb, queryErrors),
+        queryServiceNamespaces(serviceFilter, lb, queryErrors),
+        // Footprint must NOT be scoped — that's the whole point: it tells us
+        // whether each app extends beyond the current scope so we can flag
+        // partial-app chips with the ⤴ indicator.
+        queryServiceNamespaceFootprint(lb, queryErrors),
       ]);
 
-      // Attach timeline + peak to each row we're going to return.
+      // Attach timeline + peak + per-service KPIs + app group to each row.
       for (const svc of services) {
         const tl = serviceTimelines.get(svc.service);
         if (tl && tl.length) {
           svc.timeline = tl;
           svc.peak_throughput = Math.max(...tl.map((b) => b.value));
         }
+        const kpi = serviceKpis.get(svc.service);
+        if (kpi) {
+          svc.p99_latency_ms = kpi.p99_latency_ms;
+          svc.avg_latency_ms = kpi.avg_latency_ms;
+          svc.error_rate_pct = kpi.error_rate_pct;
+        }
+        const ns = serviceNamespaceMap.get(svc.service);
+        if (ns) svc.app = ns;
       }
       for (const pod of pods) {
         const tl = podTimelines.get(pod.pod);
@@ -959,8 +1146,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       // Scope card payload — purely informational, the view never mutates
       // it. Axes are reported based on data_coverage so the view branches
       // cleanly between the three coverage states (k8s only / apm only /
-      // both). service_groups population lands in the per-app commit;
-      // for now we ship cluster + namespace + counts.
+      // both).
       const scope: Record<string, unknown> = {};
       if (effectiveCluster) scope.current_cluster = effectiveCluster;
       if (effectiveNs && dataCoverage.kubernetes) scope.k8s_namespace = effectiveNs;
@@ -970,6 +1156,23 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         if (k8sNodes.total) scope.node_count = k8sNodes.total;
       }
       if (clustersAvailable.length > 1) scope.clusters_available = clustersAvailable;
+
+      // Application grouping. Only `service.namespace` is consulted in this
+      // commit; k8s-label and naming-prefix fallbacks land alongside the
+      // pod→service mapping commit (where the k8s-side label query lives).
+      // When no service.namespace is present anywhere, omit service_groups
+      // entirely so the view's apps strip stays hidden rather than showing
+      // a single "ungrouped" bucket.
+      const serviceGroups = buildServiceGroups(
+        services,
+        serviceNamespaceMap,
+        serviceNamespaceFootprint
+      );
+      if (serviceGroups.length > 0) {
+        scope.service_groups = serviceGroups;
+        scope.service_groups_source = "service.namespace";
+      }
+
       if (Object.keys(scope).length > 0) result.scope = scope;
 
       // ─── APM KPI tiles ───────────────────────────────────────────────────

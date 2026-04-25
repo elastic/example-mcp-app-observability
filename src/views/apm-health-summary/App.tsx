@@ -52,7 +52,11 @@ interface ServiceDetail {
   service: string;
   throughput: number;
   avg_latency_ms?: number;
+  p99_latency_ms?: number;
   error_rate_pct?: number;
+  /** Application label, matches scope.service_groups[].label. Used by the
+   *  view's app-chip filter to recompute service-level KPIs when active. */
+  app?: string;
   timeline?: MetricTimelineBucket[];
   peak_throughput?: number;
 }
