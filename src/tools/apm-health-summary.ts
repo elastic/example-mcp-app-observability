@@ -20,6 +20,10 @@ import {
   resolveServicesInNamespace,
   buildServiceFilter,
   resolveNamespace,
+  resolveCluster,
+  resolveServicesInCluster,
+  buildClusterFilter,
+  listAvailableClusters,
 } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 
@@ -115,6 +119,27 @@ function fmtThroughput(v: number): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
   return `${Math.round(v)}`;
+}
+
+/**
+ * Intersect the service sets returned by namespace + cluster resolution.
+ *   - both sets present: intersection
+ *   - one set present:   that set
+ *   - neither set:       undefined (caller skips service.name IN scoping)
+ *
+ * Returning [] (vs undefined) is the signal "scope is set but no services
+ * match" — the caller short-circuits the downstream queries to avoid
+ * issuing an empty IN-list, which would silently match everything.
+ */
+function intersectServiceSets(
+  a: string[] | undefined,
+  b: string[] | undefined
+): string[] | undefined {
+  if (!a && !b) return undefined;
+  if (!a) return b;
+  if (!b) return a;
+  const setB = new Set(b);
+  return a.filter((s) => setB.has(s));
 }
 
 async function queryServiceTransactionRollup(
@@ -231,14 +256,16 @@ async function queryServicesTimeline(
 async function queryPodsMemoryTimeline(
   podNames: string[],
   namespace: string | undefined,
+  cluster: string | undefined,
   lookback: string,
   errors: string[]
 ): Promise<Map<string, MetricTimelineBucket[]>> {
   const out = new Map<string, MetricTimelineBucket[]>();
   if (podNames.length === 0) return out;
   const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  const clusterFilter = cluster ? `AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" ` : "";
   const inList = podNames.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(", ");
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}AND k8s.pod.name IN (${inList}) | STATS mem = MAX(metrics.k8s.pod.memory.working_set) BY k8s.pod.name, bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}AND k8s.pod.name IN (${inList}) | STATS mem = MAX(metrics.k8s.pod.memory.working_set) BY k8s.pod.name, bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
   const rows = await safeEsqlRows<{
     "k8s.pod.name"?: string;
     mem?: number;
@@ -332,6 +359,7 @@ async function queryApmErrorRateTimeline(
 
 async function queryK8sUtilizationTimeline(
   namespace: string | undefined,
+  cluster: string | undefined,
   lookback: string,
   errors: string[]
 ): Promise<{
@@ -339,10 +367,11 @@ async function queryK8sUtilizationTimeline(
   mem: MetricTimelineBucket[];
 }> {
   const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  const clusterFilter = cluster ? `AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" ` : "";
   // Sums per bucket over the cluster: usage / limit yields utilization %.
   // If limits aren't populated, the divide returns 0/null and we surface the
   // raw usage instead in the calling code.
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS cpu_use = SUM(metrics.k8s.pod.cpu.usage), cpu_lim = SUM(metrics.k8s.pod.cpu.limit), mem_use = SUM(metrics.k8s.pod.memory.working_set), mem_lim = SUM(metrics.k8s.pod.memory.limit) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_use = SUM(metrics.k8s.pod.cpu.usage), cpu_lim = SUM(metrics.k8s.pod.cpu.limit), mem_use = SUM(metrics.k8s.pod.memory.working_set), mem_lim = SUM(metrics.k8s.pod.memory.limit) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
   const rows = await safeEsqlRows<{
     cpu_use?: number;
     cpu_lim?: number;
@@ -366,14 +395,16 @@ async function queryK8sUtilizationTimeline(
 
 async function queryK8sRestartTimeline(
   namespace: string | undefined,
+  cluster: string | undefined,
   lookback: string,
   errors: string[]
 ): Promise<MetricTimelineBucket[]> {
   const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
+  const clusterFilter = cluster ? `AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" ` : "";
   // restart_count is a monotonic counter per container; SUM per bucket gives a
   // rough activity proxy without diffing. Good enough for a sparkline; can
   // refine to deltas later if needed.
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS restarts = MAX(metrics.k8s.container.restart_count) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS restarts = MAX(metrics.k8s.container.restart_count) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
   const rows = await safeEsqlRows<{ restarts?: number; bucket?: string | number }>(esql, errors, {
     optional: true,
   });
@@ -433,18 +464,22 @@ function peakOf(buckets: MetricTimelineBucket[] | undefined): number | undefined
 
 async function queryPodResources(
   namespace: string | undefined,
+  cluster: string | undefined,
   lookback: string,
   errors: string[]
 ): Promise<PodRow[]> {
   const nsFilter = namespace
     ? `| WHERE k8s.namespace.name == "${namespace}" `
     : "";
+  const clusterFilter = cluster
+    ? `| WHERE k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" `
+    : "";
   // MAX instead of AVG for memory: AVG on aggregate_metric_double fields (how
   // Elastic stores downsampled OTel gauges) can return sum-of-sums rather than
   // a true mean, inflating the number massively. MAX returns max-of-maxes — a
   // sound upper bound regardless of the field's storage shape, and operationally
   // more useful (peak memory usage).
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}| STATS avg_mem = MAX(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS avg_mem = MAX(metrics.k8s.pod.memory.working_set), avg_cpu = AVG(metrics.k8s.pod.cpu.usage) BY k8s.pod.name | SORT avg_mem DESC | LIMIT 20`;
   const rows = await safeEsqlRows<{
     "k8s.pod.name"?: string;
     avg_mem?: number;
@@ -485,6 +520,7 @@ const TIMELINE_BUCKET_SPAN_MS = 5 * 60 * 1000;
 
 async function queryActiveAnomalies(
   namespace: string | undefined,
+  cluster: string | undefined,
   jobFilter: string | undefined,
   excludeEntities: string | undefined
 ): Promise<AnomalyRollup> {
@@ -514,6 +550,29 @@ async function queryActiveAnomalies(
                 },
               },
               { term: { "influencers.influencer_field_values": namespace } },
+            ],
+          },
+        },
+      },
+    });
+  }
+  if (cluster) {
+    must.push({
+      nested: {
+        path: "influencers",
+        query: {
+          bool: {
+            must: [
+              {
+                terms: {
+                  "influencers.influencer_field_name": [
+                    "k8s.cluster.name",
+                    "resource.attributes.k8s.cluster.name",
+                    "orchestrator.cluster.name",
+                  ],
+                },
+              },
+              { term: { "influencers.influencer_field_values": cluster } },
             ],
           },
         },
@@ -747,6 +806,12 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         "K8s metrics, omits the pods section; without ML jobs, omits the anomalies section. The response includes " +
         "a data_coverage field showing which backends contributed.",
       inputSchema: {
+        cluster: z.string().optional().describe(
+          "Kubernetes cluster name to scope to — e.g. 'prod-us-east'. Resolves against k8s.cluster.name " +
+          "(OTel) or orchestrator.cluster.name (ECS). Fuzzy-matched against the set of clusters present " +
+          "in recent telemetry; if not found, the response includes candidates. Omit for single-cluster " +
+          "deployments or to span all clusters."
+        ),
         namespace: z.string().optional().describe(
           "Kubernetes namespace to scope to — e.g. 'otel-demo', 'prod', 'checkout'. Only applicable if services " +
           "are K8s-deployed. Omit for all namespaces or non-K8s deployments."
@@ -766,28 +831,49 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       },
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
-    async ({ namespace, lookback, job_filter, exclude_entities }) => {
+    async ({ cluster, namespace, lookback, job_filter, exclude_entities }) => {
       const lb = lookback || "15m";
       const queryErrors: string[] = [];
-      const nsResolution = await resolveNamespace(namespace, lb, queryErrors);
+
+      // Resolve cluster + namespace in parallel so a fuzzy match on either
+      // doesn't add round-trips. Resolution is independent — namespace
+      // resolution doesn't care which cluster you're in (we'd need to
+      // re-think this if the same namespace name exists in multiple
+      // clusters and the user meant a specific one; for now first-match
+      // wins, mirroring how `resolveNamespace` already works).
+      const [clusterResolution, nsResolution] = await Promise.all([
+        resolveCluster(cluster, lb, queryErrors),
+        resolveNamespace(namespace, lb, queryErrors),
+      ]);
+      const effectiveCluster = clusterResolution.resolved ?? cluster;
       const effectiveNs = nsResolution.resolved ?? namespace;
 
       // Service tiers scope by service.name IN (…) to dodge schema-drift gotchas
       // (pre-agg rollups missing k8s.namespace.name as a dimension; traces-apm*
       // missing kubernetes.namespace in some mappings). Pod resources still scope
-      // by k8s.namespace.name directly — kubeletstats reliably carries it and
-      // pods aren't addressable via service.name anyway.
-      const servicesInNs = effectiveNs
-        ? await resolveServicesInNamespace(effectiveNs, lb, queryErrors)
-        : undefined;
-      const serviceFilter = buildServiceFilter(servicesInNs);
+      // by k8s.namespace.name / k8s.cluster.name directly — kubeletstats reliably
+      // carries them and pods aren't addressable via service.name anyway.
+      //
+      // When both cluster + namespace are supplied we intersect their service
+      // sets so the APM scope is the conjunction. When only one is supplied,
+      // we scope by that one alone.
+      const [servicesInNs, servicesInCluster] = await Promise.all([
+        effectiveNs ? resolveServicesInNamespace(effectiveNs, lb, queryErrors) : Promise.resolve(undefined),
+        effectiveCluster ? resolveServicesInCluster(effectiveCluster, lb, queryErrors) : Promise.resolve(undefined),
+      ]);
+      const intersected = intersectServiceSets(servicesInNs, servicesInCluster);
+      const serviceFilter = buildServiceFilter(intersected);
+
+      const noServicesInScope =
+        ((effectiveNs && servicesInNs && servicesInNs.length === 0) ||
+          (effectiveCluster && servicesInCluster && servicesInCluster.length === 0)) ?? false;
 
       const [services, pods, anomalies] = await Promise.all([
-        effectiveNs && servicesInNs && !servicesInNs.length
+        noServicesInScope
           ? Promise.resolve<ServiceRow[]>([])
           : queryServices(serviceFilter, lb, queryErrors),
-        queryPodResources(effectiveNs, lb, queryErrors),
-        queryActiveAnomalies(effectiveNs, job_filter, exclude_entities),
+        queryPodResources(effectiveNs, effectiveCluster, lb, queryErrors),
+        queryActiveAnomalies(effectiveNs, effectiveCluster, job_filter, exclude_entities),
       ]);
 
       // Fetch per-item timelines for the top rows the view actually renders +
@@ -804,15 +890,17 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         k8sUtil,
         k8sRestartTl,
         k8sNodes,
+        clustersAvailable,
       ] = await Promise.all([
         queryServicesTimeline(topServiceNames, serviceFilter, lb, queryErrors),
-        queryPodsMemoryTimeline(topPodNames, effectiveNs, lb, queryErrors),
+        queryPodsMemoryTimeline(topPodNames, effectiveNs, effectiveCluster, lb, queryErrors),
         queryApmAggregateTimeline(serviceFilter, lb, queryErrors),
         queryApmLatencyTimeline(serviceFilter, lb, queryErrors),
         queryApmErrorRateTimeline(serviceFilter, lb, queryErrors),
-        queryK8sUtilizationTimeline(effectiveNs, lb, queryErrors),
-        queryK8sRestartTimeline(effectiveNs, lb, queryErrors),
+        queryK8sUtilizationTimeline(effectiveNs, effectiveCluster, lb, queryErrors),
+        queryK8sRestartTimeline(effectiveNs, effectiveCluster, lb, queryErrors),
         queryK8sNodeRollup(queryErrors),
+        listAvailableClusters(lb, queryErrors),
       ]);
 
       // Attach timeline + peak to each row we're going to return.
@@ -861,7 +949,28 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       }
       if (nsResolution.note) result.namespace_note = nsResolution.note;
       if (nsResolution.candidates) result.namespace_candidates = nsResolution.candidates;
+      if (cluster && effectiveCluster && effectiveCluster !== cluster) {
+        result.cluster_requested = cluster;
+      }
+      if (clusterResolution.note) result.cluster_note = clusterResolution.note;
+      if (clusterResolution.candidates) result.cluster_candidates = clusterResolution.candidates;
       if (exclude_entities) result.exclude_filter = exclude_entities;
+
+      // Scope card payload — purely informational, the view never mutates
+      // it. Axes are reported based on data_coverage so the view branches
+      // cleanly between the three coverage states (k8s only / apm only /
+      // both). service_groups population lands in the per-app commit;
+      // for now we ship cluster + namespace + counts.
+      const scope: Record<string, unknown> = {};
+      if (effectiveCluster) scope.current_cluster = effectiveCluster;
+      if (effectiveNs && dataCoverage.kubernetes) scope.k8s_namespace = effectiveNs;
+      if (dataCoverage.apm) scope.service_count = services.length;
+      if (dataCoverage.kubernetes) {
+        scope.pod_count = pods.length;
+        if (k8sNodes.total) scope.node_count = k8sNodes.total;
+      }
+      if (clustersAvailable.length > 1) scope.clusters_available = clustersAvailable;
+      if (Object.keys(scope).length > 0) result.scope = scope;
 
       // ─── APM KPI tiles ───────────────────────────────────────────────────
       if (services.length) {

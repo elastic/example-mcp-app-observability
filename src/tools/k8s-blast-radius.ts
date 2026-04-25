@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
+import { resolveCluster } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 
 const RESOURCE_URI = "ui://k8s-blast-radius/mcp-app.html";
@@ -78,10 +79,37 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
           "'gke-prod-pool-1-abc123', 'ip-10-0-1-42.ec2.internal'. If the user describes a node ambiguously " +
           "('the noisy node', 'the one running frontend'), confirm the exact node name before calling."
         ),
+        cluster: z.string().optional().describe(
+          "Kubernetes cluster the node belongs to — e.g. 'prod-us-east'. Required when the same node name " +
+          "exists in multiple clusters (auto-generated cloud node names sometimes collide). Resolves against " +
+          "k8s.cluster.name (OTel) with fuzzy matching."
+        ),
       },
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
-    async ({ node }) => {
+    async ({ node, cluster }) => {
+      const queryErrors: string[] = [];
+
+      // Resolve cluster fuzzily so users can say "prod" when the canonical
+      // name is "prod-us-east-1". A miss surfaces candidates in the response.
+      const clusterResolution = await resolveCluster(cluster, "1h", queryErrors);
+      const effectiveCluster = clusterResolution.resolved ?? cluster;
+      const escapedCluster = effectiveCluster
+        ? effectiveCluster.replace(/"/g, '\\"')
+        : undefined;
+      // Cluster scoping protects against node-name collisions across clusters
+      // (auto-generated GKE / EKS node names sometimes overlap). When omitted
+      // the query spans all clusters — fine for single-cluster setups.
+      const clusterFilterK8s = escapedCluster
+        ? `\n  AND k8s.cluster.name == "${escapedCluster}"`
+        : "";
+      const clusterFilterApmOtel = escapedCluster
+        ? `\n  AND k8s.cluster.name == "${escapedCluster}"`
+        : "";
+      const clusterFilterApmClassic = escapedCluster
+        ? `\n  AND orchestrator.cluster.name == "${escapedCluster}"`
+        : "";
+
       // Memory queries use a two-level STATS: first collapse each pod / node's
       // time samples to a MAX (peak need over the window), then SUM across
       // pods / nodes. MAX rather than AVG because:
@@ -94,7 +122,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       // current state rather than stale peaks.
       const podsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE @timestamp > NOW() - 10 minutes
-  AND k8s.node.name == "${node}"
+  AND k8s.node.name == "${node}"${clusterFilterK8s}
   AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
@@ -108,7 +136,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
 | SORT replica_count DESC`;
 
       const totalsQuery = `FROM metrics-kubeletstatsreceiver.otel-*
-| WHERE @timestamp > NOW() - 10 minutes
+| WHERE @timestamp > NOW() - 10 minutes${clusterFilterK8s}
   AND k8s.pod.name IS NOT NULL
   AND metrics.k8s.pod.memory.working_set IS NOT NULL
 | STATS
@@ -124,7 +152,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       const capacityQuery = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE @timestamp > NOW() - 10 minutes
   AND k8s.node.name IS NOT NULL
-  AND k8s.node.name != "${node}"
+  AND k8s.node.name != "${node}"${clusterFilterK8s}
   AND metrics.k8s.node.memory.available IS NOT NULL
 | STATS
     node_memory_bytes = MAX(metrics.k8s.node.memory.available)
@@ -134,7 +162,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
     remaining_node_count = COUNT(k8s.node.name)`;
 
       const apmQuery = `FROM traces-*.otel-*
-| WHERE @timestamp > NOW() - 1h
+| WHERE @timestamp > NOW() - 1h${clusterFilterApmOtel}
   AND k8s.namespace.name IS NOT NULL
 | STATS service_count = COUNT(*)
     BY service.name, k8s.namespace.name, k8s.deployment.name
@@ -145,7 +173,7 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       // Classic APM fallback (traces-apm* + kubernetes.* fields). Only consulted if the OTel APM
       // query returns nothing, so OTel-native customers don't pay the extra call.
       const apmClassicQuery = `FROM traces-apm*
-| WHERE @timestamp > NOW() - 1h
+| WHERE @timestamp > NOW() - 1h${clusterFilterApmClassic}
   AND processor.event == "transaction"
   AND kubernetes.namespace IS NOT NULL
 | STATS service_count = COUNT(*)
@@ -154,7 +182,6 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
 | SORT service_count DESC
 | LIMIT 200`;
 
-      const queryErrors: string[] = [];
       const [podsOnNode, totalReplicas, clusterCapacity, apmServicesOtel] = await Promise.all([
         safeEsqlRows<PodRow>(podsQuery, queryErrors),
         safeEsqlRows<TotalRow>(totalsQuery, queryErrors),
@@ -269,6 +296,13 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
         rescheduling,
       };
 
+      if (effectiveCluster) result.cluster = effectiveCluster;
+      if (cluster && effectiveCluster && effectiveCluster !== cluster) {
+        result.cluster_requested = cluster;
+      }
+      if (clusterResolution.note) result.cluster_note = clusterResolution.note;
+      if (clusterResolution.candidates) result.cluster_candidates = clusterResolution.candidates;
+
       if (apmPresent) {
         result.downstream_services = downstream;
       } else {
@@ -303,9 +337,10 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       // backtracks. Same scope principle: recommended tools must have a data-requirements
       // subset of what this call already proved.
       if (apmPresent) {
+        const clusterPrompt = effectiveCluster ? ` for cluster "${effectiveCluster}"` : "";
         actions.push({
           label: "Cluster health rollup",
-          prompt: "Use apm-health-summary to see overall namespace health and correlate with this blast radius.",
+          prompt: `Use apm-health-summary${clusterPrompt} to see overall namespace health and correlate with this blast radius.`,
         });
       }
       result.investigation_actions = actions;

@@ -145,6 +145,7 @@ interface HealthServiceGroup {
 
 interface HealthScope {
   current_cluster?: string;
+  clusters_available?: string[];
   k8s_namespace?: string;
   environment?: string;
   service_count?: number;
@@ -178,6 +179,9 @@ interface HealthData {
   namespace_requested?: string;
   namespace_note?: string;
   namespace_candidates?: string[];
+  cluster_requested?: string;
+  cluster_note?: string;
+  cluster_candidates?: string[];
   investigation_actions?: InvestigationAction[];
   rerun_context?: RerunContext;
   scope?: HealthScope;
