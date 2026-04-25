@@ -26,6 +26,7 @@ import {
   listAvailableClusters,
 } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
+import { PODS_BY_APP_CAP } from "./_limits.js";
 
 const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
 
@@ -182,6 +183,19 @@ interface ServiceGroup {
 }
 
 /**
+ * Per-app k8s rollup. Lets the view recompute filtered cpu/mem/restart
+ * tiles from the selected app set without a tool re-invocation. All
+ * percentages are derived as `use / lim * 100` (NaN-safe — when limits
+ * are zero we report 0). `pod_count` is the number of pods in the app.
+ */
+interface K8sAppRollup {
+  pod_count: number;
+  cpu_util_pct: number;
+  mem_util_pct: number;
+  restart_count: number;
+}
+
+/**
  * Bucket the in-scope services by their resolved app label and decorate
  * each bucket with the cluster-wide footprint when it differs. Sorted by
  * in-scope service count (descending) so the most-relevant apps render
@@ -210,6 +224,90 @@ function buildServiceGroups(
     out.push(group);
   }
   out.sort((a, b) => b.services.length - a.services.length);
+  return out;
+}
+
+/**
+ * Bucket per-pod resource snapshots into per-app rollups using the
+ * pod -> service -> service.namespace chain. Pods that don't resolve
+ * to an app go under the "_ungrouped" bucket so the view can offer a
+ * dedicated chip for them. Caps at PODS_BY_APP_CAP buckets — the
+ * remainder collapses into "_other" so totals reconcile with the
+ * namespace-aggregate cpu/mem tiles even when the long tail is
+ * truncated.
+ */
+function buildPodsByApp(
+  podSnapshots: Map<string, PodResourceSnapshot>,
+  podServiceMap: Map<string, string>,
+  serviceNamespaceMap: Map<string, string>
+): Record<string, K8sAppRollup> | undefined {
+  if (!podSnapshots.size) return undefined;
+
+  interface Acc {
+    cpu_use: number;
+    cpu_lim: number;
+    mem_use: number;
+    mem_lim: number;
+    restart_count: number;
+    pod_count: number;
+  }
+  const acc = new Map<string, Acc>();
+  const bump = (key: string, snap: PodResourceSnapshot) => {
+    const a = acc.get(key) ?? {
+      cpu_use: 0, cpu_lim: 0, mem_use: 0, mem_lim: 0, restart_count: 0, pod_count: 0,
+    };
+    a.cpu_use += snap.cpu_use_cores;
+    a.cpu_lim += snap.cpu_lim_cores;
+    a.mem_use += snap.mem_use_bytes;
+    a.mem_lim += snap.mem_lim_bytes;
+    a.restart_count += snap.restart_delta;
+    a.pod_count += 1;
+    acc.set(key, a);
+  };
+
+  for (const snap of podSnapshots.values()) {
+    const svc = podServiceMap.get(snap.pod);
+    const app = svc ? serviceNamespaceMap.get(svc) : undefined;
+    bump(app ?? "_ungrouped", snap);
+  }
+
+  // Cap at PODS_BY_APP_CAP non-pseudo apps; collapse the long tail. The
+  // _ungrouped pseudo-bucket is exempt from the cap since it's the
+  // catch-all for unmappable pods.
+  const realApps = [...acc.entries()]
+    .filter(([k]) => !k.startsWith("_"))
+    .sort((a, b) => b[1].pod_count - a[1].pod_count);
+  const kept = realApps.slice(0, PODS_BY_APP_CAP);
+  const tail = realApps.slice(PODS_BY_APP_CAP);
+  if (tail.length) {
+    const otherAcc = acc.get("_other") ?? {
+      cpu_use: 0, cpu_lim: 0, mem_use: 0, mem_lim: 0, restart_count: 0, pod_count: 0,
+    };
+    for (const [, a] of tail) {
+      otherAcc.cpu_use += a.cpu_use;
+      otherAcc.cpu_lim += a.cpu_lim;
+      otherAcc.mem_use += a.mem_use;
+      otherAcc.mem_lim += a.mem_lim;
+      otherAcc.restart_count += a.restart_count;
+      otherAcc.pod_count += a.pod_count;
+    }
+    acc.set("_other", otherAcc);
+  }
+
+  const out: Record<string, K8sAppRollup> = {};
+  const finalize = (key: string) => {
+    const a = acc.get(key);
+    if (!a) return;
+    out[key] = {
+      pod_count: a.pod_count,
+      cpu_util_pct: a.cpu_lim > 0 ? Math.round((a.cpu_use / a.cpu_lim) * 1000) / 10 : 0,
+      mem_util_pct: a.mem_lim > 0 ? Math.round((a.mem_use / a.mem_lim) * 1000) / 10 : 0,
+      restart_count: a.restart_count,
+    };
+  };
+  for (const [k] of kept) finalize(k);
+  if (acc.has("_ungrouped")) finalize("_ungrouped");
+  if (acc.has("_other")) finalize("_other");
   return out;
 }
 
@@ -466,6 +564,70 @@ async function queryServiceNamespaceFootprint(
     const ns = r["service.namespace"];
     if (!ns) continue;
     out.set(ns, r.service_count ?? 0);
+  }
+  return out;
+}
+
+// ─── Per-pod resource snapshot (full namespace) ────────────────────────────
+//
+// Unlike queryPodResources (which LIMIT 20s for the Top Pods list), this
+// pulls every pod in scope so by_app rollups reflect the full namespace.
+// Each row gets cpu/mem usage + limits and a restart delta (MAX − MIN over
+// the window, since restart_count is monotonic). Used downstream to bucket
+// by app and emit pods.by_app.
+
+interface PodResourceSnapshot {
+  pod: string;
+  cpu_use_cores: number;
+  cpu_lim_cores: number;
+  mem_use_bytes: number;
+  mem_lim_bytes: number;
+  restart_delta: number;
+}
+
+async function queryPodResourceSnapshot(
+  namespace: string | undefined,
+  cluster: string | undefined,
+  lookback: string,
+  errors: string[]
+): Promise<Map<string, PodResourceSnapshot>> {
+  const out = new Map<string, PodResourceSnapshot>();
+  const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace.replace(/"/g, '\\"')}"` : "";
+  const clusterFilter = cluster ? `\n  AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}"` : "";
+  // MAX-MIN on the monotonic restart counter gives delta over the window
+  // (matches the existing aggregate-restart-timeline semantics).
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-*
+| WHERE @timestamp > NOW() - ${lookback}
+  AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
+| STATS
+    cpu_use = MAX(metrics.k8s.pod.cpu.usage),
+    cpu_lim = MAX(metrics.k8s.pod.cpu.limit),
+    mem_use = MAX(metrics.k8s.pod.memory.working_set),
+    mem_lim = MAX(metrics.k8s.pod.memory.limit),
+    restart_max = MAX(metrics.k8s.container.restart_count),
+    restart_min = MIN(metrics.k8s.container.restart_count)
+  BY k8s.pod.name
+| LIMIT 1000`;
+  const rows = await safeEsqlRows<{
+    "k8s.pod.name"?: string;
+    cpu_use?: number;
+    cpu_lim?: number;
+    mem_use?: number;
+    mem_lim?: number;
+    restart_max?: number;
+    restart_min?: number;
+  }>(esql, errors, { optional: true });
+  for (const r of rows) {
+    const pod = r["k8s.pod.name"];
+    if (!pod) continue;
+    out.set(pod, {
+      pod,
+      cpu_use_cores: r.cpu_use ?? 0,
+      cpu_lim_cores: r.cpu_lim ?? 0,
+      mem_use_bytes: r.mem_use ?? 0,
+      mem_lim_bytes: r.mem_lim ?? 0,
+      restart_delta: Math.max(0, (r.restart_max ?? 0) - (r.restart_min ?? 0)),
+    });
   }
   return out;
 }
@@ -1131,6 +1293,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         serviceNamespaceMap,
         serviceNamespaceFootprint,
         podServiceMap,
+        podSnapshots,
       ] = await Promise.all([
         queryServicesTimeline(topServiceNames, serviceFilter, lb, queryErrors),
         queryPodsMemoryTimeline(topPodNames, effectiveNs, effectiveCluster, lb, queryErrors),
@@ -1148,6 +1311,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         // partial-app chips with the ⤴ indicator.
         queryServiceNamespaceFootprint(lb, queryErrors),
         queryPodServiceMap(effectiveNs, effectiveCluster, lb, queryErrors),
+        queryPodResourceSnapshot(effectiveNs, effectiveCluster, lb, queryErrors),
       ]);
 
       // Attach timeline + peak + per-service KPIs + app group to each row.
@@ -1357,10 +1521,12 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       }
 
       if (pods.length) {
+        const byApp = buildPodsByApp(podSnapshots, podServiceMap, serviceNamespaceMap);
         result.pods = {
           total: pods.length,
           top_memory: pods.slice(0, 5),
           ...(podsTimelineWindow ? { timeline_window: podsTimelineWindow } : {}),
+          ...(byApp ? { by_app: byApp } : {}),
         };
       } else {
         result.pods_note =

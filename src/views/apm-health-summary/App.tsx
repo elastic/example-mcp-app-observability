@@ -129,6 +129,18 @@ interface DataCoverage {
 }
 
 /**
+ * Per-app k8s rollup for client-side filter recomputation. Mirrors the
+ * tool-side shape exactly. Util percentages are 0-100; restart_count is
+ * the delta over the lookback window.
+ */
+interface K8sAppRollup {
+  pod_count: number;
+  cpu_util_pct: number;
+  mem_util_pct: number;
+  restart_count: number;
+}
+
+/**
  * Scope the user is currently viewing — purely informational. The card is
  * read-only; scope changes happen via chat (the user asks Claude for a
  * different cluster / namespace / environment). This avoids any state
@@ -175,7 +187,19 @@ interface HealthData {
     timeline_window?: TimelineWindow;
   };
   degraded_services: DegradedService[];
-  pods?: { total: number; top_memory: PodDetail[]; timeline_window?: TimelineWindow };
+  pods?: {
+    total: number;
+    top_memory: PodDetail[];
+    timeline_window?: TimelineWindow;
+    /**
+     * Per-app rollup of cpu/mem/restart aggregates over the FULL namespace
+     * (not just top_memory), so the view can recompute the K8s KPI tiles
+     * from a filtered subset of apps. Keys are app labels; the special
+     * "_ungrouped" key holds pods that couldn't be mapped to an app, and
+     * "_other" holds the long tail past PODS_BY_APP_CAP.
+     */
+    by_app?: Record<string, K8sAppRollup>;
+  };
   apm_tiles?: KpiTileGroup;
   k8s_tiles?: KpiTileGroup;
   pods_note?: string;
