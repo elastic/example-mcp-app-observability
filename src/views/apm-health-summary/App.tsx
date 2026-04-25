@@ -1020,7 +1020,15 @@ function KpiTileCard({
   );
 }
 
-function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
+function KpiRow({
+  label,
+  group,
+  filterActive,
+}: {
+  label: string;
+  group: KpiTileGroup;
+  filterActive?: boolean;
+}) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div
@@ -1032,9 +1040,31 @@ function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
           letterSpacing: 0.5,
           marginBottom: 8,
           paddingLeft: 2,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
         }}
       >
-        {label}
+        <span>{label}</span>
+        {filterActive && (
+          <span
+            className="mono"
+            style={{
+              fontSize: 9,
+              fontWeight: 500,
+              letterSpacing: 0,
+              textTransform: "none",
+              color: theme.amber,
+              padding: "1px 6px",
+              border: `1px solid ${theme.amber}55`,
+              borderRadius: 999,
+              background: `${theme.amber}12`,
+            }}
+            title="Tile values reflect the current app filter; sparklines remain on the namespace aggregate."
+          >
+            filtered
+          </span>
+        )}
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         {group.tiles.map((t) => (
@@ -1045,6 +1075,204 @@ function KpiRow({ label, group }: { label: string; group: KpiTileGroup }) {
   );
 }
 
+// ── App filter derivation ──────────────────────────────────────────────────
+//
+// The user-facing filter UI is a row of toggleable application chips in the
+// scope card. Selection is purely client-side — no rerun, no payload
+// reload. Everything below derives the filtered data the visualizations
+// render from the original `data` plus the current `selectedApps` set.
+//
+// The "ungrouped" pseudo-app captures services/pods with no resolvable
+// app, so the user always has a way to include or exclude unmapped
+// signals. Honest filtering depends on the per-app payload landed in
+// the previous commits (services[].app, pods[].app, pods.by_app,
+// anomalies.by_entity).
+
+const UNGROUPED = "_ungrouped";
+
+interface AppKey { key: string; label: string; isPseudo: boolean }
+
+/** All app keys present in the loaded payload — `service_groups` if the
+ *  tool resolved any, plus a synthetic _ungrouped key when there are
+ *  unmapped services or pods. Sorted with real apps first, _ungrouped
+ *  always last. */
+function deriveAppList(data: HealthData): AppKey[] {
+  const groups = data.scope?.service_groups ?? [];
+  const list: AppKey[] = groups.map((g) => ({ key: g.label, label: g.label, isPseudo: false }));
+
+  const services = data.services?.details ?? [];
+  const pods = data.pods?.top_memory ?? [];
+  const hasUngroupedSvc = services.some((s) => !s.app);
+  const hasUngroupedPod = pods.some((p) => !p.app);
+  const byAppHasUngrouped = !!data.pods?.by_app?.[UNGROUPED];
+  if (hasUngroupedSvc || hasUngroupedPod || byAppHasUngrouped) {
+    list.push({ key: UNGROUPED, label: "ungrouped", isPseudo: true });
+  }
+  return list;
+}
+
+/** Resolve an anomaly entity string ("service.name=checkout",
+ *  "k8s.pod.name=foo") to its app. Returns undefined for entities that
+ *  match nothing in the loaded service/pod data. */
+function entityToApp(
+  entity: string,
+  serviceToApp: Map<string, string>,
+  podToApp: Map<string, string>
+): string | undefined {
+  const eq = entity.indexOf("=");
+  if (eq < 0) return undefined;
+  const field = entity.slice(0, eq);
+  const value = entity.slice(eq + 1);
+  if (field === "service.name" || field.endsWith(".service.name")) {
+    return serviceToApp.get(value);
+  }
+  // ML influencers emit either OTel (k8s.pod.name) or ECS
+  // (kubernetes.pod.name) field names depending on the job's source.
+  if (
+    field === "k8s.pod.name" ||
+    field.endsWith(".k8s.pod.name") ||
+    field === "kubernetes.pod.name" ||
+    field.endsWith(".kubernetes.pod.name")
+  ) {
+    return podToApp.get(value);
+  }
+  return undefined;
+}
+
+/** Filtered KPI-tile values derived from the in-scope service set + pod
+ *  rollups. Only the value + status changes — sparklines stay on the
+ *  namespace-aggregate timeline because per-app timelines aren't in the
+ *  payload (would require server-side bucketed time-series queries). */
+function recomputeApmTiles(
+  baseTiles: KpiTileGroup,
+  filteredServices: ServiceDetail[]
+): KpiTileGroup {
+  if (!baseTiles?.tiles) return baseTiles;
+  const totalRpm = filteredServices.reduce((s, x) => s + x.throughput, 0);
+  const p99Max = filteredServices.reduce(
+    (m, s) => Math.max(m, s.p99_latency_ms ?? 0),
+    0
+  );
+  const totalThroughputForWeight = totalRpm || 1;
+  const errAvg =
+    filteredServices.reduce(
+      (s, x) => s + (x.error_rate_pct ?? 0) * (x.throughput / totalThroughputForWeight),
+      0
+    ) || 0;
+  const tiles = baseTiles.tiles.map((t) => {
+    if (t.key === "throughput") {
+      return { ...t, value_display: fmtThroughputForTile(totalRpm) };
+    }
+    if (t.key === "latency_p99") {
+      return {
+        ...t,
+        value_display: `${p99Max}`,
+        status: p99Max > 0 ? statusForP99(p99Max) : t.status,
+      };
+    }
+    if (t.key === "error_rate") {
+      return {
+        ...t,
+        value_display: errAvg.toFixed(2),
+        status: statusForErrorRate(errAvg),
+      };
+    }
+    if (t.key === "services") {
+      return {
+        ...t,
+        value_display: `${filteredServices.length}`,
+        secondary: undefined,
+      };
+    }
+    return t;
+  });
+  return { ...baseTiles, tiles };
+}
+
+function recomputeK8sTiles(
+  baseTiles: KpiTileGroup,
+  byAppKeys: string[],
+  byApp: Record<string, K8sAppRollup>
+): KpiTileGroup {
+  if (!baseTiles?.tiles) return baseTiles;
+  let cpuSum = 0, memSum = 0, restartSum = 0, podSum = 0, n = 0;
+  for (const k of byAppKeys) {
+    const r = byApp[k];
+    if (!r) continue;
+    cpuSum += r.cpu_util_pct;
+    memSum += r.mem_util_pct;
+    restartSum += r.restart_count;
+    podSum += r.pod_count;
+    n += 1;
+  }
+  const cpuAvg = n > 0 ? cpuSum / n : 0;
+  const memAvg = n > 0 ? memSum / n : 0;
+  const tiles = baseTiles.tiles.map((t) => {
+    if (t.key === "cpu") {
+      return {
+        ...t,
+        value_display: cpuAvg > 0 ? `${cpuAvg.toFixed(0)}` : "—",
+        status: cpuAvg > 0 ? statusForCpu(cpuAvg) : t.status,
+      };
+    }
+    if (t.key === "memory") {
+      return {
+        ...t,
+        value_display: memAvg > 0 ? `${memAvg.toFixed(0)}` : "—",
+        status: memAvg > 0 ? statusForMem(memAvg) : t.status,
+      };
+    }
+    if (t.key === "restarts") {
+      return {
+        ...t,
+        value_display: `${restartSum}`,
+        status: statusForRestarts(restartSum),
+      };
+    }
+    if (t.key === "nodes") {
+      // pod_count from filtered apps, not nodes — nodes are cluster-wide.
+      return { ...t, secondary: `${podSum} pods in selected apps` };
+    }
+    return t;
+  });
+  return { ...baseTiles, tiles };
+}
+
+function fmtThroughputForTile(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return `${Math.round(v)}`;
+}
+
+// View-side replicas of the tool-side threshold helpers. Kept here rather
+// than imported because they apply only to the recomputed-tile case; the
+// tool's pre-computed tiles already carry their status when delivered.
+function statusForP99(ms: number): TileStatus {
+  if (ms >= 1000) return "critical";
+  if (ms >= 500) return "degraded";
+  return "ok";
+}
+function statusForErrorRate(pct: number): TileStatus {
+  if (pct >= 2) return "critical";
+  if (pct >= 1) return "degraded";
+  return "ok";
+}
+function statusForCpu(pct: number): TileStatus {
+  if (pct >= 90) return "critical";
+  if (pct >= 80) return "degraded";
+  return "ok";
+}
+function statusForMem(pct: number): TileStatus {
+  if (pct >= 95) return "critical";
+  if (pct >= 90) return "degraded";
+  return "ok";
+}
+function statusForRestarts(n: number): TileStatus {
+  if (n >= 5) return "critical";
+  if (n >= 1) return "degraded";
+  return "ok";
+}
+
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
@@ -1053,6 +1281,10 @@ export function App() {
   // collapses to a CondensedChips summary strip for compact scanning.
   const [memDetailed, setMemDetailed] = useState(true);
   const [svcDetailed, setSvcDetailed] = useState(true);
+  // App filter state — null means "all apps selected" (no filter active).
+  // Reset whenever a new tool result lands so a different namespace doesn't
+  // inherit the previous selection.
+  const [selectedApps, setSelectedApps] = useState<Set<string> | null>(null);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -1064,7 +1296,10 @@ export function App() {
 
   const handleToolResult = useCallback((params: ToolResultParams) => {
     const d = parseToolResult<HealthData>(params);
-    if (d?.overall_health) setData(d);
+    if (d?.overall_health) {
+      setData(d);
+      setSelectedApps(null); // reset filter on new payload
+    }
   }, []);
 
   useApp({
@@ -1077,20 +1312,135 @@ export function App() {
 
   const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
-  const pods = data?.pods?.top_memory ?? [];
+  const allPods = data?.pods?.top_memory ?? [];
+  const allServices = data?.services.details ?? [];
+  const allDegraded = data?.degraded_services ?? [];
+
+  const appList = useMemo(() => (data ? deriveAppList(data) : []), [data]);
+  const filterActive = !!selectedApps && selectedApps.size < appList.length;
+
+  // Build service.name -> app and pod -> app maps so filtered renderings
+  // (anomaly heatmap, degraded list) can resolve back to apps without
+  // re-scanning the full service list per render. Falls back to the
+  // tool-emitted scope.service_groups when individual rows lack the
+  // `app` field (older payloads or fixtures with sparse details).
+  const serviceToApp = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of data?.scope?.service_groups ?? []) {
+      for (const svc of g.services) m.set(svc, g.label);
+    }
+    for (const s of allServices) if (s.app) m.set(s.service, s.app);
+    return m;
+  }, [allServices, data]);
+
+  const podToApp = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of allPods) if (p.app) m.set(p.pod, p.app);
+    return m;
+  }, [allPods]);
+
+  // Predicate: does the row's app pass the filter? Unmapped rows fall
+  // under UNGROUPED — same logic the apps strip uses.
+  const passesFilter = useCallback(
+    (rowApp: string | undefined) => {
+      if (!selectedApps) return true;
+      return selectedApps.has(rowApp ?? UNGROUPED);
+    },
+    [selectedApps]
+  );
+
+  const services = useMemo(
+    () => allServices.filter((s) => passesFilter(s.app)),
+    [allServices, passesFilter]
+  );
+  const pods = useMemo(
+    () => allPods.filter((p) => passesFilter(p.app)),
+    [allPods, passesFilter]
+  );
+  const filteredDegraded = useMemo(() => {
+    if (!filterActive) return allDegraded;
+    return allDegraded.filter((d) => passesFilter(serviceToApp.get(d.service)));
+  }, [allDegraded, filterActive, passesFilter, serviceToApp]);
+
   const maxMem = useMemo(
     () => Math.max(100, ...pods.map((p) => p.avg_memory_mb)),
     [pods]
   );
-  const services = data?.services.details ?? [];
   const maxThroughput = useMemo(
     () => Math.max(1, ...services.map((s) => s.throughput)),
     [services]
   );
   const degradedSet = useMemo(
-    () => new Set((data?.degraded_services ?? []).map((d) => d.service)),
-    [data]
+    () => new Set(filteredDegraded.map((d) => d.service)),
+    [filteredDegraded]
   );
+
+  const apmTiles = useMemo(() => {
+    if (!data?.apm_tiles) return undefined;
+    if (!filterActive) return data.apm_tiles;
+    return recomputeApmTiles(data.apm_tiles, services);
+  }, [data, services, filterActive]);
+
+  const k8sTiles = useMemo(() => {
+    if (!data?.k8s_tiles) return undefined;
+    if (!filterActive || !selectedApps || !data.pods?.by_app) return data.k8s_tiles;
+    return recomputeK8sTiles(data.k8s_tiles, [...selectedApps], data.pods.by_app);
+  }, [data, selectedApps, filterActive]);
+
+  // Filtered anomaly rollup: when filter is active, drop heatmap rows
+  // whose entity doesn't resolve to a selected app, and recompute the
+  // donut + total from by_entity for the remaining matches.
+  const anomalies = useMemo(() => {
+    if (!data?.anomalies) return undefined;
+    if (!filterActive) return data.anomalies;
+    const a = data.anomalies;
+    const filteredEntities = (a.top_entities ?? []).filter((te) => {
+      const app = entityToApp(te.entity, serviceToApp, podToApp);
+      return passesFilter(app);
+    });
+    let total = 0;
+    const bySev: Record<string, number> = {};
+    if (a.by_entity) {
+      for (const [entityKey, rollup] of Object.entries(a.by_entity)) {
+        if (entityKey === "_other") continue;
+        const app = entityToApp(entityKey, serviceToApp, podToApp);
+        if (!passesFilter(app)) continue;
+        total += rollup.total;
+        for (const [sev, n] of Object.entries(rollup.by_severity)) {
+          bySev[sev] = (bySev[sev] ?? 0) + n;
+        }
+      }
+    } else {
+      // No by_entity in payload (older tool versions / partition fallback).
+      // Fall back to namespace-wide totals — honest about the limitation.
+      total = a.total;
+      Object.assign(bySev, a.by_severity ?? {});
+    }
+    return {
+      ...a,
+      total,
+      by_severity: bySev,
+      top_entities: filteredEntities,
+    };
+  }, [data, filterActive, passesFilter, serviceToApp, podToApp]);
+
+  const toggleApp = useCallback(
+    (key: string) => {
+      setSelectedApps((prev) => {
+        const allKeys = appList.map((a) => a.key);
+        const current = prev ?? new Set(allKeys);
+        const next = new Set(current);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        // If the user re-selected everything, clear the filter so subsequent
+        // payloads inherit "all-selected" rather than carrying state forward.
+        if (next.size === allKeys.length) return null;
+        return next;
+      });
+    },
+    [appList]
+  );
+  const clearFilter = useCallback(() => setSelectedApps(null), []);
 
   const severity: DSSeverity | null = data
     ? HEALTH_SEVERITY[data.overall_health] ?? "minor"
@@ -1166,7 +1516,16 @@ export function App() {
         )}
 
         {data.scope && (
-          <ScopeSubheader scope={data.scope} coverage={data.data_coverage} />
+          <ScopeSubheader
+            scope={data.scope}
+            coverage={data.data_coverage}
+            appList={appList}
+            selectedApps={selectedApps}
+            onToggleApp={toggleApp}
+            onClearFilter={clearFilter}
+            filterActive={filterActive}
+            filteredServiceCount={services.length}
+          />
         )}
 
         {data.rerun_context && (
@@ -1181,11 +1540,11 @@ export function App() {
        *
        * Falls back to the legacy StatGrid when neither tile group is in the
        * payload (e.g. older cached results / non-MCP consumers). */}
-      {data.apm_tiles ? (
-        <KpiRow label="APM" group={data.apm_tiles} />
+      {apmTiles ? (
+        <KpiRow label="APM" group={apmTiles} filterActive={filterActive} />
       ) : null}
-      {data.k8s_tiles ? (
-        <KpiRow label="Kubernetes" group={data.k8s_tiles} />
+      {k8sTiles ? (
+        <KpiRow label="Kubernetes" group={k8sTiles} filterActive={filterActive} />
       ) : null}
       {!data.apm_tiles && !data.k8s_tiles && (
         <StatGrid>
@@ -1212,9 +1571,9 @@ export function App() {
       )}
 
       {/* Anomaly breakdown */}
-      {data.anomalies ? (
+      {anomalies ? (
         <SectionCard title="Anomaly breakdown">
-          <AnomalyBreakdown anomalies={data.anomalies} />
+          <AnomalyBreakdown anomalies={anomalies} />
         </SectionCard>
       ) : data.anomalies_note ? (
         <SectionCard title="ML anomalies">
@@ -1409,9 +1768,21 @@ function RerunPresets({
 function ScopeSubheader({
   scope,
   coverage,
+  appList,
+  selectedApps,
+  onToggleApp,
+  onClearFilter,
+  filterActive,
+  filteredServiceCount,
 }: {
   scope: HealthScope;
   coverage?: DataCoverage;
+  appList: AppKey[];
+  selectedApps: Set<string> | null;
+  onToggleApp: (key: string) => void;
+  onClearFilter: () => void;
+  filterActive: boolean;
+  filteredServiceCount: number;
 }) {
   const hasK8s = coverage?.kubernetes ?? !!scope.current_cluster;
   const hasApm = coverage?.apm ?? scope.service_count !== undefined;
@@ -1458,6 +1829,11 @@ function ScopeSubheader({
     naming_prefix: "name prefix",
   };
 
+  // Quick lookup of the tool-emitted group metadata so each chip can show
+  // its service count + ⤴ partial-app indicator.
+  const groupByLabel = new Map<string, HealthServiceGroup>();
+  for (const g of scope.service_groups ?? []) groupByLabel.set(g.label, g);
+
   return (
     <div className="health-scope">
       <span className="health-scope-label">Scope</span>
@@ -1475,43 +1851,87 @@ function ScopeSubheader({
           </>
         )}
       </div>
-      {scope.service_groups && scope.service_groups.length > 0 && (
+      {appList.length > 0 && (
         <div className="health-scope-groups">
           <span className="health-scope-groups-label">
             Applications
             {scope.service_groups_source && (
-              <span className="health-scope-groups-source">
+              <span
+                className="health-scope-groups-source"
+                title={
+                  scope.service_groups_source === "service.namespace"
+                    ? "Resolved from APM service.namespace on transaction docs"
+                    : scope.service_groups_source === "k8s_label"
+                      ? "Resolved from Kubernetes label app.kubernetes.io/name"
+                      : "Resolved from service.name prefix heuristic"
+                }
+              >
                 {" "}
                 · {groupSourceLabel[scope.service_groups_source]}
               </span>
             )}
           </span>
-          <div className="health-scope-groups-list">
-            {scope.service_groups.map((g) => {
-              // Footgun mitigation: when the app's footprint extends
-              // beyond the current scope (e.g. checkout exists in two
-              // k8s namespaces), tag the chip with ⤴ so the user knows
-              // they're seeing only a slice of the app.
-              const partial = g.total !== undefined && g.total > g.services.length;
+          <div className="health-scope-groups-list" role="group" aria-label="Filter by application">
+            {appList.map((entry) => {
+              const group = groupByLabel.get(entry.key);
+              const partial =
+                !!group && group.total !== undefined && group.total > group.services.length;
+              const isSelected = !selectedApps || selectedApps.has(entry.key);
+              const count = group?.services.length;
+              const titleParts: string[] = [];
+              if (entry.isPseudo) {
+                titleParts.push("Pods or services with no resolvable app label.");
+              } else if (group) {
+                titleParts.push(
+                  partial
+                    ? `${group.label} has ${group.total} services total; ${group.services.length} in this scope`
+                    : `${group.label}: ${group.services.join(", ")}`
+                );
+              }
+              titleParts.push(isSelected ? "Click to hide" : "Click to show");
               return (
-                <span
-                  key={g.label}
-                  className={`health-scope-group${partial ? " is-partial" : ""}`}
-                  title={
-                    partial
-                      ? `${g.label} has ${g.total} services total; ${g.services.length} in this scope`
-                      : `${g.label}: ${g.services.join(", ")}`
+                <button
+                  key={entry.key}
+                  type="button"
+                  className={
+                    "health-scope-group" +
+                    (partial ? " is-partial" : "") +
+                    (entry.isPseudo ? " is-pseudo" : "") +
+                    (isSelected ? " is-selected" : " is-deselected")
                   }
+                  aria-pressed={isSelected}
+                  onClick={() => onToggleApp(entry.key)}
+                  title={titleParts.join(" · ")}
                 >
-                  <span className="health-scope-group-label">{g.label}</span>
-                  <span className="health-scope-group-count mono">
-                    {g.services.length}
-                  </span>
-                  {partial && <span className="health-scope-group-overflow" aria-hidden="true">⤴</span>}
-                </span>
+                  <span className="health-scope-group-label">{entry.label}</span>
+                  {count !== undefined && (
+                    <span className="health-scope-group-count mono">{count}</span>
+                  )}
+                  {partial && (
+                    <span className="health-scope-group-overflow" aria-hidden="true">⤴</span>
+                  )}
+                </button>
               );
             })}
           </div>
+          {filterActive && (
+            <div className="health-scope-filter-active">
+              <span>
+                Filter:{" "}
+                <span className="mono">
+                  {(selectedApps?.size ?? 0)} of {appList.length} apps
+                </span>{" "}
+                · <span className="mono">{filteredServiceCount} services</span>
+              </span>
+              <button
+                type="button"
+                className="health-scope-filter-clear"
+                onClick={onClearFilter}
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

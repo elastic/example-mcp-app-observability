@@ -63,48 +63,60 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       details: [
         {
           service: "checkout",
+          app: "checkout",
           throughput: 1203,
           avg_latency_ms: 412,
+          p99_latency_ms: 612,
           error_rate_pct: 2.3,
           timeline: metricTimeline([1100, 1120, 1180, 1240, 1290, 1310, 1280, 1220, 1190, 1170, 1190, 1203]),
           peak_throughput: 1310,
         },
         {
           service: "frontend",
+          app: "frontend",
           throughput: 5620,
           avg_latency_ms: 118,
+          p99_latency_ms: 240,
           error_rate_pct: 0.1,
           timeline: metricTimeline([5100, 5180, 5260, 5340, 5420, 5500, 5580, 5620, 5680, 5700, 5690, 5620]),
           peak_throughput: 5700,
         },
         {
           service: "search",
+          app: "frontend",
           throughput: 3210,
           avg_latency_ms: 89,
+          p99_latency_ms: 180,
           error_rate_pct: 0.05,
           timeline: metricTimeline([3100, 3180, 3240, 3280, 3300, 3280, 3260, 3240, 3220, 3210, 3200, 3210]),
           peak_throughput: 3300,
         },
         {
           service: "payments",
+          app: "payments",
           throughput: 980,
           avg_latency_ms: 245,
+          p99_latency_ms: 480,
           error_rate_pct: 1.8,
           timeline: metricTimeline([920, 940, 960, 985, 1010, 1020, 1000, 990, 970, 975, 985, 980]),
           peak_throughput: 1020,
         },
         {
           service: "inventory",
+          app: "checkout",
           throughput: 2104,
           avg_latency_ms: 56,
+          p99_latency_ms: 110,
           error_rate_pct: 0,
           timeline: metricTimeline([2100, 2098, 2105, 2110, 2108, 2104, 2101, 2099, 2103, 2106, 2104, 2104]),
           peak_throughput: 2110,
         },
         {
           service: "shipping",
+          app: "checkout",
           throughput: 420,
           avg_latency_ms: 302,
+          p99_latency_ms: 720,
           error_rate_pct: 3.5,
           timeline: metricTimeline([500, 480, 470, 460, 450, 440, 430, 425, 420, 418, 419, 420]),
           peak_throughput: 500,
@@ -122,6 +134,8 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       top_memory: [
         {
           pod: "checkout-api-7fd9-xk12",
+          service: "checkout",
+          app: "checkout",
           avg_memory_mb: 1820,
           avg_cpu_cores: 0.9,
           timeline: metricTimeline([1620, 1660, 1690, 1720, 1760, 1790, 1810, 1830, 1850, 1890, 1870, 1820]),
@@ -129,6 +143,8 @@ export const apmHealthSummaryFixtures: FixtureSet = {
         },
         {
           pod: "payments-worker-3ab0-qq7p",
+          service: "payments",
+          app: "payments",
           avg_memory_mb: 1640,
           avg_cpu_cores: 0.55,
           timeline: metricTimeline([1580, 1595, 1610, 1620, 1625, 1630, 1640, 1650, 1660, 1655, 1645, 1640]),
@@ -136,6 +152,8 @@ export const apmHealthSummaryFixtures: FixtureSet = {
         },
         {
           pod: "frontend-6f4d-11zz",
+          service: "frontend",
+          app: "frontend",
           avg_memory_mb: 1410,
           avg_cpu_cores: 0.4,
           timeline: metricTimeline([1380, 1385, 1392, 1398, 1402, 1406, 1410, 1412, 1415, 1418, 1414, 1410]),
@@ -143,6 +161,8 @@ export const apmHealthSummaryFixtures: FixtureSet = {
         },
         {
           pod: "search-indexer-aa12-k0ll",
+          service: "search",
+          app: "frontend",
           avg_memory_mb: 1280,
           avg_cpu_cores: 0.7,
           timeline: metricTimeline([1200, 1210, 1220, 1235, 1250, 1260, 1270, 1280, 1285, 1290, 1295, 1280]),
@@ -150,6 +170,17 @@ export const apmHealthSummaryFixtures: FixtureSet = {
         },
       ],
       timeline_window: METRIC_WINDOW,
+      // Full-namespace per-app rollups so the K8s tile recomputation is
+      // honest under filter. Pseudo-keys carry edge cases:
+      //   _ungrouped: pods with no resolvable app (sidecars / infra).
+      //   _other:     long tail past PODS_BY_APP_CAP, omitted here.
+      by_app: {
+        checkout: { pod_count: 38, cpu_util_pct: 72, mem_util_pct: 81, restart_count: 3 },
+        frontend: { pod_count: 24, cpu_util_pct: 65, mem_util_pct: 68, restart_count: 0 },
+        payments: { pod_count: 31, cpu_util_pct: 82, mem_util_pct: 88, restart_count: 4 },
+        infra: { pod_count: 14, cpu_util_pct: 41, mem_util_pct: 52, restart_count: 0 },
+        _ungrouped: { pod_count: 6, cpu_util_pct: 38, mem_util_pct: 44, restart_count: 0 },
+      },
     },
     anomalies: {
       total: 11,
@@ -181,6 +212,16 @@ export const apmHealthSummaryFixtures: FixtureSet = {
           timeline: timeline([0, 0, 0, 0, 0, 0, 0, 0, 0, 51, 50, 0]),
         },
       ],
+      // Per-entity counts so the donut + total chip recompute under
+      // filter. Sum of (entity totals) + _other reconciles to the
+      // namespace-wide total above.
+      by_entity: {
+        "service.name=checkout": { total: 4, by_severity: { critical: 1, major: 2, minor: 1 } },
+        "service.name=shipping": { total: 3, by_severity: { critical: 1, major: 1, minor: 1 } },
+        "service.name=payments": { total: 2, by_severity: { major: 1, minor: 1 } },
+        "host.name=node-us-east-4": { total: 1, by_severity: { minor: 1 } },
+        "host.name=node-us-west-1": { total: 1, by_severity: { minor: 1 } },
+      },
       timeline_window: {
         start_ms: bucketStart,
         end_ms: now,
@@ -340,6 +381,11 @@ export const apmHealthSummaryFixtures: FixtureSet = {
           timeline: timeline([0, 0, 0, 0, 0, 0, 0, 0, 0, 82, 91, 94]),
         },
       ],
+      by_entity: {
+        "service.name=checkout": { total: 4, by_severity: { critical: 3, major: 1 } },
+        "service.name=payments": { total: 3, by_severity: { critical: 2, major: 1 } },
+        "service.name=shipping": { total: 1, by_severity: { critical: 1 } },
+      },
       timeline_window: {
         start_ms: bucketStart,
         end_ms: now,
@@ -382,24 +428,35 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       top_memory: [
         {
           pod: "payments-api-7d8f9c-x4n2k",
+          // App resolved from k8s label app.kubernetes.io/name in this
+          // coverage state (no APM = no service.namespace).
+          app: "payments",
           avg_memory_mb: 1820,
           peak_memory_mb: 2010,
           timeline: metricTimeline([1700, 1740, 1780, 1820, 1860, 1900, 1950, 2010, 1980, 1900, 1850, 1820]),
         },
         {
           pod: "ledger-6b9d-xyz12",
+          app: "payments",
           avg_memory_mb: 1340,
           peak_memory_mb: 1480,
           timeline: metricTimeline([1280, 1300, 1320, 1340, 1360, 1400, 1440, 1480, 1450, 1400, 1360, 1340]),
         },
         {
           pod: "frontend-web-5c7-abc34",
+          app: "frontend",
           avg_memory_mb: 920,
           peak_memory_mb: 980,
           timeline: metricTimeline([880, 890, 900, 920, 940, 960, 980, 970, 950, 930, 920, 920]),
         },
       ],
       timeline_window: METRIC_WINDOW,
+      by_app: {
+        payments: { pod_count: 18, cpu_util_pct: 84, mem_util_pct: 92, restart_count: 5 },
+        frontend: { pod_count: 12, cpu_util_pct: 64, mem_util_pct: 70, restart_count: 1 },
+        infra: { pod_count: 9, cpu_util_pct: 38, mem_util_pct: 51, restart_count: 1 },
+        _ungrouped: { pod_count: 3, cpu_util_pct: 22, mem_util_pct: 31, restart_count: 0 },
+      },
     },
     k8s_tiles: {
       timeline_window: METRIC_WINDOW,
@@ -440,7 +497,7 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       by_severity: { major: 2, minor: 2 },
       top_entities: [
         {
-          entity: "kubernetes.pod.name=payments-api-7d8f9c-x4n2k",
+          entity: "k8s.pod.name=payments-api-7d8f9c-x4n2k",
           max_score: 84,
           timeline: timeline([0, 0, 0, 0, 0, 60, 70, 78, 82, 84, 80, 76]),
         },
@@ -450,6 +507,13 @@ export const apmHealthSummaryFixtures: FixtureSet = {
           timeline: timeline([0, 0, 0, 0, 0, 0, 55, 62, 68, 71, 69, 65]),
         },
       ],
+      by_entity: {
+        // Pod entity → maps to "payments" app via podToApp on the view.
+        "k8s.pod.name=payments-api-7d8f9c-x4n2k": { total: 2, by_severity: { major: 2 } },
+        // Host-level entity doesn't resolve to any app — counts as
+        // _other when the user filters down to just app(s).
+        "host.name=node-us-east-3": { total: 2, by_severity: { minor: 2 } },
+      },
       timeline_window: METRIC_WINDOW,
     },
     warning: "APM telemetry is unavailable — service-level latency / error rates are hidden.",
