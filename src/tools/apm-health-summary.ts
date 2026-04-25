@@ -26,7 +26,7 @@ import {
   listAvailableClusters,
 } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
-import { PODS_BY_APP_CAP } from "./_limits.js";
+import { ANOMALY_BY_ENTITY_CAP, PODS_BY_APP_CAP } from "./_limits.js";
 
 const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
 
@@ -903,10 +903,23 @@ interface TimelineWindow {
   bucket_span_ms: number;
 }
 
+interface AnomalyEntityRollup {
+  total: number;
+  by_severity: Record<string, number>;
+}
+
 interface AnomalyRollup {
   total: number;
   by_severity: Record<string, number>;
   top_entities: { entity: string; max_score: number; timeline?: TimelineBucket[] }[];
+  /**
+   * Per-entity count breakdown so the view can recompute the donut + total
+   * chip when the user filters by application chip. Keyed by entity string
+   * (e.g. "service.name=checkout", "k8s.pod.name=payments-api-…"). Capped
+   * at ANOMALY_BY_ENTITY_CAP entries; long tail collapses into the `_other`
+   * pseudo-key so totals reconcile when the cap is exceeded.
+   */
+  by_entity?: Record<string, AnomalyEntityRollup>;
   timeline_window?: TimelineWindow;
   error?: string;
 }
@@ -1068,6 +1081,53 @@ async function queryActiveAnomalies(
           },
         },
       },
+      // Per-entity count breakdown for filter recomputation. Same nested
+      // path + filter as top_entities_by_influencer but a wider cap and a
+      // different ordering (default: doc_count desc — counts, not max
+      // score) so the by_entity payload reflects "where do anomalies
+      // concentrate" rather than "what's the worst right now".
+      entities_by_count: {
+        nested: { path: "influencers" },
+        aggs: {
+          pods_only: {
+            filter: {
+              terms: {
+                "influencers.influencer_field_name": [
+                  "k8s.pod.name",
+                  "resource.attributes.k8s.pod.name",
+                  "service.name",
+                  "resource.attributes.service.name",
+                ],
+              },
+            },
+            aggs: {
+              by_value: {
+                terms: {
+                  field: "influencers.influencer_field_values",
+                  size: ANOMALY_BY_ENTITY_CAP,
+                },
+                aggs: {
+                  parent: {
+                    reverse_nested: {},
+                    aggs: {
+                      by_severity: {
+                        range: {
+                          field: "record_score",
+                          ranges: [
+                            { key: "minor", from: 50, to: 75 },
+                            { key: "major", from: 75, to: 90 },
+                            { key: "critical", from: 90 },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     },
   };
 
@@ -1086,6 +1146,13 @@ async function queryActiveAnomalies(
       max_score: { value: number };
       timeline?: HistoAgg;
     };
+    type CountEntityBucket = {
+      key: string;
+      doc_count: number;
+      parent?: {
+        by_severity?: { buckets: { key: string; doc_count: number }[] };
+      };
+    };
     type AggResp = {
       hits: { total: { value: number } | number };
       aggregations?: {
@@ -1094,6 +1161,9 @@ async function queryActiveAnomalies(
           pods_only?: { by_value?: { buckets: InfluencerBucket[] } };
         };
         top_entities_by_partition?: { buckets: PartitionBucket[] };
+        entities_by_count?: {
+          pods_only?: { by_value?: { buckets: CountEntityBucket[] } };
+        };
       };
     };
     const resp = await esRequest<AggResp>("/.ml-anomalies-*/_search", { body });
@@ -1153,11 +1223,46 @@ async function queryActiveAnomalies(
           bucket_span_ms: TIMELINE_BUCKET_SPAN_MS,
         };
 
+    // Per-entity count breakdown — only emitted on the influencer path
+    // (partition fallback doesn't carry the same dimensions, and the
+    // ordering of by_entity is "where do anomalies concentrate" rather
+    // than "highest peak score", so it's the influencer-side signal that
+    // matters here).
+    const countBuckets =
+      resp.aggregations?.entities_by_count?.pods_only?.by_value?.buckets || [];
+    let byEntity: Record<string, AnomalyEntityRollup> | undefined;
+    if (countBuckets.length) {
+      byEntity = {};
+      let inScopeTotal = 0;
+      for (const cb of countBuckets) {
+        const sevAgg = cb.parent?.by_severity?.buckets || [];
+        const sev: Record<string, number> = {};
+        let entityTotal = 0;
+        for (const sb of sevAgg) {
+          if (sb.doc_count > 0) {
+            sev[sb.key] = sb.doc_count;
+            entityTotal += sb.doc_count;
+          }
+        }
+        byEntity[cb.key] = { total: entityTotal, by_severity: sev };
+        inScopeTotal += entityTotal;
+      }
+      // Long-tail bucket so totals reconcile when the cap is exceeded.
+      // total - inScopeTotal can also include entities that never matched
+      // the field-name filter (e.g. host.name influencers); we surface
+      // both as _other since the view only needs the residual count.
+      const remainder = total - inScopeTotal;
+      if (remainder > 0) {
+        byEntity._other = { total: remainder, by_severity: {} };
+      }
+    }
+
     return {
       total,
       by_severity: bySeverity,
       top_entities: topEntities,
       timeline_window: timelineWindow,
+      ...(byEntity ? { by_entity: byEntity } : {}),
     };
   } catch (exc) {
     return {

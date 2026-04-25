@@ -95,10 +95,18 @@ interface TopAnomalyEntity {
   timeline?: TimelineBucket[];
 }
 
+interface AnomalyEntityRollup {
+  total: number;
+  by_severity: Record<string, number>;
+}
+
 interface AnomalyInfo {
   total: number;
   by_severity?: Record<string, number>;
   top_entities?: TopAnomalyEntity[];
+  /** Per-entity count breakdown for filter recomputation. See tool-side
+   *  comment for the cap + _other reconciliation. */
+  by_entity?: Record<string, AnomalyEntityRollup>;
   timeline_window?: TimelineWindow;
 }
 
