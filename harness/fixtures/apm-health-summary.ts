@@ -43,6 +43,20 @@ export const apmHealthSummaryFixtures: FixtureSet = {
     namespace: "prod-us",
     lookback: "1h",
     data_coverage: { apm: true, kubernetes: true, ml_anomalies: true },
+    scope: {
+      current_cluster: "prod-us-east",
+      k8s_namespace: "prod-us",
+      service_count: 10,
+      pod_count: 42,
+      service_groups_source: "service.namespace",
+      service_groups: [
+        // checkout app spans this namespace + prod-payments → ⤴ chip
+        { label: "checkout", services: ["checkout", "cart", "inventory"], total: 5 },
+        { label: "payments", services: ["payments", "billing", "ledger", "fraud"] },
+        { label: "frontend", services: ["frontend", "search"] },
+        { label: "infra", services: ["auth"] },
+      ],
+    },
     services: {
       total: 18,
       degraded_count: 3,
@@ -281,11 +295,24 @@ export const apmHealthSummaryFixtures: FixtureSet = {
     anomalies: { total: 0, by_severity: {} },
     recommendation: "All services are within baseline for the selected window.",
   }),
-  criticalOnly: fixture("Critical only", {
+  apmOnly: fixture("APM only (no k8s)", {
     overall_health: "critical",
     namespace: "prod-us",
     lookback: "15m",
     data_coverage: { apm: true, kubernetes: false, ml_anomalies: true },
+    scope: {
+      // No cluster / k8s_namespace — APM-only deployments don't have those.
+      // Environment is the primary scope axis here.
+      environment: "production",
+      service_count: 18,
+      service_groups_source: "service.namespace",
+      service_groups: [
+        { label: "checkout", services: ["checkout", "cart", "inventory"] },
+        { label: "payments", services: ["payments", "billing", "ledger", "fraud"] },
+        { label: "frontend", services: ["frontend", "search", "shipping"] },
+        { label: "infra", services: ["auth", "notifications"] },
+      ],
+    },
     services: {
       total: 18,
       degraded_count: 5,
@@ -321,5 +348,110 @@ export const apmHealthSummaryFixtures: FixtureSet = {
     },
     warning: "Kubernetes telemetry is unavailable — pod-level context is hidden.",
     pods_note: "Add kubeletstats integration to see pod-level memory/CPU.",
+  }),
+  k8sOnly: fixture("K8s only (no APM)", {
+    overall_health: "degraded",
+    namespace: "prod-us",
+    lookback: "1h",
+    data_coverage: { apm: false, kubernetes: true, ml_anomalies: true },
+    scope: {
+      current_cluster: "prod-us-east",
+      k8s_namespace: "prod-us",
+      pod_count: 42,
+      node_count: 6,
+      service_groups_source: "k8s_label",
+      service_groups: [
+        // App grouping derived from `app.kubernetes.io/name` since APM
+        // isn't around to provide service.namespace.
+        { label: "payments", services: ["payments-api", "payments-worker", "ledger"] },
+        { label: "frontend", services: ["frontend-web", "frontend-bff"] },
+        { label: "infra", services: ["nginx-ingress", "cert-manager", "prometheus"] },
+      ],
+    },
+    services: {
+      // No APM = no service-level telemetry; the view should hide the
+      // service throughput section. Counts here are the k8s-side view of
+      // "deployments observable via labels", not APM services.
+      total: 0,
+      degraded_count: 0,
+      details: [],
+    },
+    degraded_services: [],
+    pods: {
+      total: 42,
+      top_memory: [
+        {
+          pod: "payments-api-7d8f9c-x4n2k",
+          avg_memory_mb: 1820,
+          peak_memory_mb: 2010,
+          timeline: metricTimeline([1700, 1740, 1780, 1820, 1860, 1900, 1950, 2010, 1980, 1900, 1850, 1820]),
+        },
+        {
+          pod: "ledger-6b9d-xyz12",
+          avg_memory_mb: 1340,
+          peak_memory_mb: 1480,
+          timeline: metricTimeline([1280, 1300, 1320, 1340, 1360, 1400, 1440, 1480, 1450, 1400, 1360, 1340]),
+        },
+        {
+          pod: "frontend-web-5c7-abc34",
+          avg_memory_mb: 920,
+          peak_memory_mb: 980,
+          timeline: metricTimeline([880, 890, 900, 920, 940, 960, 980, 970, 950, 930, 920, 920]),
+        },
+      ],
+      timeline_window: METRIC_WINDOW,
+    },
+    k8s_tiles: {
+      timeline_window: METRIC_WINDOW,
+      tiles: [
+        {
+          key: "cpu_util",
+          label: "CPU utilization",
+          value_display: "78",
+          unit: "%",
+          status: "degraded",
+          timeline: metricTimeline([62, 64, 68, 72, 75, 78, 82, 85, 84, 80, 79, 78]),
+          spark: "line",
+        },
+        {
+          key: "mem_util",
+          label: "Memory utilization",
+          value_display: "91",
+          unit: "%",
+          status: "critical",
+          timeline: metricTimeline([78, 80, 83, 85, 87, 89, 91, 93, 92, 91, 91, 91]),
+          spark: "line",
+        },
+        {
+          key: "restarts",
+          label: "Pod restarts",
+          value_display: "7",
+          status: "degraded",
+          secondary: "across 3 pods",
+          timeline: metricTimeline([0, 0, 1, 0, 2, 0, 1, 0, 1, 0, 2, 0]),
+          spark: "bar",
+        },
+        { key: "pods", label: "Pods", value_display: "42", status: "ok" },
+        { key: "nodes", label: "Nodes", value_display: "6", status: "ok" },
+      ],
+    },
+    anomalies: {
+      total: 4,
+      by_severity: { major: 2, minor: 2 },
+      top_entities: [
+        {
+          entity: "kubernetes.pod.name=payments-api-7d8f9c-x4n2k",
+          max_score: 84,
+          timeline: timeline([0, 0, 0, 0, 0, 60, 70, 78, 82, 84, 80, 76]),
+        },
+        {
+          entity: "host.name=node-us-east-3",
+          max_score: 71,
+          timeline: timeline([0, 0, 0, 0, 0, 0, 55, 62, 68, 71, 69, 65]),
+        },
+      ],
+      timeline_window: METRIC_WINDOW,
+    },
+    warning: "APM telemetry is unavailable — service-level latency / error rates are hidden.",
   }),
 };

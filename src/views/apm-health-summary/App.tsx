@@ -120,6 +120,40 @@ interface DataCoverage {
   ml_anomalies: boolean;
 }
 
+/**
+ * Scope the user is currently viewing — purely informational. The card is
+ * read-only; scope changes happen via chat (the user asks Claude for a
+ * different cluster / namespace / environment). This avoids any state
+ * desync between a UI control and the visualizations below it.
+ *
+ * Which axes to render depends on `data_coverage`:
+ *   - kubernetes only:  cluster › k8s namespace · pod/node counts
+ *   - apm only:         environment · service count
+ *   - both:             cluster › k8s namespace · service + pod counts
+ *
+ * `service_groups` carries the application breakdown. The grouping signal
+ * is resolved tool-side in this priority: APM `service.namespace` →
+ * `app.kubernetes.io/name` → naming prefix → ungrouped. Each group can
+ * report `total` so we can flag "this app extends beyond the current
+ * namespace" with a small ⤴ indicator when `services.length < total`.
+ */
+interface HealthServiceGroup {
+  label: string;
+  services: string[];
+  total?: number;
+}
+
+interface HealthScope {
+  current_cluster?: string;
+  k8s_namespace?: string;
+  environment?: string;
+  service_count?: number;
+  pod_count?: number;
+  node_count?: number;
+  service_groups?: HealthServiceGroup[];
+  service_groups_source?: "service.namespace" | "k8s_label" | "naming_prefix";
+}
+
 interface HealthData {
   overall_health: string;
   namespace: string;
@@ -146,6 +180,7 @@ interface HealthData {
   namespace_candidates?: string[];
   investigation_actions?: InvestigationAction[];
   rerun_context?: RerunContext;
+  scope?: HealthScope;
 }
 
 // Okabe-Ito-derived palette: vermillion / orange / sky-blue. Strong hue separation
@@ -1086,6 +1121,10 @@ export function App() {
           </div>
         )}
 
+        {data.scope && (
+          <ScopeSubheader scope={data.scope} coverage={data.data_coverage} />
+        )}
+
         {data.rerun_context && (
           <RerunPresets context={data.rerun_context} onSend={onSend} />
         )}
@@ -1309,5 +1348,137 @@ function RerunPresets({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * Read-only scope card. No interactive controls — the breadcrumb and the
+ * applications strip both display state derived from the loaded payload.
+ * Scope changes happen by asking Claude in chat.
+ *
+ * Axis selection follows `data_coverage`:
+ *   - kubernetes only:  cluster › k8s namespace · pod + node counts
+ *   - apm only:         environment · service count (no cluster/namespace
+ *                       since they don't exist outside k8s)
+ *   - both:             cluster › k8s namespace · service + pod counts
+ */
+function ScopeSubheader({
+  scope,
+  coverage,
+}: {
+  scope: HealthScope;
+  coverage?: DataCoverage;
+}) {
+  const hasK8s = coverage?.kubernetes ?? !!scope.current_cluster;
+  const hasApm = coverage?.apm ?? scope.service_count !== undefined;
+
+  const segments: React.ReactNode[] = [];
+
+  if (hasK8s && scope.current_cluster) {
+    segments.push(
+      <ScopeChip key="cluster" prefix="cluster" value={scope.current_cluster} />
+    );
+  }
+  if (hasK8s && scope.k8s_namespace) {
+    segments.push(
+      <ScopeChip key="namespace" prefix="namespace" value={scope.k8s_namespace} />
+    );
+  }
+  // APM-only path: environment is the primary scope axis since cluster /
+  // k8s-namespace don't apply.
+  if (!hasK8s && hasApm && scope.environment) {
+    segments.push(
+      <ScopeChip key="environment" prefix="environment" value={scope.environment} />
+    );
+  }
+
+  // Counts shown in the breadcrumb depend on coverage so we don't lie
+  // about the absence of data (don't show "0 services" when APM is off,
+  // don't show "0 pods" when k8s is off).
+  const counts: string[] = [];
+  if (hasApm && scope.service_count !== undefined) {
+    counts.push(`${scope.service_count} service${scope.service_count === 1 ? "" : "s"}`);
+  }
+  if (hasK8s && scope.pod_count !== undefined) {
+    counts.push(`${scope.pod_count} pod${scope.pod_count === 1 ? "" : "s"}`);
+  }
+  if (hasK8s && scope.node_count !== undefined) {
+    counts.push(`${scope.node_count} node${scope.node_count === 1 ? "" : "s"}`);
+  }
+
+  if (segments.length === 0 && counts.length === 0) return null;
+
+  const groupSourceLabel: Record<NonNullable<HealthScope["service_groups_source"]>, string> = {
+    "service.namespace": "service.namespace",
+    k8s_label: "k8s labels",
+    naming_prefix: "name prefix",
+  };
+
+  return (
+    <div className="health-scope">
+      <span className="health-scope-label">Scope</span>
+      <div className="health-scope-row">
+        {segments.map((seg, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <span className="health-scope-sep" aria-hidden="true">›</span>}
+            {seg}
+          </React.Fragment>
+        ))}
+        {counts.length > 0 && (
+          <>
+            {segments.length > 0 && <span className="health-scope-sep" aria-hidden="true">›</span>}
+            <span className="health-scope-count mono">{counts.join(" · ")}</span>
+          </>
+        )}
+      </div>
+      {scope.service_groups && scope.service_groups.length > 0 && (
+        <div className="health-scope-groups">
+          <span className="health-scope-groups-label">
+            Applications
+            {scope.service_groups_source && (
+              <span className="health-scope-groups-source">
+                {" "}
+                · {groupSourceLabel[scope.service_groups_source]}
+              </span>
+            )}
+          </span>
+          <div className="health-scope-groups-list">
+            {scope.service_groups.map((g) => {
+              // Footgun mitigation: when the app's footprint extends
+              // beyond the current scope (e.g. checkout exists in two
+              // k8s namespaces), tag the chip with ⤴ so the user knows
+              // they're seeing only a slice of the app.
+              const partial = g.total !== undefined && g.total > g.services.length;
+              return (
+                <span
+                  key={g.label}
+                  className={`health-scope-group${partial ? " is-partial" : ""}`}
+                  title={
+                    partial
+                      ? `${g.label} has ${g.total} services total; ${g.services.length} in this scope`
+                      : `${g.label}: ${g.services.join(", ")}`
+                  }
+                >
+                  <span className="health-scope-group-label">{g.label}</span>
+                  <span className="health-scope-group-count mono">
+                    {g.services.length}
+                  </span>
+                  {partial && <span className="health-scope-group-overflow" aria-hidden="true">⤴</span>}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScopeChip({ prefix, value }: { prefix: string; value: string }) {
+  return (
+    <span className="health-scope-static">
+      <span className="health-scope-static-prefix">{prefix}:</span>
+      <strong>{value}</strong>
+    </span>
   );
 }
