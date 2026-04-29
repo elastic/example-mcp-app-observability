@@ -111,4 +111,26 @@ export const observeFixtures: FixtureSet = {
     evaluated_at_ms: Date.parse("2026-04-23T14:20:00Z"),
     esql: "FROM traces-apm-* | STATS PERCENTILE_OF(duration, 99)",
   }),
+  errorWithSkillGap: fixture("ERROR (skill gap detected)", {
+    status: "ERROR",
+    description: "exception messages from checkout",
+    message:
+      "ES|QL query failed: Elasticsearch 400: verification_exception: Found 1 problem\nline 3:64: Unknown column [error.message], did you mean any of [exception.message, message]?",
+    evaluated_at_ms: Date.parse("2026-04-23T14:20:00Z"),
+    esql:
+      "FROM traces-*.otel-*\n| WHERE service.name == \"checkout\" AND @timestamp > NOW() - 15 minutes\n| KEEP @timestamp, error.type, error.message",
+    _setup_notice: {
+      type: "skill-gap",
+      title: "Skill missing: observe",
+      message:
+        "Your query referenced an ECS-style `error.*` field on an OTel-native " +
+        "trace index. The observe skill includes guidance to use `exception.*` " +
+        "(e.g. `exception.message`, `exception.type`) on these indexes. " +
+        "Re-upload the latest observe.zip skill to enable this guidance.",
+      install_url:
+        "https://github.com/elastic/example-mcp-app-observability/releases/latest",
+      skill: "observe",
+      reason: "ECS error field on OTel-native trace index",
+    },
+  }),
 };

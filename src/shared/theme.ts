@@ -335,6 +335,79 @@ const DS_STYLESHEET = `
     outline-offset: 1px;
   }
 
+  .ds-setup-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 12px 16px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .ds-setup-notice-info {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--text-primary);
+  }
+  .ds-setup-notice-warn {
+    background: color-mix(in srgb, var(--severity-major) 12%, transparent);
+    border-color: color-mix(in srgb, var(--severity-major) 50%, transparent);
+    color: var(--text-primary);
+  }
+  .ds-setup-notice-body { flex: 1 1 auto; min-width: 0; }
+  .ds-setup-notice-title {
+    font-weight: 700;
+    margin-bottom: 2px;
+  }
+  .ds-setup-notice-warn .ds-setup-notice-title {
+    color: var(--severity-major-text);
+  }
+  .ds-setup-notice-info .ds-setup-notice-title {
+    color: var(--accent);
+  }
+  .ds-setup-notice-reason {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+    font-family: var(--font-mono);
+  }
+  .ds-setup-notice-message {
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+  .ds-setup-notice-link {
+    display: inline-block;
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .ds-setup-notice-link:hover { text-decoration: underline; }
+  .ds-setup-notice-dismiss {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ds-setup-notice-dismiss:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+  .ds-setup-notice-dismiss:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 1px;
+  }
+
   .ds-tag {
     display: inline-flex;
     align-items: center;

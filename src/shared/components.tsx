@@ -1396,3 +1396,72 @@ export function SearchInput({
     </label>
   );
 }
+
+/**
+ * Setup notice mirroring the tool-side type. Surfaced at the top of any view
+ * whose latest tool result includes a `_setup_notice` field. Two variants:
+ *   - "welcome": proactive nudge to install skills, dismissible.
+ *   - "skill-gap": fired when a query failed in a way the skill specifically
+ *                  warns against. Not dismissible — fires fresh each time.
+ */
+export interface SetupNotice {
+  type: "welcome" | "skill-gap";
+  title: string;
+  message: string;
+  install_url?: string;
+  skill?: string;
+  reason?: string;
+}
+
+/**
+ * Banner that renders at the top of a view when the loaded payload carries
+ * `_setup_notice`. The dismiss button is only shown for the welcome variant
+ * (skill-gap notices fire from a real query failure and shouldn't be
+ * silenced by a single dismissal).
+ *
+ * Welcome dismissal calls the `dismiss-setup-notice` tool via app.callTool —
+ * a side-channel that doesn't go through the LLM, so the user can dismiss
+ * without the conversation noticing. Falls back gracefully if callTool isn't
+ * available on the host (older MCP clients).
+ */
+export function SetupNoticeBanner({
+  notice,
+  onDismiss,
+}: {
+  notice: SetupNotice;
+  onDismiss?: () => void;
+}) {
+  const isWelcome = notice.type === "welcome";
+  const tone = isWelcome ? "info" : "warn";
+  return (
+    <div className={`ds-setup-notice ds-setup-notice-${tone}`} role={isWelcome ? "status" : "alert"}>
+      <div className="ds-setup-notice-body">
+        <div className="ds-setup-notice-title">{notice.title}</div>
+        {notice.reason && (
+          <div className="ds-setup-notice-reason">{notice.reason}</div>
+        )}
+        <div className="ds-setup-notice-message">{notice.message}</div>
+        {notice.install_url && (
+          <a
+            href={notice.install_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ds-setup-notice-link"
+          >
+            Install skills →
+          </a>
+        )}
+      </div>
+      {isWelcome && onDismiss && (
+        <button
+          type="button"
+          className="ds-setup-notice-dismiss"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+        >
+          <XIcon size={12} />
+        </button>
+      )}
+    </div>
+  );
+}

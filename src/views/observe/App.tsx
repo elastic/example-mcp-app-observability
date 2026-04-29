@@ -33,6 +33,8 @@ import {
   HBarRow,
   InvestigationActions,
   InvestigationAction,
+  SetupNoticeBanner,
+  SetupNotice,
 } from "@shared/components";
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { viewStyles } from "./styles";
@@ -95,6 +97,11 @@ type ErrorResult = {
   message: string;
   evaluated_at_ms: number;
   esql?: string;
+  /** Tool-side hint when the error matches a pattern the observe skill
+   *  specifically warns against (e.g. ECS field on OTel index). The view
+   *  surfaces this as a banner above the error body so users get an
+   *  actionable next step instead of just the raw verification_exception. */
+  _setup_notice?: SetupNotice;
 };
 
 type AnomalyAlert = {
@@ -837,9 +844,16 @@ export function App() {
     );
   }
 
+  // Setup notice rides on any tool result; declared as `_setup_notice` at
+  // the top level so views can read it without a per-status-type union.
+  // Dismiss wiring lands alongside the welcome banner — skill-gap notices
+  // are non-dismissible (they fire from a real failure each time).
+  const setupNotice = (data as { _setup_notice?: SetupNotice })._setup_notice;
+
   return (
     <div className="ds-view">
       {Header}
+      {setupNotice && <SetupNoticeBanner notice={setupNotice} />}
       <div className="observe-body">
         {description && <div className="observe-description">{description}</div>}
         {fullEsql && <div className="observe-subdescription">{fullEsql}</div>}

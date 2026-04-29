@@ -17,6 +17,7 @@ import { mlAnomalyIndicesExist, queryAnomalies, severityLabel } from "../elastic
 import { executeEsql } from "../elastic/esql.js";
 import type { EsqlResult } from "../shared/types.js";
 import { resolveViewPath } from "./view-path.js";
+import { detectSkillGap } from "../setup/skill-check.js";
 
 const RESOURCE_URI = "ui://observe/mcp-app.html";
 
@@ -99,11 +100,17 @@ async function handleTableMode(args: ObserveInput) {
     result = await executeEsql(esql);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // When the failure pattern matches something the observe skill
+    // specifically teaches (ECS field on OTel index, etc.), enrich the
+    // error response with a setup notice the view renders as a banner
+    // pointing the user at skill installation.
+    const skillGap = detectSkillGap(esql, msg);
     return {
       status: "ERROR" as const,
       description: description || undefined,
       message: `ES|QL query failed: ${msg}`,
       evaluated_at_ms: Date.now(),
+      ...(skillGap ? { _setup_notice: skillGap } : {}),
     };
   }
 
