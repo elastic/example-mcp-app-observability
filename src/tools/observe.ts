@@ -18,6 +18,7 @@ import { executeEsql } from "../elastic/esql.js";
 import type { EsqlResult } from "../shared/types.js";
 import { resolveViewPath } from "./view-path.js";
 import { detectSkillGap } from "../setup/skill-check.js";
+import { consumeWelcomeNotice } from "../setup/notice.js";
 
 const RESOURCE_URI = "ui://observe/mcp-app.html";
 
@@ -442,7 +443,13 @@ export function registerObserveTool(server: McpServer) {
           : mode === "table"
           ? await handleTableMode(args)
           : await handleAnomalyMode(args);
-      const result = enrichForView(raw, args);
+      const result = enrichForView(raw, args) as Record<string, unknown>;
+      // Attach welcome notice unless something more specific (skill-gap)
+      // is already present — skill-gap is the higher-priority signal.
+      if (!result._setup_notice) {
+        const welcome = consumeWelcomeNotice();
+        if (welcome) result._setup_notice = welcome;
+      }
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );

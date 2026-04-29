@@ -16,6 +16,7 @@ import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
 import { resolveCluster } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
+import { consumeWelcomeNotice } from "../setup/notice.js";
 
 const RESOURCE_URI = "ui://k8s-blast-radius/mcp-app.html";
 
@@ -345,6 +346,9 @@ export function registerK8sBlastRadiusTool(server: McpServer) {
       }
       result.investigation_actions = actions;
       if (queryErrors.length) result._query_errors = queryErrors;
+
+      const welcome = consumeWelcomeNotice();
+      if (welcome) result._setup_notice = welcome;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

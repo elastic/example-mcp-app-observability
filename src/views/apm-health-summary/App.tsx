@@ -39,6 +39,8 @@ import {
   SeverityChip,
   Severity as DSSeverity,
   QueryPill,
+  SetupNoticeBanner,
+  SetupNotice,
 } from "@shared/components";
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { viewStyles } from "./styles";
@@ -1285,6 +1287,7 @@ export function App() {
   // Reset whenever a new tool result lands so a different namespace doesn't
   // inherit the previous selection.
   const [selectedApps, setSelectedApps] = useState<Set<string> | null>(null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
 
   useEffect(() => {
     const style = document.createElement("style");
@@ -1481,9 +1484,24 @@ export function App() {
     );
   }
 
+  // Setup notice (welcome / skill-gap) rides on the response. Welcome is
+  // dismissible via the _setup-dismiss-welcome tool — call goes through
+  // app.callServerTool, no LLM round-trip.
+  const setupNotice = (data as { _setup_notice?: SetupNotice })._setup_notice;
+  const onDismissNotice =
+    setupNotice?.type === "welcome" && app
+      ? () => {
+          setNoticeDismissed(true);
+          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+        }
+      : undefined;
+
   return (
     <div className="ds-view">
       {Header}
+      {setupNotice && !noticeDismissed && (
+        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+      )}
       <div className="health-body">
         {data.namespace_candidates?.length ? (
           <div className="health-namespace-warn">

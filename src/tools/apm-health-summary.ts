@@ -27,6 +27,7 @@ import {
 } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 import { ANOMALY_BY_ENTITY_CAP, PODS_BY_APP_CAP } from "./_limits.js";
+import { consumeWelcomeNotice } from "../setup/notice.js";
 
 const RESOURCE_URI = "ui://apm-health-summary/mcp-app.html";
 
@@ -1697,6 +1698,9 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       };
 
       if (queryErrors.length) result._query_errors = queryErrors;
+
+      const welcome = consumeWelcomeNotice();
+      if (welcome) result._setup_notice = welcome;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

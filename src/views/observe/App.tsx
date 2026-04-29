@@ -846,14 +846,31 @@ export function App() {
 
   // Setup notice rides on any tool result; declared as `_setup_notice` at
   // the top level so views can read it without a per-status-type union.
-  // Dismiss wiring lands alongside the welcome banner — skill-gap notices
-  // are non-dismissible (they fire from a real failure each time).
+  // Welcome notices are dismissible (writes a marker file via the
+  // _setup-dismiss-welcome tool); skill-gap notices fire from a real
+  // failure each time and aren't silenced by a single click.
   const setupNotice = (data as { _setup_notice?: SetupNotice })._setup_notice;
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const onDismissNotice =
+    setupNotice?.type === "welcome" && app
+      ? () => {
+          // Optimistically hide locally — the marker-file write happens
+          // async and we don't need to wait for the round-trip.
+          setNoticeDismissed(true);
+          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {
+            // Best-effort. If the tool isn't reachable we still get the
+            // local hide; the next session will re-show the banner since
+            // the marker file wasn't written.
+          });
+        }
+      : undefined;
 
   return (
     <div className="ds-view">
       {Header}
-      {setupNotice && <SetupNoticeBanner notice={setupNotice} />}
+      {setupNotice && !noticeDismissed && (
+        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+      )}
       <div className="observe-body">
         {description && <div className="observe-description">{description}</div>}
         {fullEsql && <div className="observe-subdescription">{fullEsql}</div>}

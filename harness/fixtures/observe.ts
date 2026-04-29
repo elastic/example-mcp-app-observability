@@ -111,6 +111,24 @@ export const observeFixtures: FixtureSet = {
     evaluated_at_ms: Date.parse("2026-04-23T14:20:00Z"),
     esql: "FROM traces-apm-* | STATS PERCENTILE_OF(duration, 99)",
   }),
+  welcomeBanner: fixture("NOW + welcome banner", {
+    status: "NOW",
+    description: "Pod count",
+    value: 42,
+    evaluated_at_ms: Date.parse("2026-04-29T10:00:00Z"),
+    message: "Pod count: 42",
+    _setup_notice: {
+      type: "welcome",
+      title: "Welcome to Elastic Observability",
+      message:
+        "If you haven't already, install the skill packs from the latest GitHub release. " +
+        "Without them Claude has only minimal guidance on picking index patterns and field " +
+        "shapes — tools may produce verification_exception errors or wrong numbers. Each " +
+        "skill is a separate .zip uploaded via Customize → Skills in Claude Desktop.",
+      install_url:
+        "https://github.com/elastic/example-mcp-app-observability/releases/latest",
+    },
+  }),
   errorWithSkillGap: fixture("ERROR (skill gap detected)", {
     status: "ERROR",
     description: "exception messages from checkout",

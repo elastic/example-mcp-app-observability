@@ -20,6 +20,7 @@ import {
   resolveNamespace,
 } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
+import { consumeWelcomeNotice } from "../setup/notice.js";
 
 const RESOURCE_URI = "ui://apm-service-dependencies/mcp-app.html";
 
@@ -710,6 +711,9 @@ FROM traces-*.otel-*
       };
 
       if (queryErrors.length) result._query_errors = queryErrors;
+
+      const welcome = consumeWelcomeNotice();
+      if (welcome) result._setup_notice = welcome;
 
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }

@@ -12,6 +12,7 @@ import { registerApmHealthSummaryTool } from "./tools/apm-health-summary.js";
 import { registerK8sBlastRadiusTool } from "./tools/k8s-blast-radius.js";
 import { registerApmServiceDependenciesTool } from "./tools/apm-service-dependencies.js";
 import { registerManageAlertsTool } from "./tools/manage-alerts.js";
+import { registerSetupDismissTool } from "./tools/setup-dismiss.js";
 import { isKibanaConfigured } from "./elastic/client.js";
 
 export function createServer(): McpServer {
@@ -34,6 +35,10 @@ export function createServer(): McpServer {
   if (isKibanaConfigured()) {
     registerManageAlertsTool(server);
   }
+
+  // Internal tool used by views' setup banner — must register so the UI
+  // app.callServerTool path can route to it, regardless of Kibana config.
+  registerSetupDismissTool(server);
 
   return server;
 }
