@@ -31,6 +31,8 @@ import {
   QueryPill,
   SeverityDonut,
   Subheader,
+  SetupNoticeBanner,
+  SetupNotice,
   type DropdownOption,
 } from "@shared/components";
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
@@ -81,6 +83,22 @@ export function App() {
 
   const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const setupNotice = data
+    ? (data as { _setup_notice?: SetupNotice })._setup_notice
+    : undefined;
+  const onDismissNotice =
+    setupNotice?.type === "welcome" && app
+      ? () => {
+          setNoticeDismissed(true);
+          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+        }
+      : undefined;
+  const noticeProps = {
+    setupNotice: !noticeDismissed ? setupNotice : undefined,
+    onDismissNotice,
+  };
+
   const mode = useMemo(() => pickMode(data), [data]);
 
   if (!data || !mode) {
@@ -89,6 +107,7 @@ export function App() {
         isFullscreen={isFullscreen}
         toggleFullscreen={toggleFullscreen}
         body={<Waiting />}
+        {...noticeProps}
       />
     );
   }
@@ -115,6 +134,7 @@ export function App() {
         }
         headline={data.headline && headerPills.length === 0 ? data.headline : undefined}
         body={<AnomalyDetailView top={top} data={data} onSend={onSend} />}
+        {...noticeProps}
       />
     );
   }
@@ -126,6 +146,7 @@ export function App() {
       onSend={onSend}
       isFullscreen={isFullscreen}
       toggleFullscreen={toggleFullscreen}
+      noticeProps={noticeProps}
     />
   );
 }
@@ -137,11 +158,13 @@ function OverviewView({
   onSend,
   isFullscreen,
   toggleFullscreen,
+  noticeProps,
 }: {
   data: AnomalyData;
   onSend: (p: string) => void;
   isFullscreen: boolean;
   toggleFullscreen: () => Promise<void>;
+  noticeProps?: { setupNotice?: SetupNotice; onDismissNotice?: () => void };
 }) {
   const anomalies = data.anomalies ?? [];
   const counts = useMemo(() => severityCounts(anomalies), [anomalies]);
@@ -256,6 +279,7 @@ function OverviewView({
           <ListDetailLayout detail={detail}>{list}</ListDetailLayout>
         </>
       }
+      {...noticeProps}
     />
   );
 }
@@ -268,12 +292,16 @@ function Frame({
   headline,
   isFullscreen,
   toggleFullscreen,
+  setupNotice,
+  onDismissNotice,
 }: {
   body: React.ReactNode;
   contextRow?: React.ReactNode;
   headline?: string;
   isFullscreen: boolean;
   toggleFullscreen: () => Promise<void>;
+  setupNotice?: SetupNotice;
+  onDismissNotice?: () => void;
 }) {
   return (
     <div className="ds-view">
@@ -292,6 +320,9 @@ function Frame({
           </button>
         </div>
       </header>
+      {setupNotice && (
+        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+      )}
       {headline && <div className="anom-headline">{headline}</div>}
       <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>{body}</div>
     </div>

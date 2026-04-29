@@ -22,6 +22,8 @@ import {
   QueryPill,
   RerunContext,
   ZoomControls,
+  SetupNoticeBanner,
+  SetupNotice,
   type DropdownOption,
 } from "@shared/components";
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
@@ -620,6 +622,7 @@ export function App() {
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   // Hover wins for in-motion feedback; pinned takes over once the cursor
@@ -864,9 +867,22 @@ export function App() {
   const nodeMap = new Map<string, LayoutNode>();
   for (const n of nodes) nodeMap.set(n.name, n);
 
+  const setupNotice = (data as { _setup_notice?: SetupNotice })._setup_notice;
+  const onDismissNotice =
+    setupNotice?.type === "welcome" && app
+      ? () => {
+          setNoticeDismissed(true);
+          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+        }
+      : undefined;
+
   return (
     <div className="ds-view">
       {Header}
+
+      {setupNotice && !noticeDismissed && (
+        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+      )}
 
       <div className="dep-stats">
         <StatChip label="services" value={data.service_count} color={theme.blue} />

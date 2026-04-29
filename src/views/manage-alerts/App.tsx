@@ -32,6 +32,8 @@ import {
   DetailPaneHeader,
   SearchInput,
   Subheader,
+  SetupNoticeBanner,
+  SetupNotice,
   type DropdownOption,
 } from "@shared/components";
 import { AppGlyph, FullscreenIcon, ExitFullscreenIcon } from "@shared/icons";
@@ -75,6 +77,7 @@ const TAB_ORDER: { key: StatusTab; label: string }[] = [
 export function App() {
   const [data, setData] = useState<Result | null>(null);
   const [app, setApp] = useState<AppLike | null>(null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
   const { isFullscreen: fullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   useEffect(() => {
@@ -100,13 +103,32 @@ export function App() {
 
   const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
 
-  if (!data) return <Frame onToggleFullscreen={toggleFullscreen} fullscreen={fullscreen} body={<Waiting />} />;
+  // Setup notice (welcome / skill-gap) read from any Result variant. Pass
+  // through to every Frame call site below so the banner appears at the
+  // top of every state — empty waiting, error, list, detail.
+  const setupNotice = data
+    ? (data as { _setup_notice?: SetupNotice })._setup_notice
+    : undefined;
+  const onDismissNotice =
+    setupNotice?.type === "welcome" && app
+      ? () => {
+          setNoticeDismissed(true);
+          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+        }
+      : undefined;
+  const noticeProps = {
+    setupNotice: !noticeDismissed ? setupNotice : undefined,
+    onDismissNotice,
+  };
+
+  if (!data) return <Frame onToggleFullscreen={toggleFullscreen} fullscreen={fullscreen} body={<Waiting />} {...noticeProps} />;
 
   if (data.status === "error") {
     return (
       <Frame
         onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
+        {...noticeProps}
         body={
           <div className="rule-error">
             <div className="rule-error-title">manage-alerts failed</div>
@@ -124,6 +146,7 @@ export function App() {
       <Frame
         onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
+        {...noticeProps}
         body={
           <RuleDetailView
             rule={rule}
@@ -141,6 +164,7 @@ export function App() {
       <Frame
         onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
+        {...noticeProps}
         body={
           <RuleDetailView
             rule={d.rule}
@@ -161,6 +185,7 @@ export function App() {
       <Frame
         onToggleFullscreen={toggleFullscreen}
         fullscreen={fullscreen}
+        {...noticeProps}
         body={<DeleteBody d={data} />}
         footer={<NextSteps actions={data.investigation_actions} onSend={onSend} />}
       />
@@ -173,6 +198,7 @@ export function App() {
       fullscreen={fullscreen}
       onToggleFullscreen={toggleFullscreen}
       onSend={onSend}
+      noticeProps={noticeProps}
     />
   );
 }
@@ -187,6 +213,8 @@ function Frame({
   footer,
   onToggleFullscreen,
   fullscreen,
+  setupNotice,
+  onDismissNotice,
 }: {
   children?: React.ReactNode;
   body?: React.ReactNode;
@@ -195,6 +223,8 @@ function Frame({
   footer?: React.ReactNode;
   onToggleFullscreen: () => void;
   fullscreen: boolean;
+  setupNotice?: SetupNotice;
+  onDismissNotice?: () => void;
 }) {
   return (
     <div className="ds-view">
@@ -213,6 +243,9 @@ function Frame({
           </button>
         </div>
       </header>
+      {setupNotice && (
+        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+      )}
       {tabs}
       {subheader}
       <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>{body}</div>
@@ -228,11 +261,13 @@ function ListView({
   fullscreen,
   onToggleFullscreen,
   onSend,
+  noticeProps,
 }: {
   d: ListResult;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
   onSend: (p: string) => void;
+  noticeProps?: { setupNotice?: SetupNotice; onDismissNotice?: () => void };
 }) {
   const [search, setSearch] = useState("");
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
@@ -347,6 +382,7 @@ function ListView({
     <Frame
       fullscreen={fullscreen}
       onToggleFullscreen={onToggleFullscreen}
+      {...noticeProps}
       tabs={tabs}
       subheader={subheader}
       body={<ListDetailLayout detail={detail}>{list}</ListDetailLayout>}

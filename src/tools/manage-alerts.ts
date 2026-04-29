@@ -22,6 +22,7 @@ import {
 } from "../elastic/alerting.js";
 import { getConfig } from "../elastic/client.js";
 import { resolveViewPath } from "./view-path.js";
+import { consumeWelcomeNotice } from "../setup/notice.js";
 
 const RESOURCE_URI = "ui://manage-alerts/mcp-app.html";
 
@@ -29,12 +30,26 @@ const OPERATIONS = ["create", "list", "get", "delete"] as const;
 
 type ToolAction = { label: string; prompt: string };
 
+/**
+ * Wraps any tool result body with the welcome banner when one is due.
+ * Centralized here because manage-alerts has many short return paths
+ * (errorResult, successResult, both called from several operations) —
+ * doing the consume in each one would duplicate. Skill-gap notices
+ * don't apply to manage-alerts (no user-supplied ESQL passes through).
+ */
+function withWelcomeNotice(payload: Record<string, unknown>): Record<string, unknown> {
+  const welcome = consumeWelcomeNotice();
+  return welcome ? { ...payload, _setup_notice: welcome } : payload;
+}
+
 function errorResult(message: string) {
   return {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify({ status: "error", error: message }),
+        text: JSON.stringify(
+          withWelcomeNotice({ status: "error", error: message })
+        ),
       },
     ],
   };
@@ -45,7 +60,7 @@ function successResult(payload: Record<string, unknown>) {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify({ status: "success", ...payload }),
+        text: JSON.stringify(withWelcomeNotice({ status: "success", ...payload })),
       },
     ],
   };

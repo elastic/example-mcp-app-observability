@@ -20,6 +20,7 @@ import {
 } from "../elastic/ml.js";
 import { esRequest } from "../elastic/client.js";
 import { resolveViewPath } from "./view-path.js";
+import { consumeWelcomeNotice } from "../setup/notice.js";
 
 const RESOURCE_URI = "ui://anomaly-explainer/mcp-app.html";
 
@@ -327,15 +328,18 @@ export function registerMlAnomaliesTool(server: McpServer) {
     },
     async ({ job_id, min_score, entity, lookback, limit }) => {
       if (!(await mlAnomalyIndicesExist())) {
+        const noJobsResult: Record<string, unknown> = {
+          anomalies: [],
+          total: 0,
+          hint: "No ML anomaly indices found. Configure anomaly detection jobs in Kibana ML for metrics like k8s.pod.memory.working_set, k8s.pod.cpu.utilization, or k8s.container.restarts.",
+        };
+        const welcome = consumeWelcomeNotice();
+        if (welcome) noJobsResult._setup_notice = welcome;
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({
-                anomalies: [],
-                total: 0,
-                hint: "No ML anomaly indices found. Configure anomaly detection jobs in Kibana ML for metrics like k8s.pod.memory.working_set, k8s.pod.cpu.utilization, or k8s.container.restarts.",
-              }),
+              text: JSON.stringify(noJobsResult),
             },
           ],
         };
@@ -362,6 +366,9 @@ export function registerMlAnomaliesTool(server: McpServer) {
         current_lookback: effectiveLb,
         prompt_template: `Use ml-anomalies with ${rerunParts.join(" and ")}`,
       };
+
+      const welcome = consumeWelcomeNotice();
+      if (welcome) (enriched as unknown as Record<string, unknown>)._setup_notice = welcome;
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify(enriched) }],

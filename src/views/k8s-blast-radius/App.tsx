@@ -33,6 +33,8 @@ import {
   QueryPill,
   type Severity as DSSeverity,
   SeverityChip,
+  SetupNoticeBanner,
+  SetupNotice,
   ZoomControls,
 } from "@shared/components";
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
@@ -162,6 +164,7 @@ export function App() {
     });
   }, []);
   const [app, setApp] = useState<AppLike | null>(null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
 
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
@@ -481,9 +484,21 @@ export function App() {
   const reschedColor =
     reschedFeasible === true ? theme.greenSoft : reschedFeasible === false ? theme.redSoft : theme.textMuted;
 
+  const setupNotice = (data as { _setup_notice?: SetupNotice })._setup_notice;
+  const onDismissNotice =
+    setupNotice?.type === "welcome" && app
+      ? () => {
+          setNoticeDismissed(true);
+          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+        }
+      : undefined;
+
   return (
     <div className="ds-view">
       {Header}
+      {setupNotice && !noticeDismissed && (
+        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+      )}
       <div className="blast-graph">
         <svg
           ref={svgRef}
