@@ -9,7 +9,11 @@
  */
 
 import { executeEsql, rowsFromEsql } from "../src/elastic/esql.js";
-import { kibanaRequest } from "../src/elastic/client.js";
+import { esRequest, kibanaRequest } from "../src/elastic/client.js";
+import {
+  listAvailableClusters,
+  resolveServicesInCluster,
+} from "../src/elastic/apm.js";
 
 type Outcome = "PASS" | "EMPTY" | "FAIL";
 interface Result {
@@ -124,6 +128,201 @@ async function main() {
   } catch (err) {
     record("manage-alerts: Kibana /api/status reachable", "FAIL", (err as Error).message.slice(0, 200));
   }
+
+  // ── v1.0.17 release surfaces ────────────────────────────────
+  //
+  // These probes exercise the new fields and helpers introduced by the UX
+  // refresh + multi-cluster + per-app commits. EMPTY here is informational
+  // (the field path is correct; no data in the lookback window) — only
+  // FAIL means the field-name assumption was wrong.
+
+  console.log("\n── v1.0.17 release surfaces ──");
+
+  // -- Multi-cluster scoping (apm-health-summary, k8s-blast-radius) --
+  // Field paths the queries assume:
+  //   OTel:    k8s.cluster.name
+  //   ECS:     orchestrator.cluster.name
+  await trySql(
+    "cluster scoping: OTel k8s.cluster.name on kubeletstats",
+    `FROM metrics-kubeletstatsreceiver.otel-*
+| WHERE k8s.cluster.name IS NOT NULL AND @timestamp > NOW() - 1h
+| STATS c = COUNT(*) BY k8s.cluster.name
+| LIMIT 5`
+  );
+  await trySql(
+    "cluster scoping: ECS orchestrator.cluster.name on traces-apm*",
+    `FROM traces-apm*
+| WHERE orchestrator.cluster.name IS NOT NULL AND @timestamp > NOW() - 1h
+| STATS c = COUNT(*) BY orchestrator.cluster.name
+| LIMIT 5`
+  );
+
+  try {
+    const clusters = await listAvailableClusters("1h", []);
+    if (clusters.length === 0) {
+      record("listAvailableClusters helper", "EMPTY", "no clusters returned");
+    } else {
+      record("listAvailableClusters helper", "PASS", `${clusters.length}: ${clusters.slice(0, 3).join(", ")}${clusters.length > 3 ? "…" : ""}`);
+    }
+    if (clusters[0]) {
+      const services = await resolveServicesInCluster(clusters[0], "1h", []);
+      record(
+        `resolveServicesInCluster('${clusters[0]}')`,
+        services.length ? "PASS" : "EMPTY",
+        `${services.length} service(s)`
+      );
+    }
+  } catch (err) {
+    record("listAvailableClusters helper", "FAIL", (err as Error).message.slice(0, 200));
+  }
+
+  // -- Application grouping (apm-health-summary scope.service_groups) --
+  // Resolved primarily from APM service.namespace; fallback chain is
+  // documented in the tool but not exercised here (this probe just
+  // validates whether the canonical signal is populated in real data).
+  await trySql(
+    "app grouping: APM service.namespace populated",
+    `FROM traces-apm*,traces-*.otel-*
+| WHERE service.namespace IS NOT NULL AND @timestamp > NOW() - 1h
+| STATS c = COUNT(*) BY service.namespace, service.name
+| LIMIT 5`
+  );
+
+  // -- Pod → service correlation (apm-health-summary pods[].service) --
+  // The pod→service map is built from k8s.pod.name + service.name pairs
+  // on OTel traces. EMPTY means traces don't carry pod attributes (e.g.
+  // APM agents running outside k8s); not a failure.
+  await trySql(
+    "pod->service correlation: k8s.pod.name + service.name on traces",
+    `FROM traces-*.otel-*
+| WHERE k8s.pod.name IS NOT NULL AND service.name IS NOT NULL AND @timestamp > NOW() - 1h
+| STATS c = COUNT(*) BY k8s.pod.name, service.name
+| LIMIT 5`
+  );
+
+  // -- Per-pod resource snapshot (apm-health-summary pods.by_app) --
+  // Validates the MAX-MIN restart delta + sum-able resource fields needed
+  // for buildPodsByApp. Same fields as queryPodResourceSnapshot.
+  await trySql(
+    "per-pod resource snapshot: kubeletstats sums + restart delta",
+    `FROM metrics-kubeletstatsreceiver.otel-*
+| WHERE @timestamp > NOW() - 1h AND k8s.pod.name IS NOT NULL
+| STATS
+    cpu_use = MAX(metrics.k8s.pod.cpu.usage),
+    cpu_lim = MAX(metrics.k8s.pod.cpu.limit),
+    mem_use = MAX(metrics.k8s.pod.memory.working_set),
+    mem_lim = MAX(metrics.k8s.pod.memory.limit),
+    restart_max = MAX(metrics.k8s.container.restart_count),
+    restart_min = MIN(metrics.k8s.container.restart_count)
+  BY k8s.pod.name
+| LIMIT 5`
+  );
+
+  // -- Per-service KPIs (apm-health-summary services.details[].p99_latency_ms) --
+  await trySql(
+    "per-service KPIs: PERCENTILE(transaction.duration.us, 99) BY service.name",
+    `FROM traces-apm*,traces-*.otel-*
+| WHERE @timestamp > NOW() - 1h
+| STATS p99_us = PERCENTILE(transaction.duration.us, 99), avg_us = AVG(transaction.duration.us) BY service.name
+| LIMIT 5`
+  );
+
+  // -- Per-entity anomaly counts (anomalies.by_entity) --
+  // Uses ES query DSL not ES|QL — the new entities_by_count agg with the
+  // reverse_nested + range-on-record_score sub-aggs. We just confirm the
+  // shape parses and returns SOMETHING; counts are 0 in idle clusters.
+  try {
+    type AggResp = {
+      hits: { total: { value: number } | number };
+      aggregations?: {
+        entities_by_count?: {
+          pods_only?: {
+            by_value?: { buckets: Array<{ key: string; doc_count: number }> };
+          };
+        };
+      };
+    };
+    const body = {
+      size: 0,
+      query: {
+        bool: {
+          must: [
+            { range: { record_score: { gte: 50 } } },
+            { term: { result_type: "record" } },
+            { range: { timestamp: { gte: "now-1h" } } },
+          ],
+        },
+      },
+      aggs: {
+        entities_by_count: {
+          nested: { path: "influencers" },
+          aggs: {
+            pods_only: {
+              filter: {
+                terms: {
+                  "influencers.influencer_field_name": [
+                    "k8s.pod.name",
+                    "resource.attributes.k8s.pod.name",
+                    "service.name",
+                    "resource.attributes.service.name",
+                  ],
+                },
+              },
+              aggs: {
+                by_value: {
+                  terms: { field: "influencers.influencer_field_values", size: 50 },
+                  aggs: {
+                    parent: {
+                      reverse_nested: {},
+                      aggs: {
+                        by_severity: {
+                          range: {
+                            field: "record_score",
+                            ranges: [
+                              { key: "minor", from: 50, to: 75 },
+                              { key: "major", from: 75, to: 90 },
+                              { key: "critical", from: 90 },
+                            ],
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const resp = await esRequest<AggResp>("/.ml-anomalies-*/_search", { body });
+    const buckets = resp.aggregations?.entities_by_count?.pods_only?.by_value?.buckets ?? [];
+    record(
+      "anomalies.by_entity: nested influencer + reverse_nested + severity range",
+      buckets.length ? "PASS" : "EMPTY",
+      `${buckets.length} entity bucket(s)`
+    );
+  } catch (err) {
+    record(
+      "anomalies.by_entity: nested influencer + reverse_nested + severity range",
+      "FAIL",
+      (err as Error).message.slice(0, 200)
+    );
+  }
+
+  // -- Issue #8 fix (observe skill): exception.* on OTel traces --
+  // Confirms the field family the new skill guidance points at exists in
+  // real OTel data; an EMPTY result here means no recent failures, not
+  // a broken assumption.
+  await trySql(
+    "exception.* on OTel traces (issue #8 skill guidance)",
+    `FROM traces-*.otel-*
+| WHERE @timestamp > NOW() - 1h
+  AND event.outcome == "failure"
+  AND exception.message IS NOT NULL
+| KEEP @timestamp, exception.type, exception.message
+| LIMIT 5`
+  );
 
   // ── summary ──────────────────────────────────────────────────
   const pass = results.filter((r) => r.outcome === "PASS").length;
