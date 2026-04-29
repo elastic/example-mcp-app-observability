@@ -267,11 +267,14 @@ In EDOT-ingested clusters, `traces-*.otel-*` carries **both** OTel-native fields
 |---|---|---|
 | Duration | `duration` (nanoseconds, long, populated on every span) | `transaction.duration.us` (microseconds, populated only on `processor.event == "transaction"` docs) |
 | Error signal | `event.outcome == "failure"` — **use this**, 100% populated | `status.code == "Error"` (sparse; only set when instrumentation explicitly calls `SetStatus`) |
+| Error message / type / stacktrace | `exception.message`, `exception.type`, `exception.stacktrace` | `error.message`, `error.exception.type`, `error.stack_trace` |
 | Span kind | `kind` — values `Server`, `Internal`, `Client`, `Producer`, `Consumer` (**title case**, not `SERVER`/`CLIENT`) | `transaction.type` |
 | Scope filter | `kind == "Server"` isolates incoming requests | `processor.event == "transaction"` |
 | Service name | `service.name` | `service.name` |
 
 > **Unit warning.** OTel `duration` is in **nanoseconds**. Divide by 1,000,000 for milliseconds. Classic `transaction.duration.us` is in **microseconds** — divide by 1,000. Mixing these across a comparison produces wildly wrong numbers.
+
+> **Error-field warning.** On `traces-*.otel-*` the exception attributes use the `exception.*` namespace, **not** `error.*`. Querying `error.message` / `error.type` against an OTel-native index returns `verification_exception: Unknown column [error.message], did you mean any of [exception.message, message]?`. The `error.*` family belongs only to classic-APM `traces-apm*` documents. When you see the user ask "show me the error messages from X", reach for `exception.message` first.
 
 Service p95 latency (OTel-native), last 15m — result in ms:
 
@@ -291,6 +294,29 @@ FROM traces-*.otel-*
 | STATS errors = COUNT(*) WHERE event.outcome == "failure", total = COUNT(*)
 | EVAL error_rate_pct = ROUND(errors * 100.0 / total, 2)
 | KEEP error_rate_pct, errors, total
+```
+
+Recent exception messages from a service (OTel-native) — `exception.message` lives on the same trace docs as the failed spans:
+
+```
+FROM traces-*.otel-*
+| WHERE service.name == "checkout" AND @timestamp > NOW() - 15 minutes
+  AND event.outcome == "failure"
+  AND exception.message IS NOT NULL
+| KEEP @timestamp, exception.type, exception.message
+| SORT @timestamp DESC
+| LIMIT 50
+```
+
+Classic-APM equivalent — only when the OTel path returns empty:
+
+```
+FROM traces-apm*
+| WHERE service.name == "checkout" AND @timestamp > NOW() - 15 minutes
+  AND processor.event == "error"
+| KEEP @timestamp, error.exception.type, error.message
+| SORT @timestamp DESC
+| LIMIT 50
 ```
 
 If `traces-*.otel-*` returns empty, the deployment is classic-APM-only — fall back to `traces-apm*` with `processor.event == "transaction"` and `transaction.duration.us`.
