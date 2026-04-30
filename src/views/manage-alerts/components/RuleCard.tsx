@@ -81,10 +81,18 @@ export function RuleCard({
 }
 
 function FactRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  // title attr surfaces the full value on hover when ellipsis truncates
+  // it. Only set for string values where the lossy native tooltip helps.
+  const hoverTitle = typeof value === "string" ? value : undefined;
   return (
     <div className="ds-fact-row">
       <span className="ds-fact-label">{label}</span>
-      <span className={`ds-fact-value${mono ? " mono" : ""}`}>{value}</span>
+      <span
+        className={`ds-fact-value${mono ? " mono" : ""}`}
+        title={hoverTitle}
+      >
+        {value}
+      </span>
     </div>
   );
 }

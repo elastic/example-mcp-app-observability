@@ -295,7 +295,7 @@ function ListView({
   const [showDetails, setShowDetails] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<5 | 10 | 25 | 50>(10);
+  const [pageSize, setPageSize] = useState<5 | 10 | 25 | 50>(5);
 
   const counts = useMemo(() => statusTabCounts(d.rules), [d.rules]);
 

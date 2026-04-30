@@ -274,7 +274,7 @@ function OverviewView({
   // page and pageSize survive sort changes (you'd normally want to
   // keep the same density as you re-sort) but page resets when the
   // underlying list or grouping changes.
-  const [pageSize, setPageSize] = useState<PageSize>(10);
+  const [pageSize, setPageSize] = useState<PageSize>(5);
   const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
   useEffect(() => { setPage(1); }, [anomalies, sort, group, pageSize]);
   useEffect(() => {

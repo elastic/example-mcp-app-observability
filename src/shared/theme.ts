@@ -454,12 +454,13 @@ const DS_STYLESHEET = `
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 12px 16px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding: 10px 16px;
     font-family: var(--font-mono);
     font-size: 12px;
     line-height: 16px;
     color: var(--ds-text-label);
-    white-space: nowrap;
     border-bottom: 1px solid var(--border);
     background: var(--bg-primary);
   }
@@ -468,6 +469,8 @@ const DS_STYLESHEET = `
     display: flex;
     align-items: center;
     gap: 20px;
+    flex-wrap: wrap;
+    row-gap: 8px;
     min-width: 0;
   }
   .ds-subheader strong {

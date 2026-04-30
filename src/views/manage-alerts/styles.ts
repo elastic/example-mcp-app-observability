@@ -194,6 +194,21 @@ export const viewStyles = `
     color: var(--ds-text-label);
   }
 
+  /* Allow long fact values inside rule-card details to wrap rather
+   * than ellipse — the tabular layout is less important than letting
+   * users see the full condition expression / index pattern in a
+   * narrow list pane. Other views that use .ds-fact-value keep the
+   * default ellipsis (this rule is scoped to .rule-card). */
+  .rule-card .ds-fact-row {
+    align-items: flex-start;
+  }
+  .rule-card .ds-fact-value {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
   /* Rule card */
   .rule-card {
     position: relative;
