@@ -73,7 +73,27 @@ export const anomalyExplainerFixtures: FixtureSet = {
     total: 12,
     returned: 12,
     anomalies: [
-      { jobId: "apm-p99-latency", recordScore: 93.2, severity: "critical", timestamp: now - 90_000, entity: "service.name=checkout" },
+      // Top entry mirrors the standalone "Detail — checkout latency" fixture
+      // exactly so demos that click into this card see the same facts the
+      // dedicated detail fixture would show: function, field, actual, typical,
+      // deviation, influencers all populated. Score 93.2 keeps it at the
+      // top of the default score-sorted list.
+      {
+        jobId: "apm-p99-latency",
+        recordScore: 93.2,
+        severity: "critical",
+        timestamp: now - 90_000,
+        entity: "service.name=checkout",
+        functionName: "high_mean",
+        fieldName: "transaction.duration.us",
+        actual: [520],
+        typical: [185],
+        deviationPercent: 181,
+        influencers: {
+          "host.name": ["node-us-east-4"],
+          "service.environment": ["production"],
+        },
+      },
       { jobId: "apm-p99-latency", recordScore: 78.4, severity: "major", timestamp: now - 180_000, entity: "service.name=shipping" },
       { jobId: "apm-error-rate", recordScore: 64.1, severity: "major", timestamp: now - 240_000, entity: "service.name=payments" },
       { jobId: "apm-error-rate", recordScore: 54.9, severity: "minor", timestamp: now - 300_000, entity: "service.name=checkout" },
@@ -87,6 +107,16 @@ export const anomalyExplainerFixtures: FixtureSet = {
     },
     affected_services: ["checkout", "shipping", "payments"],
     filters: { lookback: "1h" },
+    // Detail-pane labels: matches the actual_label / typical_label the
+    // standalone detail fixture uses ("current p99" / "typical") so the
+    // FactCol renders identically when the top card is clicked. Other
+    // anomaly types (memory, error-rate) inherit the same labels — a
+    // small fidelity tradeoff acceptable for the demo flow, since the
+    // primary click target IS the checkout latency card.
+    detail: {
+      actual_label: "current p99",
+      typical_label: "typical",
+    },
     investigation_actions: [
       { label: "Drill into checkout", prompt: "Explain anomalies for service.name=checkout over the last 1h" },
     ],
