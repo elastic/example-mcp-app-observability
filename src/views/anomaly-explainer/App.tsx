@@ -162,12 +162,17 @@ export function App() {
 // result sets). Range string is always inclusive 1-indexed for human
 // reading: "Showing 1–10 of 25". Keyboard: tab to either button + Enter.
 
+const PAGE_SIZE_OPTIONS = [5, 10, 25, 50] as const;
+type PageSize = typeof PAGE_SIZE_OPTIONS[number];
+
 function Paginator({
   page,
   pageCount,
   rangeStart,
   rangeEnd,
   total,
+  pageSize,
+  onPageSizeChange,
   onPrev,
   onNext,
 }: {
@@ -176,16 +181,39 @@ function Paginator({
   rangeStart: number;
   rangeEnd: number;
   total: number;
+  pageSize: number;
+  onPageSizeChange: (n: PageSize) => void;
   onPrev: () => void;
   onNext: () => void;
 }) {
-  if (pageCount <= 1) return null;
+  // Always render the per-page control, even on a single-page result —
+  // so the user can dial down to 5/page if their list is short and they
+  // want denser pagination, or up to 50/page on a long list. Prev/Next
+  // are disabled-styled when there's only one page.
   return (
     <div className="anom-paginator" role="navigation" aria-label="Anomaly list pagination">
       <span className="anom-paginator-range">
-        Showing <strong>{rangeStart}</strong>–<strong>{rangeEnd}</strong> of{" "}
-        <strong>{total}</strong>
+        {total === 0 ? (
+          "0 results"
+        ) : (
+          <>
+            Showing <strong>{rangeStart}</strong>–<strong>{rangeEnd}</strong> of{" "}
+            <strong>{total}</strong>
+          </>
+        )}
       </span>
+      <label className="anom-paginator-perpage">
+        <span>Per page:</span>
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(Number(e.target.value) as PageSize)}
+          aria-label="Items per page"
+        >
+          {PAGE_SIZE_OPTIONS.map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+      </label>
       <div className="anom-paginator-controls">
         <button
           type="button"
@@ -241,23 +269,20 @@ function OverviewView({
 
   const sorted = useMemo(() => applySort(anomalies, sort), [anomalies, sort]);
 
-  // Pagination model: slice the flat sorted list. When a group is active,
-  // emit group headers inline as the bucket changes within the slice — so
-  // each page stays under the heading of whichever group's anomalies it
-  // contains, even when the page boundary cuts across groups.
-  const PAGE_SIZE = 10;
-  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  // Reset to page 1 whenever the source list, sort, or group changes —
-  // otherwise the user can land on page 3 of what is now a 1-page list.
-  useEffect(() => { setPage(1); }, [anomalies, sort, group]);
-  // Clamp the page if the data shrinks beneath it (e.g. a follow-up tool
-  // call reduces the list).
+  // Pagination: page-state + size-state. When a group is active, emit
+  // group headers inline as the bucket changes within the slice. Both
+  // page and pageSize survive sort changes (you'd normally want to
+  // keep the same density as you re-sort) but page resets when the
+  // underlying list or grouping changes.
+  const [pageSize, setPageSize] = useState<PageSize>(10);
+  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
+  useEffect(() => { setPage(1); }, [anomalies, sort, group, pageSize]);
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
   }, [page, pageCount]);
 
-  const pageStart = (page - 1) * PAGE_SIZE;
-  const pageEnd = pageStart + PAGE_SIZE;
+  const pageStart = (page - 1) * pageSize;
+  const pageEnd = pageStart + pageSize;
   const pageSlice = useMemo(
     () => sorted.slice(pageStart, pageEnd),
     [sorted, pageStart, pageEnd]
@@ -375,17 +400,17 @@ function OverviewView({
         }
         return items;
       })()}
-      {sorted.length > PAGE_SIZE && (
-        <Paginator
-          page={page}
-          pageCount={pageCount}
-          rangeStart={pageStart + 1}
-          rangeEnd={Math.min(pageEnd, sorted.length)}
-          total={sorted.length}
-          onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() => setPage((p) => Math.min(pageCount, p + 1))}
-        />
-      )}
+      <Paginator
+        page={page}
+        pageCount={pageCount}
+        rangeStart={pageStart + 1}
+        rangeEnd={Math.min(pageEnd, sorted.length)}
+        total={sorted.length}
+        pageSize={pageSize}
+        onPageSizeChange={setPageSize}
+        onPrev={() => setPage((p) => Math.max(1, p - 1))}
+        onNext={() => setPage((p) => Math.min(pageCount, p + 1))}
+      />
     </div>
   );
 

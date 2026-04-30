@@ -841,45 +841,45 @@ export function App() {
           onReset={panZoom.resetView}
           isDragging={isDragging}
         />
+      </div>
 
-        {/* Inspect strip overlays the bottom of the graph instead of
-         *  pushing the layout. Same pattern as apm-service-dependencies. */}
-        {inspected.length > 0 && (
-          <div className="blast-inspect-strip" role="region" aria-label="Compare panel">
-            {inspected.map((item) => (
-              <div key={item.name} className="blast-inspect-card">
-                <div className="blast-inspect-card-head">
-                  <span className="blast-inspect-card-name" title={item.name}>{item.name}</span>
-                  <button
-                    type="button"
-                    className="blast-inspect-card-close"
-                    aria-label={`Remove ${item.name} from compare`}
-                    onClick={() => toggleInspect(item.name, item.details)}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div className="blast-inspect-card-body">
-                  {item.details.map((d, i) => (
-                    <div key={i}>{d}</div>
-                  ))}
-                </div>
+      {/* Inspect strip is a SIBLING of the graph, not an overlay. The
+       *  graph keeps its full min-height; this strip appends below,
+       *  growing the .ds-view body content. ds-view max-height +
+       *  body overflow:auto handle the overflow case. */}
+      {inspected.length > 0 && (
+        <div className="blast-inspect-strip" role="region" aria-label="Compare panel">
+          {inspected.map((item) => (
+            <div key={item.name} className="blast-inspect-card">
+              <div className="blast-inspect-card-head">
+                <span className="blast-inspect-card-name" title={item.name}>{item.name}</span>
+                <button
+                  type="button"
+                  className="blast-inspect-card-close"
+                  aria-label={`Remove ${item.name} from compare`}
+                  onClick={() => toggleInspect(item.name, item.details)}
+                >
+                  ×
+                </button>
               </div>
-            ))}
-          </div>
-        )}
-
-        {/* Rescheduling capacity line as an unobtrusive overlay along
-         *  the bottom — was a separate row eating ~40px below. */}
-        <div className="blast-meta-overlay">
-          <span className="mono">
-            {resched.memory_required} required / {resched.memory_available} available across{" "}
-            {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
-          </span>
-          {data.downstream_services_note && (
-            <span className="blast-meta-note">{data.downstream_services_note}</span>
-          )}
+              <div className="blast-inspect-card-body">
+                {item.details.map((d, i) => (
+                  <div key={i}>{d}</div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
+      )}
+
+      <div className="blast-meta">
+        <div className="blast-meta-row">
+          {resched.memory_required} required / {resched.memory_available} available across{" "}
+          {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
+        </div>
+        {data.downstream_services_note && (
+          <div className="blast-meta-note">{data.downstream_services_note}</div>
+        )}
       </div>
     </div>
   );

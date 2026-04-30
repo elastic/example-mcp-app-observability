@@ -295,6 +295,7 @@ function ListView({
   const [showDetails, setShowDetails] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<5 | 10 | 25 | 50>(10);
 
   const counts = useMemo(() => statusTabCounts(d.rules), [d.rules]);
 
@@ -306,19 +307,16 @@ function ListView({
 
   // Pagination: same pattern as anomaly-explainer overview. Slice the
   // flat filtered list per page; emit inline group headers when the
-  // bucket key changes within the slice. Group totals show the full
-  // bucket count across all pages.
-  const PAGE_SIZE = 10;
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  // Reset to page 1 when filters / sort / group / data change.
-  useEffect(() => { setPage(1); }, [d.rules, statusTab, search, sort, group]);
-  // Clamp if the data shrinks past the current page.
+  // bucket key changes within the slice. pageSize is user-controlled
+  // (5/10/25/50) — default 10.
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  useEffect(() => { setPage(1); }, [d.rules, statusTab, search, sort, group, pageSize]);
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
   }, [page, pageCount]);
 
-  const pageStart = (page - 1) * PAGE_SIZE;
-  const pageEnd = pageStart + PAGE_SIZE;
+  const pageStart = (page - 1) * pageSize;
+  const pageEnd = pageStart + pageSize;
   const pageSlice = useMemo(
     () => filtered.slice(pageStart, pageEnd),
     [filtered, pageStart, pageEnd]
@@ -472,34 +470,52 @@ function ListView({
             }
             return items;
           })()}
-          {filtered.length > PAGE_SIZE && (
-            <div className="rule-paginator" role="navigation" aria-label="Alert rule pagination">
-              <span className="rule-paginator-range">
-                Showing <strong>{pageStart + 1}</strong>–
-                <strong>{Math.min(pageEnd, filtered.length)}</strong> of{" "}
-                <strong>{filtered.length}</strong>
-              </span>
-              <div className="rule-paginator-controls">
-                <button
-                  type="button"
-                  className="rule-paginator-btn"
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                >
-                  ← Prev
-                </button>
-                <span className="rule-paginator-page">{page} / {pageCount}</span>
-                <button
-                  type="button"
-                  className="rule-paginator-btn"
-                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                  disabled={page >= pageCount}
-                >
-                  Next →
-                </button>
-              </div>
+          <div className="rule-paginator" role="navigation" aria-label="Alert rule pagination">
+            <span className="rule-paginator-range">
+              {filtered.length === 0 ? (
+                "0 results"
+              ) : (
+                <>
+                  Showing <strong>{pageStart + 1}</strong>–
+                  <strong>{Math.min(pageEnd, filtered.length)}</strong> of{" "}
+                  <strong>{filtered.length}</strong>
+                </>
+              )}
+            </span>
+            <label className="rule-paginator-perpage">
+              <span>Per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) =>
+                  setPageSize(Number(e.target.value) as 5 | 10 | 25 | 50)
+                }
+                aria-label="Items per page"
+              >
+                {[5, 10, 25, 50].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
+            <div className="rule-paginator-controls">
+              <button
+                type="button"
+                className="rule-paginator-btn"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+              >
+                ← Prev
+              </button>
+              <span className="rule-paginator-page">{page} / {pageCount}</span>
+              <button
+                type="button"
+                className="rule-paginator-btn"
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                disabled={page >= pageCount}
+              >
+                Next →
+              </button>
             </div>
-          )}
+          </div>
         </>
       )}
     </div>

@@ -77,15 +77,15 @@ export const viewStyles = `
     margin-right: 6px;
   }
 
-  /* Graph container fills the remaining view height and scrolls internally
-   * when the SVG is taller than the available space (tight viewports or
-   * dense graphs). Horizontal fill comes from the SVG using width:100%
-   * plus aspect-ratio — element dimensions match the viewBox, so the
-   * content can pan all the way to the container edges. */
+  /* Graph container holds a stable minimum height so the diagram
+   * doesn't shrink when sibling rows (inspect strip) appear below it.
+   * The flex: 1 1 0 lets it grow into available space when there's
+   * no other content below; min-height keeps it tall enough to be
+   * usable when the inspect strip is in the layout. */
   .dep-graph {
     position: relative;
-    flex: 1 1 0;
-    min-height: 0;
+    flex: 1 1 auto;
+    min-height: 460px;
     overflow: auto;
     padding: 8px 14px;
   }
@@ -133,25 +133,19 @@ export const viewStyles = `
     outline-offset: 2px;
   }
 
-  /* Inspect strip is now an OVERLAY at the bottom of the graph
-   * container — it floats over the SVG instead of pushing the graph
-   * up. Semi-transparent backdrop so the graph stays visible behind
-   * the cards; horizontal scroll for > 4 cards. */
+  /* Inspect strip is a sibling of the graph (in-flow, not an overlay).
+   * The graph keeps its min-height; the strip appends below; the
+   * .ds-view body wrapper handles overflow scroll if total exceeds
+   * the viewport. Per user feedback: container should expand to
+   * accommodate cards rather than the diagram shrinking. */
   .dep-inspect-strip {
-    position: absolute;
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
     display: flex;
     gap: 10px;
-    padding: 10px 12px;
-    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-md);
-    backdrop-filter: blur(6px);
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-primary);
     overflow-x: auto;
-    z-index: 5;
+    flex-shrink: 0;
   }
 
   .dep-inspect-card {

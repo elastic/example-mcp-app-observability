@@ -9,10 +9,13 @@
  */
 
 export const viewStyles = `
+  /* Graph keeps a stable minimum height so the radial diagram doesn't
+   * shrink when sibling rows (inspect strip, meta) appear below.
+   * flex: 1 1 auto lets it grow when there's room. */
   .blast-graph {
     position: relative;
-    flex: 1 1 0;
-    min-height: 0;
+    flex: 1 1 auto;
+    min-height: 460px;
     overflow: auto;
     padding: 8px 14px;
   }
@@ -69,25 +72,16 @@ export const viewStyles = `
     align-items: center;
   }
 
-  /* Inspect strip OVERLAYS the bottom of the graph instead of pushing
-   * layout — same pattern as apm-service-dependencies. Backdrop blur +
-   * semi-transparent fill so the graph stays visible behind. Up to 4
-   * cards before horizontal scroll kicks in. */
+  /* Inspect strip is a sibling of the graph (in-flow). Pinning a card
+   * appends a row below; the graph keeps its min-height. */
   .blast-inspect-strip {
-    position: absolute;
-    left: 8px;
-    right: 8px;
-    bottom: 36px; /* leaves room for the meta overlay below */
     display: flex;
     gap: 10px;
-    padding: 10px 12px;
-    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-md);
-    backdrop-filter: blur(6px);
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-primary);
     overflow-x: auto;
-    z-index: 5;
+    flex-shrink: 0;
   }
   .blast-inspect-card {
     flex: 0 0 240px;
@@ -135,28 +129,24 @@ export const viewStyles = `
     line-height: 1.5;
   }
 
-  /* Bottom meta overlay — replaces the prior 40px+ row taking real
-   * estate below the graph. Slim, flush with the bottom of the
-   * graph container so the rescheduling capacity line stays visible
-   * but doesn't compete with the diagram. */
-  .blast-meta-overlay {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
+  /* Meta line as an in-flow sibling row, below the graph (and below
+   * the inspect strip when present). */
+  .blast-meta {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-    padding: 6px 14px;
-    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    padding: 8px 14px;
     border-top: 1px solid var(--border-subtle);
+    background: var(--bg-primary);
     font-size: 11px;
     color: var(--text-muted);
-    backdrop-filter: blur(4px);
-    z-index: 3;
+    flex-shrink: 0;
   }
-  .blast-meta-overlay .blast-meta-note {
+  .blast-meta-row {
+    font-family: var(--font-mono);
+  }
+  .blast-meta-note {
     font-family: var(--font-sans);
     color: var(--text-secondary);
   }

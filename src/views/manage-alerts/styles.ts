@@ -169,6 +169,27 @@ export const viewStyles = `
     min-width: 44px;
     text-align: center;
   }
+  .rule-paginator-perpage {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .rule-paginator-perpage select {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .rule-paginator-perpage select:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 1px;
+  }
   .rule-group-header-count {
     color: var(--ds-text-label);
   }

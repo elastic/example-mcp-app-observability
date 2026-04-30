@@ -215,19 +215,43 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
       "*"
     );
 
+    // Iframe size reporting. The previous implementation set
+     // documentElement.style.height = "max-content" temporarily and
+    // measured the root, but that didn't override children with
+    // height/max-height: 100vh — measurements came back as the
+    // viewport regardless of actual content. Result: Claude Desktop
+    // sized the iframe to viewport, leaving visible whitespace below
+    // short content.
+    //
+    // Direct fix: measure the actual `.ds-view` element when it exists
+    // (it's the shell every refreshed view uses). Falls back to
+    // documentElement when ds-view isn't present (legacy / error
+    // states). Bonus: also observe ds-view directly so size changes
+    // from inside the shell (pagination, fixture switches) trigger a
+    // re-notify.
     let pending = false;
     let lastW = 0;
     let lastH = 0;
+    let observedView: HTMLElement | null = null;
+    const measureContent = (): number => {
+      const view = document.querySelector<HTMLElement>(".ds-view");
+      if (view) {
+        return Math.ceil(view.getBoundingClientRect().height);
+      }
+      // Fallback for views/states without a .ds-view shell.
+      const root = document.documentElement;
+      const prev = root.style.height;
+      root.style.height = "max-content";
+      const h = Math.ceil(root.getBoundingClientRect().height);
+      root.style.height = prev;
+      return h;
+    };
     const notifySize = () => {
       if (pending) return;
       pending = true;
       requestAnimationFrame(() => {
         pending = false;
-        const root = document.documentElement;
-        const prev = root.style.height;
-        root.style.height = "max-content";
-        const h = Math.ceil(root.getBoundingClientRect().height);
-        root.style.height = prev;
+        const h = measureContent();
         const w = Math.ceil(window.innerWidth);
         if (w !== lastW || h !== lastH) {
           lastW = w;
@@ -241,12 +265,21 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
             "*"
           );
         }
+        // (Re-)observe the .ds-view element so size changes from
+        // inside the shell propagate. ds-view appears asynchronously
+        // (React mounts it after the iframe initializes).
+        const view = document.querySelector<HTMLElement>(".ds-view");
+        if (view && view !== observedView) {
+          if (observedView) ro.unobserve(observedView);
+          ro.observe(view);
+          observedView = view;
+        }
       });
     };
-    notifySize();
     const ro = new ResizeObserver(notifySize);
     ro.observe(document.documentElement);
     ro.observe(document.body);
+    notifySize();
 
     return () => {
       window.removeEventListener("message", handleMessage);

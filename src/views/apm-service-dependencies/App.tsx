@@ -1036,9 +1036,17 @@ export function App() {
           onReset={panZoom.resetView}
           isDragging={isDragging}
         />
+      </div>
 
-        {inspected.length > 0 && (
-          <div className="dep-inspect-strip" role="region" aria-label="Compare panel">
+      {/* Inspect strip is a SIBLING of the graph (not an overlay).
+       *  When cards are pinned, the graph keeps its full height and
+       *  this strip is appended below. .ds-view max-height + body
+       *  overflow:auto handle the resulting overflow. Per user
+       *  feedback: "the diagram should keep its same height, and the
+       *  container of the view should expand to accommodate the
+       *  pinned cards." */}
+      {inspected.length > 0 && (
+        <div className="dep-inspect-strip" role="region" aria-label="Compare panel">
           {inspected.map((name) => {
             const svc = data.services.find((s) => s.name === name);
             if (!svc) return null;
@@ -1106,9 +1114,8 @@ export function App() {
               </div>
             );
           })}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
