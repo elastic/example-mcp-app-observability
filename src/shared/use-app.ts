@@ -37,6 +37,14 @@ export interface AppLike {
    * Wraps the MCP protocol method `ui/request-display-mode`.
    */
   requestDisplayMode: (params: { mode: DisplayMode }) => Promise<{ mode: DisplayMode }>;
+  /**
+   * Ask the host to open an external URL — typically by routing it to
+   * the user's default browser. `<a target="_blank">` doesn't work
+   * inside Claude Desktop's sandboxed iframe; this is the only way to
+   * open documentation / install / release-notes links from a view.
+   * Wraps MCP protocol method `ui/open-link`.
+   */
+  openLink: (params: { url: string }) => Promise<unknown>;
 }
 
 interface UseAppOptions {
@@ -63,6 +71,7 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
     callServerTool: () => Promise.reject(new Error("not initialized")),
     sendMessage: () => {},
     requestDisplayMode: () => Promise.reject(new Error("not initialized")),
+    openLink: () => Promise.reject(new Error("not initialized")),
   });
 
   useEffect(() => {
@@ -101,6 +110,28 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
         },
         "*"
       );
+    };
+
+    app.openLink = (params) => {
+      return new Promise<unknown>((resolve, reject) => {
+        const id = _nextId++;
+        _pending.set(id, {
+          resolve: (r: unknown) => resolve(r),
+          reject,
+        } as { resolve: (v: ToolResultParams) => void; reject: (e: Error) => void });
+
+        window.parent.postMessage(
+          { jsonrpc: "2.0", id, method: "ui/open-link", params },
+          "*"
+        );
+
+        setTimeout(() => {
+          if (_pending.has(id)) {
+            _pending.delete(id);
+            reject(new Error("openLink timed out after 10s"));
+          }
+        }, 10_000);
+      });
     };
 
     app.requestDisplayMode = (params) => {

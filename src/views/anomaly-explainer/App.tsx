@@ -94,9 +94,13 @@ export function App() {
           app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
+  const noticeOnOpenLink = app
+    ? (url: string) => { app.openLink({ url }).catch(() => {}); }
+    : undefined;
   const noticeProps = {
     setupNotice: !noticeDismissed ? setupNotice : undefined,
     onDismissNotice,
+    noticeOnOpenLink,
   };
 
   const mode = useMemo(() => pickMode(data), [data]);
@@ -222,7 +226,11 @@ function OverviewView({
   onSend: (p: string) => void;
   isFullscreen: boolean;
   toggleFullscreen: () => Promise<void>;
-  noticeProps?: { setupNotice?: SetupNotice; onDismissNotice?: () => void };
+  noticeProps?: {
+    setupNotice?: SetupNotice;
+    onDismissNotice?: () => void;
+    noticeOnOpenLink?: (url: string) => void;
+  };
 }) {
   const anomalies = data.anomalies ?? [];
   const counts = useMemo(() => severityCounts(anomalies), [anomalies]);
@@ -424,6 +432,7 @@ function Frame({
   toggleFullscreen,
   setupNotice,
   onDismissNotice,
+  noticeOnOpenLink,
 }: {
   body: React.ReactNode;
   contextRow?: React.ReactNode;
@@ -432,6 +441,7 @@ function Frame({
   toggleFullscreen: () => Promise<void>;
   setupNotice?: SetupNotice;
   onDismissNotice?: () => void;
+  noticeOnOpenLink?: (url: string) => void;
 }) {
   return (
     <div className="ds-view">
@@ -451,7 +461,11 @@ function Frame({
         </div>
       </header>
       {setupNotice && (
-        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+        <SetupNoticeBanner
+          notice={setupNotice}
+          onDismiss={onDismissNotice}
+          onOpenLink={noticeOnOpenLink}
+        />
       )}
       {headline && <div className="anom-headline">{headline}</div>}
       <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>{body}</div>

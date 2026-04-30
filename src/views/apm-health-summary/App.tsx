@@ -1500,7 +1500,11 @@ export function App() {
     <div className="ds-view">
       {Header}
       {setupNotice && !noticeDismissed && (
-        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+        <SetupNoticeBanner
+          notice={setupNotice}
+          onDismiss={onDismissNotice}
+          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+        />
       )}
       <div className="health-body">
         {data.namespace_candidates?.length ? (
@@ -1543,6 +1547,7 @@ export function App() {
             onClearFilter={clearFilter}
             filterActive={filterActive}
             filteredServiceCount={services.length}
+            onSend={onSend}
           />
         )}
 
@@ -1579,12 +1584,46 @@ export function App() {
       {/* Warning / recommendation */}
       {data.warning && (
         <SectionCard>
-          <div style={{ fontSize: 12, color: theme.amber }}>{data.warning}</div>
+          <div
+            style={{
+              fontSize: 12,
+              color: theme.amber,
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+            }}
+          >
+            <span
+              className="health-provenance"
+              data-provenance-tip="Diagnostic note from this tool — surfaced because the data this view needs is missing or incomplete."
+              aria-hidden="true"
+            >
+              ⚠️
+            </span>
+            <span>{data.warning}</span>
+          </div>
         </SectionCard>
       )}
       {data.recommendation && (
         <SectionCard>
-          <div style={{ fontSize: 12, color: theme.amber }}>{data.recommendation}</div>
+          <div
+            style={{
+              fontSize: 12,
+              color: theme.amber,
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+            }}
+          >
+            <span
+              className="health-provenance"
+              data-provenance-tip="Suggested next step from this tool's analysis — derived from the same data driving the panels above."
+              aria-hidden="true"
+            >
+              💡
+            </span>
+            <span>{data.recommendation}</span>
+          </div>
         </SectionCard>
       )}
 
@@ -1792,6 +1831,7 @@ function ScopeSubheader({
   onClearFilter,
   filterActive,
   filteredServiceCount,
+  onSend,
 }: {
   scope: HealthScope;
   coverage?: DataCoverage;
@@ -1801,9 +1841,28 @@ function ScopeSubheader({
   onClearFilter: () => void;
   filterActive: boolean;
   filteredServiceCount: number;
+  onSend?: (prompt: string) => void;
 }) {
   const hasK8s = coverage?.kubernetes ?? !!scope.current_cluster;
   const hasApm = coverage?.apm ?? scope.service_count !== undefined;
+
+  const [appsHelpOpen, setAppsHelpOpen] = useState(false);
+  const appsHelpRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!appsHelpOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (!appsHelpRef.current?.contains(e.target as Node)) setAppsHelpOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAppsHelpOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [appsHelpOpen]);
 
   const segments: React.ReactNode[] = [];
 
@@ -1848,9 +1907,44 @@ function ScopeSubheader({
   };
 
   // Quick lookup of the tool-emitted group metadata so each chip can show
-  // its service count + ⤴ partial-app indicator.
+  // its service count + partial-app indicator.
   const groupByLabel = new Map<string, HealthServiceGroup>();
   for (const g of scope.service_groups ?? []) groupByLabel.set(g.label, g);
+
+  // Build help-popover examples from the user's actual loaded data so the
+  // legend reinforces what they see in the chip row above. Each kind-of-row
+  // only appears if a real example of that kind exists in the payload.
+  type PopoverExample =
+    | { kind: "regular"; label: string; count: number }
+    | { kind: "partial"; label: string; count: number; outside: number }
+    | { kind: "pseudo"; label: string };
+  const popoverExamples: PopoverExample[] = [];
+  for (const entry of appList) {
+    if (entry.isPseudo) continue;
+    const g = groupByLabel.get(entry.key);
+    if (!g) continue;
+    if (g.total === undefined || g.total === g.services.length) {
+      popoverExamples.push({ kind: "regular", label: entry.label, count: g.services.length });
+      break;
+    }
+  }
+  for (const entry of appList) {
+    if (entry.isPseudo) continue;
+    const g = groupByLabel.get(entry.key);
+    if (g?.total !== undefined && g.total > g.services.length) {
+      popoverExamples.push({
+        kind: "partial",
+        label: entry.label,
+        count: g.services.length,
+        outside: g.total - g.services.length,
+      });
+      break;
+    }
+  }
+  const pseudoEntry = appList.find((e) => e.isPseudo);
+  if (pseudoEntry) {
+    popoverExamples.push({ kind: "pseudo", label: pseudoEntry.label });
+  }
 
   return (
     <div className="health-scope">
@@ -1873,6 +1967,70 @@ function ScopeSubheader({
         <div className="health-scope-groups">
           <span className="health-scope-groups-label">
             Applications
+            <span className="health-scope-groups-helpwrap" ref={appsHelpRef}>
+              <button
+                type="button"
+                className="health-scope-groups-help"
+                aria-label="About the application filter"
+                aria-expanded={appsHelpOpen}
+                onClick={() => setAppsHelpOpen((v) => !v)}
+              >
+                i
+              </button>
+              {appsHelpOpen && (
+                <div role="dialog" className="health-scope-groups-help-pop">
+                  <div className="health-scope-groups-help-lead">
+                    Filter the panels below to one or more apps. Click a chip to toggle.
+                  </div>
+                  <dl className="health-scope-groups-help-legend">
+                    {popoverExamples.map((ex) => {
+                      if (ex.kind === "regular") {
+                        return (
+                          <React.Fragment key="regular">
+                            <dt>
+                              <span className="health-scope-group-example">
+                                <span className="health-scope-group-label">{ex.label}</span>
+                                <span className="health-scope-group-count mono">{ex.count}</span>
+                              </span>
+                            </dt>
+                            <dd>The number = services from this app within your current scope.</dd>
+                          </React.Fragment>
+                        );
+                      }
+                      if (ex.kind === "partial") {
+                        return (
+                          <React.Fragment key="partial">
+                            <dt>
+                              <span className="health-scope-group-example is-partial">
+                                <span className="health-scope-group-label">{ex.label}</span>
+                                <span className="health-scope-group-count mono">{ex.count}</span>
+                                <span className="health-scope-group-overflow">+{ex.outside}</span>
+                              </span>
+                            </dt>
+                            <dd>
+                              <span className="mono">+N</span> = services for this app exist outside the current scope.
+                              To include them, ask Claude in chat to re-run with broader filters — e.g.{" "}
+                              <em>“show APM health without the namespace filter”</em> or{" "}
+                              <em>“include the orders namespace too.”</em>
+                            </dd>
+                          </React.Fragment>
+                        );
+                      }
+                      return (
+                        <React.Fragment key="pseudo">
+                          <dt>
+                            <span className="health-scope-group-example is-pseudo">
+                              <span className="health-scope-group-label">{ex.label}</span>
+                            </span>
+                          </dt>
+                          <dd>Unlabeled services — typically infra/sidecars, occasionally real services with missing labels. Hide if it's noise.</dd>
+                        </React.Fragment>
+                      );
+                    })}
+                  </dl>
+                </div>
+              )}
+            </span>
             {scope.service_groups_source && (
               <span
                 className="health-scope-groups-source"
@@ -1894,41 +2052,66 @@ function ScopeSubheader({
               const group = groupByLabel.get(entry.key);
               const partial =
                 !!group && group.total !== undefined && group.total > group.services.length;
+              const outsideScope = partial && group ? group.total! - group.services.length : 0;
               const isSelected = !selectedApps || selectedApps.has(entry.key);
               const count = group?.services.length;
               const titleParts: string[] = [];
               if (entry.isPseudo) {
                 titleParts.push("Pods or services with no resolvable app label.");
               } else if (group) {
-                titleParts.push(
-                  partial
-                    ? `${group.label} has ${group.total} services total; ${group.services.length} in this scope`
-                    : `${group.label}: ${group.services.join(", ")}`
-                );
+                if (partial) {
+                  titleParts.push(
+                    `${group.label}: ${group.services.length} of ${group.total} services in this scope (${outsideScope} outside)`
+                  );
+                } else {
+                  titleParts.push(`${group.label}: ${group.services.join(", ")}`);
+                }
               }
               titleParts.push(isSelected ? "Click to hide" : "Click to show");
+              const broadenPrompt = group
+                ? `Re-run apm-health-summary to include services for app "${group.label}" that are outside the current scope (cluster, namespace, or environment).`
+                : "";
               return (
-                <button
-                  key={entry.key}
-                  type="button"
-                  className={
-                    "health-scope-group" +
-                    (partial ? " is-partial" : "") +
-                    (entry.isPseudo ? " is-pseudo" : "") +
-                    (isSelected ? " is-selected" : " is-deselected")
-                  }
-                  aria-pressed={isSelected}
-                  onClick={() => onToggleApp(entry.key)}
-                  title={titleParts.join(" · ")}
-                >
-                  <span className="health-scope-group-label">{entry.label}</span>
-                  {count !== undefined && (
-                    <span className="health-scope-group-count mono">{count}</span>
+                <span key={entry.key} className="health-scope-group-wrap">
+                  <button
+                    type="button"
+                    className={
+                      "health-scope-group" +
+                      (partial ? " is-partial" : "") +
+                      (entry.isPseudo ? " is-pseudo" : "") +
+                      (isSelected ? " is-selected" : " is-deselected")
+                    }
+                    aria-pressed={isSelected}
+                    onClick={() => onToggleApp(entry.key)}
+                    title={titleParts.join(" · ")}
+                  >
+                    <span className="health-scope-group-label">{entry.label}</span>
+                    {count !== undefined && (
+                      <span className="health-scope-group-count mono">{count}</span>
+                    )}
+                    {partial && (
+                      <span className="health-scope-group-overflow">+{outsideScope}</span>
+                    )}
+                  </button>
+                  {partial && group && (
+                    <span role="tooltip" className="health-scope-group-pop">
+                      <span className="health-scope-group-pop-text">
+                        <strong>{group.label}</strong> has {group.total} services total —{" "}
+                        <strong>{group.services.length}</strong> in this scope,{" "}
+                        <strong>{outsideScope}</strong> outside.
+                      </span>
+                      {onSend && (
+                        <button
+                          type="button"
+                          className="health-scope-group-broaden"
+                          onClick={() => onSend(broadenPrompt)}
+                        >
+                          Broaden scope to include them →
+                        </button>
+                      )}
+                    </span>
                   )}
-                  {partial && (
-                    <span className="health-scope-group-overflow" aria-hidden="true">⤴</span>
-                  )}
-                </button>
+                </span>
               );
             })}
           </div>

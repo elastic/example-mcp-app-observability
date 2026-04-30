@@ -116,9 +116,13 @@ export function App() {
           app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
+  const noticeOnOpenLink = app
+    ? (url: string) => { app.openLink({ url }).catch(() => {}); }
+    : undefined;
   const noticeProps = {
     setupNotice: !noticeDismissed ? setupNotice : undefined,
     onDismissNotice,
+    noticeOnOpenLink,
   };
 
   if (!data) return <Frame onToggleFullscreen={toggleFullscreen} fullscreen={fullscreen} body={<Waiting />} {...noticeProps} />;
@@ -215,6 +219,7 @@ function Frame({
   fullscreen,
   setupNotice,
   onDismissNotice,
+  noticeOnOpenLink,
 }: {
   children?: React.ReactNode;
   body?: React.ReactNode;
@@ -225,6 +230,7 @@ function Frame({
   fullscreen: boolean;
   setupNotice?: SetupNotice;
   onDismissNotice?: () => void;
+  noticeOnOpenLink?: (url: string) => void;
 }) {
   return (
     <div className="ds-view">
@@ -244,7 +250,11 @@ function Frame({
         </div>
       </header>
       {setupNotice && (
-        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+        <SetupNoticeBanner
+          notice={setupNotice}
+          onDismiss={onDismissNotice}
+          onOpenLink={noticeOnOpenLink}
+        />
       )}
       {tabs}
       {subheader}
@@ -267,7 +277,11 @@ function ListView({
   fullscreen: boolean;
   onToggleFullscreen: () => void;
   onSend: (p: string) => void;
-  noticeProps?: { setupNotice?: SetupNotice; onDismissNotice?: () => void };
+  noticeProps?: {
+    setupNotice?: SetupNotice;
+    onDismissNotice?: () => void;
+    noticeOnOpenLink?: (url: string) => void;
+  };
 }) {
   const [search, setSearch] = useState("");
   const [statusTab, setStatusTab] = useState<StatusTab>("all");

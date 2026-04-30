@@ -21,9 +21,15 @@ once its window closes, or — in `now` / `table` mode — immediately.
 | Mode | When to pick it | Blocks? |
 |------|-----------------|---------|
 | `anomaly` (default) | "tell me when anything unusual fires", "watch for anomalies", open-ended monitoring | Until an anomaly fires or `max_wait` elapses |
-| `metric` | user names a specific metric — either with a threshold ("wait until memory drops below 80MB") or without ("show me a live chart of X") | Polls for `max_wait` seconds (default 60s, interval 5s) |
-| `now` | "what is X right now", "check X", "current value of Y" — single-instance **scalar** read | Returns immediately |
-| `table` | "list …", "which … are …", group-by / top-N queries, or any ES\|QL result with mixed-type columns | Returns immediately |
+| `metric` | **Forward-looking** monitoring of a specific metric — either with a threshold ("wait until memory drops below 80MB", "watch p99 until it exceeds 500ms") or without ("show me a live chart of X going forward", "live-sample CPU for 60 seconds"). Always blocks and polls. | Polls for `max_wait` seconds (default 60s, interval 5s) |
+| `now` | "what is X right now", "check X", "current value of Y", **or any past-tense windowed query** ("what was X over the past hour", "average CPU in the last 15 minutes") — single-instance **scalar** read with the time window inside the ES\|QL | Returns immediately |
+| `table` | "list …", "which … are …", group-by / top-N queries, time-bucketed series ("memory by 5-minute bucket"), or any ES\|QL result with mixed-type columns | Returns immediately |
+
+> **Tense matters.** "What WAS the frontend memory over the past 60 seconds" is **historical** — it's already happened, no need to wait. Use `now` mode (with the 60-second window inside the ES\|QL via `WHERE @timestamp > NOW() - 60s`) or `table` mode if the user wants a time series. Do **not** pick `metric` mode for past-tense queries — that polls live for 60 seconds before returning, which is the opposite of what the user asked for.
+>
+> Quick check before picking `metric`:
+> - "watch / monitor / wait until / wake me / live-sample / for the next N seconds" → `metric`
+> - "what was / show me / how did X look / over the past N / in the last N" → `now` or `table`
 
 If the user wants durable alerting ("page me whenever..."), use `manage-alerts` instead.
 
@@ -91,6 +97,18 @@ Omit `condition` and the tool live-samples for the full `max_wait` window — us
 }
 ```
 
+**Past-tense windowed read** — when the user asks "what was X over the past N seconds/minutes/hours", put the window in the ES\|QL `WHERE` clause, not in `max_wait`. The tool returns immediately with the aggregate; nothing is polled.
+
+```json
+{
+  "mode": "now",
+  "esql": "FROM metrics-kubeletstatsreceiver.otel* | WHERE resource.attributes.k8s.pod.name == \"frontend-7d4b8f9c5-x2k9m\" AND @timestamp > NOW() - 60 seconds | STATS v = AVG(metrics.k8s.pod.memory.working_set)",
+  "description": "frontend memory, last 60 seconds (avg)"
+}
+```
+
+If the user wants the time series (not just one number), use `table` mode with `BUCKET()` instead — that returns rows the view can chart.
+
 ### Table mode — full ES|QL rows and columns
 
 Use when the query groups, lists, or returns mixed-type rows (strings + numbers + dates). `now` mode
@@ -101,6 +119,16 @@ discards everything except the first numeric cell — `table` mode preserves the
   "mode": "table",
   "esql": "FROM metrics-kubeletstatsreceiver.otel* | WHERE metrics.k8s.pod.memory.working_set IS NOT NULL | STATS avg_mem = AVG(metrics.k8s.pod.memory.working_set) BY resource.attributes.k8s.pod.name, resource.attributes.k8s.namespace.name | SORT avg_mem DESC | LIMIT 10",
   "description": "top 10 pods by memory"
+}
+```
+
+**Past-tense time series** — use `table` with `BUCKET()` to return one row per time slice the view can chart:
+
+```json
+{
+  "mode": "table",
+  "esql": "FROM metrics-kubeletstatsreceiver.otel* | WHERE resource.attributes.k8s.pod.name == \"frontend-7d4b8f9c5-x2k9m\" AND @timestamp > NOW() - 60 seconds | STATS v = AVG(metrics.k8s.pod.memory.working_set) BY bucket = BUCKET(@timestamp, 5 second) | SORT bucket ASC",
+  "description": "frontend memory · 60s · 5s buckets"
 }
 ```
 

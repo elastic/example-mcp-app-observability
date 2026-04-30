@@ -39,6 +39,7 @@ export interface AppLike {
   }) => Promise<ToolResultParams>;
   sendMessage: (text: string) => void;
   requestDisplayMode: (params: { mode: DisplayMode }) => Promise<{ mode: DisplayMode }>;
+  openLink: (params: { url: string }) => Promise<unknown>;
 }
 
 export interface Fixture {
@@ -99,6 +100,7 @@ export function useApp(opts: UseAppOptions): {
     callServerTool: () => Promise.resolve({}),
     sendMessage: () => {},
     requestDisplayMode: () => Promise.resolve({ mode: "inline" }),
+    openLink: () => Promise.resolve({}),
   });
   const setupRef = useRef(false);
   const [, force] = useState(0);
@@ -116,6 +118,13 @@ export function useApp(opts: UseAppOptions): {
     app.requestDisplayMode = async ({ mode }) => {
       const applied = onRequestDisplayMode(mode);
       return { mode: applied };
+    };
+    app.openLink = async ({ url }) => {
+      // In the harness, just open in a new tab — the iframe sandbox doesn't
+      // apply because the harness runs at the top level. Production routes
+      // through Claude Desktop's ui/open-link handler.
+      window.open(url, "_blank", "noopener,noreferrer");
+      return {};
     };
     opts.onAppCreated?.(app);
     force((n) => n + 1);

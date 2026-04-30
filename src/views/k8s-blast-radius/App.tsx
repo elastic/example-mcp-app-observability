@@ -497,7 +497,11 @@ export function App() {
     <div className="ds-view">
       {Header}
       {setupNotice && !noticeDismissed && (
-        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+        <SetupNoticeBanner
+          notice={setupNotice}
+          onDismiss={onDismissNotice}
+          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+        />
       )}
       <div className="blast-graph">
         <svg

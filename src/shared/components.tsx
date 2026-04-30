@@ -1427,9 +1427,19 @@ export interface SetupNotice {
 export function SetupNoticeBanner({
   notice,
   onDismiss,
+  onOpenLink,
 }: {
   notice: SetupNotice;
   onDismiss?: () => void;
+  /**
+   * Host-side link opener. In Claude Desktop, plain `<a target="_blank">`
+   * is blocked by the iframe sandbox — links must route through the
+   * MCP `ui/open-link` protocol. When this prop is supplied (production),
+   * the link renders as a button that calls it. When omitted (harness /
+   * test), the link falls back to a plain anchor that works in a
+   * standalone browser context.
+   */
+  onOpenLink?: (url: string) => void;
 }) {
   const isWelcome = notice.type === "welcome";
   const tone = isWelcome ? "info" : "warn";
@@ -1442,14 +1452,24 @@ export function SetupNoticeBanner({
         )}
         <div className="ds-setup-notice-message">{notice.message}</div>
         {notice.install_url && (
-          <a
-            href={notice.install_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ds-setup-notice-link"
-          >
-            Install skills →
-          </a>
+          onOpenLink ? (
+            <button
+              type="button"
+              className="ds-setup-notice-link"
+              onClick={() => onOpenLink(notice.install_url!)}
+            >
+              Install skills →
+            </button>
+          ) : (
+            <a
+              href={notice.install_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ds-setup-notice-link"
+            >
+              Install skills →
+            </a>
+          )
         )}
       </div>
       {isWelcome && onDismiss && (

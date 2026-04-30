@@ -33,11 +33,11 @@ import type { App } from "@modelcontextprotocol/ext-apps";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const theme = {
-  bg: "#0f1117",
-  bgSecondary: "#161922",
-  bgTertiary: "#1e222d",
-  border: "#2a2d3a",
-  borderStrong: "#383c4b",
+  bg: "#1f1f1e",
+  bgSecondary: "#1f1f1e",
+  bgTertiary: "#171716",
+  border: "#2a2a2a",
+  borderStrong: "#474745",
   text: "#e5e7eb",
   textMuted: "#9ca3af",
   // #9097a8 hits ~6.5:1 on #0f1117, passing WCAG 2 AA for body text. The
@@ -80,13 +80,13 @@ const DS_STYLE_ID = "ds-stylesheet";
 
 const DS_STYLESHEET = `
   :root {
-    /* ── Surfaces (dark) ─────────────────────────────────────────────── */
-    --bg-primary: #0f1117;
-    --bg-secondary: #161922;
-    --bg-tertiary: #1e222d;
-    --bg-elevated: #1a1d27;
-    --bg-hover: #222633;
-    --bg-active: #2a2e3d;
+    /* ── Surfaces (dark, warm neutral — aligned with security app) ───── */
+    --bg-primary: #1f1f1e;
+    --bg-secondary: #1f1f1e;
+    --bg-tertiary: #171716;
+    --bg-elevated: #262626;
+    --bg-hover: #2a2a2a;
+    --bg-active: #333333;
 
     /* ── Text ────────────────────────────────────────────────────────── */
     --text-primary: #e5e7eb;
@@ -97,8 +97,8 @@ const DS_STYLESHEET = `
     --ds-text-label: #a9adb8;
 
     /* ── Borders ─────────────────────────────────────────────────────── */
-    --border: #383c4b;
-    --border-subtle: #2a2d3a;
+    --border: #474745;
+    --border-subtle: #2a2a2a;
     --border-focus: #7c97fb;
 
     /* ── Accent ──────────────────────────────────────────────────────── *
@@ -383,8 +383,19 @@ const DS_STYLESHEET = `
     color: var(--accent);
     text-decoration: none;
     font-weight: 600;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
   }
   .ds-setup-notice-link:hover { text-decoration: underline; }
+  .ds-setup-notice-link:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
   .ds-setup-notice-dismiss {
     flex-shrink: 0;
     width: 22px;

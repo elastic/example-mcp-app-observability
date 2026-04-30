@@ -869,7 +869,11 @@ export function App() {
     <div className="ds-view">
       {Header}
       {setupNotice && !noticeDismissed && (
-        <SetupNoticeBanner notice={setupNotice} onDismiss={onDismissNotice} />
+        <SetupNoticeBanner
+          notice={setupNotice}
+          onDismiss={onDismissNotice}
+          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+        />
       )}
       <div className="observe-body">
         {description && <div className="observe-description">{description}</div>}
