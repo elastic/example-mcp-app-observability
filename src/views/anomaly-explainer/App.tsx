@@ -468,7 +468,11 @@ function Frame({
         />
       )}
       {headline && <div className="anom-headline">{headline}</div>}
-      <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>{body}</div>
+      {/* flex: 0 1 auto so the body sizes to natural content (no
+       *  whitespace below short lists / single-record detail views)
+       *  but still shrinks + scrolls when content exceeds the
+       *  ds-view max-height cap. */}
+      <div style={{ flex: "0 1 auto", minHeight: 0, overflow: "auto" }}>{body}</div>
     </div>
   );
 }

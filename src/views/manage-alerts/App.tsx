@@ -258,7 +258,12 @@ function Frame({
       )}
       {tabs}
       {subheader}
-      <div style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>{body}</div>
+      {/* flex: 0 1 auto — body sizes to its natural content height when
+       *  content fits within ds-view; shrinks + scrolls when content
+       *  exceeds it. The prior `flex: 1 1 0` always grew to fill,
+       *  creating whitespace below short lists / single-record detail
+       *  views. */}
+      <div style={{ flex: "0 1 auto", minHeight: 0, overflow: "auto" }}>{body}</div>
       {footer}
     </div>
   );
@@ -380,6 +385,39 @@ function ListView({
     </div>
   );
 
+  // Source filter toggle: indicates whether the result is filtered to
+  // MCP-created rules (tagged elastic-o11y-mcp) or showing every rule
+  // in Kibana. One click swaps the active mode by re-firing the tool
+  // with the inverse tags filter — no need for the user to re-prompt.
+  const isMcpFiltered =
+    Array.isArray(d.filter_tags) &&
+    d.filter_tags.length === 1 &&
+    d.filter_tags[0] === "elastic-o11y-mcp";
+  const sourceFilterChip = onSend ? (
+    <button
+      type="button"
+      className={`rule-source-chip${isMcpFiltered ? " is-filtered" : ""}`}
+      onClick={() =>
+        onSend(
+          isMcpFiltered
+            ? "Use manage-alerts with operation='list' and tags=[]"
+            : "Use manage-alerts with operation='list' and tags=['elastic-o11y-mcp']"
+        )
+      }
+      title={
+        isMcpFiltered
+          ? "Click to show every rule in Kibana"
+          : "Click to show only rules created by this MCP"
+      }
+    >
+      <span className="rule-source-chip-dot" aria-hidden="true" />
+      <span>Source: {isMcpFiltered ? "MCP-created" : "All rules"}</span>
+      <span className="rule-source-chip-action">
+        {isMcpFiltered ? "Show all →" : "Filter to MCP →"}
+      </span>
+    </button>
+  ) : null;
+
   const subheader = (
     <Subheader
       total={filtered.length}
@@ -387,6 +425,7 @@ function ListView({
       sort={{ value: sort, onChange: setSort, options: SORT_OPTIONS }}
       details={{ checked: showDetails, onChange: setShowDetails }}
       group={{ value: group, onChange: setGroup, options: GROUP_OPTIONS }}
+      leftExtras={sourceFilterChip}
     />
   );
 

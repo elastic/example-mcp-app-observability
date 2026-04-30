@@ -217,9 +217,15 @@ const DS_STYLESHEET = `
      * the natural content height or the viewport. When content fits in
      * less than 100vh, the iframe collapses with it (no whitespace below).
      * When content exceeds 100vh, the cap kicks in and the inner
-     * flex:1 + overflow:auto bodies handle the scroll. */
+     * flex:1 + overflow:auto bodies handle the scroll.
+     *
+     * min-height intentionally low (200px) — prior 500px floor was
+     * creating visible whitespace on short lists (single-card detail
+     * views, last page of paginated lists). Anything substantively
+     * useful renders well above 200px in practice; the floor only
+     * matters for the empty-state ('Waiting for...') screens. */
     max-height: 100vh;
-    min-height: 500px;
+    min-height: 200px;
     display: flex;
     flex-direction: column;
     overflow: hidden;

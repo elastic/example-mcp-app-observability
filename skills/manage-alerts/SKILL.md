@@ -91,14 +91,17 @@ Parameter-filling guidance:
 ```json
 {
   "operation": "list",
-  "tags": ["elastic-o11y-mcp"],
   "search": "memory",
   "per_page": 50
 }
 ```
 
-- **`tags`**: defaults to `["elastic-o11y-mcp"]` when omitted, so the user sees only rules this MCP
-  created. Pass `tags: []` to list every rule in the Kibana cluster (may be large — warn the user).
+- **`tags`**: **omit by default** — the tool returns every alert rule in Kibana. Only pass
+  `["elastic-o11y-mcp"]` when the user qualifies the request as scoped to this app:
+  - "what rules did I create here / from this app" → `tags: ["elastic-o11y-mcp"]`
+  - "show me my alerts" / "what alerts do I have" / "list all rules" → omit (show everything)
+  - The view itself has a one-click toggle between "all rules" and "MCP-created rules", so users
+    can switch without re-prompting. Don't pre-filter unless they asked.
 - **`search`**: optional substring match against rule name.
 - **`rule_type_ids`**: optional filter — e.g. `["observability.rules.custom_threshold"]`. Omit to
   include every rule type.
@@ -195,8 +198,10 @@ Confirm to the user after each operation:
 - **Attach a KQL filter on `create`.** Unfiltered rules against `metrics-*` evaluate across
   everything — a recipe for noise and false alerts.
 - **Units matter.** Bytes vs MB vs percentage — always be explicit about the threshold's units.
-- **Default the `list` filter to `elastic-o11y-mcp`.** This keeps the UX focused on rules this MCP
-  manages. Only broaden when the user explicitly asks.
+- **Default `list` to ALL rules.** Unqualified prompts ("show me my alerts", "what alerts do I have")
+  return every rule in Kibana — that's almost always what the user wants when they ask broadly.
+  Apply `tags: ["elastic-o11y-mcp"]` only when they qualify with "this app" / "rules I created here"
+  / similar. The view has a one-click toggle for users to switch states without a re-prompt.
 - **Confirm before deleting.** The delete path is irreversible; quote the rule name, wait for
   explicit approval.
 - **If the tool isn't available, the operator disabled it on purpose.** Don't suggest workarounds to

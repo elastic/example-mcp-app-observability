@@ -78,8 +78,9 @@ export function registerManageAlertsTool(server: McpServer) {
         "  • operation='create' — create a new persistent custom-threshold alerting rule. Real, live rule — not a simulation. " +
         "Tagged 'elastic-o11y-mcp' by default for easy cleanup. Use when the user wants durable alerting ('page me if X', " +
         "'create a rule for Y'). For transient session-scoped monitoring use `observe` instead.\n" +
-        "  • operation='list' — list existing rules, optionally filtered by tags, name search, or rule_type_ids. Defaults to " +
-        "tags=['elastic-o11y-mcp'] so you see the rules this MCP created. Pass tags=[] to see every rule in Kibana.\n" +
+        "  • operation='list' — list existing rules, optionally filtered by tags, name search, or rule_type_ids. By default " +
+        "returns ALL rules in Kibana (no tag filter). Pass tags=['elastic-o11y-mcp'] only when the user explicitly asks " +
+        "for rules created by this MCP / 'this app' / similar.\n" +
         "  • operation='get' — fetch a single rule by rule_id, including execution status and last-run outcome.\n" +
         "  • operation='delete' — permanently delete a rule by rule_id. Irreversible. The tool enforces a two-step " +
         "confirmation: on the first call (without confirm=true) you get a preview of the rule, nothing is deleted. " +
@@ -129,8 +130,10 @@ export function registerManageAlertsTool(server: McpServer) {
 
         // --- list inputs ---
         tags: z.array(z.string()).optional().describe(
-          "[list] Filter rules by tag. Defaults to ['elastic-o11y-mcp'] when operation='list' and this is omitted, " +
-          "so the user sees rules this MCP created. Pass an empty array to list every rule in Kibana."
+          "[list] Filter rules by tag. **Omit by default** — list returns ALL rules in Kibana. " +
+          "Pass ['elastic-o11y-mcp'] only when the user explicitly asks for rules created by this MCP / " +
+          "'this app' / 'rules I created here'. The view exposes a toggle so users can switch between " +
+          "filter states without a re-prompt."
         ),
         search: z.string().optional().describe(
           "[list] Substring search against rule name."
@@ -282,9 +285,12 @@ async function handleCreate(input: ManageAlertsInput, kibanaUrl: string) {
 }
 
 async function handleList(input: ManageAlertsInput, _kibanaUrl: string) {
-  // Default to our own rules so the user sees MCP-created rules first.
-  const tags = input.tags ?? ["elastic-o11y-mcp"];
-  const effectiveTags = tags.length ? tags : undefined;
+  // No default tag filter — show all rules unless the user explicitly
+  // asks for "rules created by this app" / "elastic-o11y-mcp rules" /
+  // similar. The skill teaches Claude to pass tags=["elastic-o11y-mcp"]
+  // in those cases. The view also exposes a self-service toggle so
+  // users can switch between "all" and "MCP-only" without re-prompting.
+  const effectiveTags = input.tags && input.tags.length ? input.tags : undefined;
 
   const result = await listRules({
     tags: effectiveTags,
@@ -303,10 +309,18 @@ async function handleList(input: ManageAlertsInput, _kibanaUrl: string) {
       prompt: `Use manage-alerts with operation='get' and rule_id='${summaries[0].id}'.`,
     });
   }
+  // Offer the inverse-of-current-state toggle as an investigation action
+  // so Claude can also recommend it via chat. View-side toggle also
+  // exists so users don't have to re-prompt.
   if (effectiveTags) {
     actions.push({
-      label: "List ALL rules (no tag filter)",
+      label: "Show all rules (clear tag filter)",
       prompt: "Use manage-alerts with operation='list' and tags=[] to see every rule in Kibana.",
+    });
+  } else {
+    actions.push({
+      label: "Show only MCP-created rules",
+      prompt: "Use manage-alerts with operation='list' and tags=['elastic-o11y-mcp'].",
     });
   }
   actions.push({

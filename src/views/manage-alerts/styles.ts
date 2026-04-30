@@ -79,6 +79,50 @@ export const viewStyles = `
   }
   .rule-group-header:first-child { margin-top: 0; }
 
+  /* Source filter chip — indicates whether the list is filtered to
+   * MCP-created rules or showing every rule. One click toggles. The
+   * affordance is intentionally distinct from the static QueryPills
+   * (which usually echo the call's parameters); this one mutates. */
+  .rule-source-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .rule-source-chip:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+  .rule-source-chip.is-filtered {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: var(--text-primary);
+  }
+  .rule-source-chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .rule-source-chip.is-filtered .rule-source-chip-dot {
+    background: var(--accent);
+  }
+  .rule-source-chip-action {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .rule-source-chip:hover .rule-source-chip-action {
+    color: var(--accent);
+  }
+
   .rule-paginator {
     display: flex;
     align-items: center;
