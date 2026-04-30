@@ -40,11 +40,13 @@ anomaly detection) or `observe` / `manage-alerts` (both universal).
 
 ```json
 {
+  "cluster": "prod-us-east",
   "namespace": "otel-demo",
   "lookback": "15m"
 }
 ```
 
+- **`cluster`**: only when the user names a Kubernetes cluster — e.g. "how's prod-us-east doing", "check the staging cluster". Resolves fuzzily against `k8s.cluster.name` (OTel) / `orchestrator.cluster.name` (ECS); on miss the response includes `cluster_candidates`. Omit for single-cluster deployments or when the user wants a cross-cluster view.
 - **`namespace`**: only if the user scopes to a K8s namespace. Omit for cross-namespace or non-K8s.
 - **`lookback`**: default `15m`. Use `5m` for "right now," `1h` for "since I noticed the issue."
 - **`job_filter`**: optional ML-job prefix, e.g. `k8s-`. Rarely needed.
@@ -52,11 +54,22 @@ anomaly detection) or `observe` / `manage-alerts` (both universal).
 
 ## After the tool returns
 
-The tool renders an inline MCP App view — status badge, stat cards, anomaly-severity donut, top memory
-pods, service throughput list, and a next-step button row driven by `investigation_actions`. Use the view
+The tool renders an inline MCP App view — status badge, scope card (cluster › namespace › service/pod
+counts plus an applications strip), KPI tile rows, anomaly-severity donut + heatmap, top memory pods,
+service throughput list, and a next-step button row driven by `investigation_actions`. Use the view
 for the visual rollup; narrate findings below it.
 
 Inspect `data_coverage` first — this tells you which signals contributed.
+
+The `scope` field anchors what the user is looking at — start narration with it when present:
+"Looking at cluster `prod-us-east`, namespace `payments`, 12 services across 42 pods…". When `scope.service_groups`
+is populated the view shows clickable application chips users can toggle to filter the page client-side
+(throughput rows, top pods, anomaly heatmap, donut counts all recompute). **Don't suggest re-running the
+tool when the user wants to narrow to one application — point them at the chips instead.** Only re-call
+with a different `cluster` / `namespace` when they're crossing the scope boundary.
+
+Ignore `_setup_notice` if present in the response — it's view-side chrome (welcome banner / skill-gap hint)
+that the UI handles. Don't echo or summarize it in chat.
 
 Then walk the output top-down:
 

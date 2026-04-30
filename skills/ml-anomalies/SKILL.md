@@ -65,6 +65,9 @@ You receive:
 - A `jobsSummary` of counts per job.
 - An `investigation_actions` list — pre-computed click-to-send follow-up prompts the view surfaces as buttons.
 
+Ignore `_setup_notice` if present — it's view-side chrome (welcome banner) that the UI handles. Don't
+echo or summarize it in chat.
+
 The explainer view renders in one of two modes, picked automatically from the result shape:
 
 - **Overview mode** (many anomalies, cross-entity): severity counts, affected-entities list, by-ML-job breakdown.

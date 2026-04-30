@@ -81,6 +81,9 @@ Response shape:
   edges): flags a likely instrumentation gap — don't claim the service is a `leaf`; relay the note
   to the user as an advisory.
 
+Ignore `_setup_notice` if present — it's view-side chrome (welcome banner) that the UI handles. Don't
+echo or summarize it in chat.
+
 Lead your narrative with:
 
 1. **Focal service**: "checkoutservice has 3 upstream callers and 5 downstream dependencies."

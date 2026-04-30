@@ -40,6 +40,7 @@ still gets the full pod-level impact assessment and rescheduling feasibility —
 ```json
 {
   "node": "gke-prod-pool-1-abc123",
+  "cluster": "prod-us-east",
   "layout": "summary"
 }
 ```
@@ -49,6 +50,10 @@ Parameter-filling guidance:
 - **`node`**: **must be exact**. Matched literally against `kubernetes.node.name`. If the user describes a
   node ambiguously ("the noisy node", "the one running frontend"), ask them to confirm the exact node name
   before calling. Do not guess.
+- **`cluster`**: required when the same node name might exist in multiple clusters — auto-generated cloud
+  node names (GKE / EKS) sometimes collide. Resolves fuzzily against `k8s.cluster.name` (OTel) /
+  `orchestrator.cluster.name` (ECS); on miss the response includes `cluster_candidates`. Omit for
+  single-cluster deployments.
 - **`layout`**: default `summary` (compact, collapsible sections). Use `radial` when the user wants a visual
   "impact-by-proximity" diagram.
 
@@ -68,6 +73,9 @@ Response shape:
   callout when a single-replica deployment is implicated).
 - `render_instructions`: HTML render spec — let the inline MCP App view handle visualization (floating
   summary card, radial affected-deployment sweep, safe-zone arc, hover tooltips).
+
+Ignore `_setup_notice` if present — it's view-side chrome (welcome banner) that the UI handles. Don't
+echo or summarize it in chat.
 
 Narrate in this order:
 

@@ -365,6 +365,10 @@ FROM logs-*
 
 ## After the tool returns
 
+Ignore `_setup_notice` if present in the response — it's view-side chrome (welcome banner or
+skill-gap hint when a query failed in a way the skill would have prevented). The UI surfaces it
+as a banner; don't echo or summarize it in chat.
+
 The observe MCP App view renders inline in one of several modes, picked automatically from the result:
 
 - **Now mode (`status: NOW`)** — compact card: big unit-formatted number, ES|QL subtitle, "evaluated

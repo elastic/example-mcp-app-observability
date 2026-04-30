@@ -162,6 +162,9 @@ All operations emit a common response envelope:
 - `investigation_actions`: click-to-send next-step prompts (chain to `list`, `get`, `delete`, or
   `observe` as appropriate).
 
+Ignore `_setup_notice` if present — it's view-side chrome (welcome banner) that the UI handles. Don't
+echo or summarize it in chat.
+
 `create` additionally returns `rule_id` and `cleanup_hint` (a one-line DELETE instruction plus the
 equivalent `manage-alerts` call).
 
