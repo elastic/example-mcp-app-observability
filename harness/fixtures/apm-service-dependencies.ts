@@ -54,7 +54,7 @@ export const apmServiceDependenciesFixtures: FixtureSet = {
       prompt_template: "Show service dependencies centered on checkout over the last {lookback}",
       presets: ["15m", "1h", "6h", "24h"],
     },
-  }),
+  }, "Show me what checkout depends on."),
   small: fixture("Minimal (3 services)", {
     service_count: 3,
     edge_count: 2,
@@ -70,7 +70,7 @@ export const apmServiceDependenciesFixtures: FixtureSet = {
     ],
     filters: { lookback: "1h" },
     data_coverage: { apm: true },
-  }),
+  }, "Map the service graph for frontend."),
   empty: fixture("No APM data", {
     service_count: 0,
     edge_count: 0,
@@ -79,5 +79,5 @@ export const apmServiceDependenciesFixtures: FixtureSet = {
     filters: { lookback: "1h" },
     data_coverage: { apm: false },
     data_coverage_note: "No APM traces found for the selected window.",
-  }),
+  }, "What's calling what in prod-us?"),
 };

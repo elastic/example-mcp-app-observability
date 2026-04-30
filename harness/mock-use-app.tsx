@@ -44,6 +44,13 @@ export interface AppLike {
 export interface Fixture {
   label: string;
   result: ToolResultParams;
+  /**
+   * Optional sample LLM prompt — what a user would have typed in Claude
+   * to call this tool and produce this fixture's payload. Rendered in a
+   * strip above the harness iframe so demos can show "this is the chat
+   * input that would have produced this view state".
+   */
+  prompt?: string;
 }
 
 interface HarnessContextValue {

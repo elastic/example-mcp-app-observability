@@ -93,7 +93,7 @@ export const manageAlertsFixtures: FixtureSet = {
       { label: "Disable failing rule", prompt: "Disable rule 91fa-ccd5-004" },
       { label: "Show only enabled rules", prompt: "List alert rules where enabled=true" },
     ],
-  }),
+  }, "List my alert rules."),
   listEmpty: fixture("List (no rules)", {
     status: "success",
     operation: "list",
@@ -103,7 +103,7 @@ export const manageAlertsFixtures: FixtureSet = {
     per_page: 25,
     rules: [],
     message: "No alert rules found in this Kibana space.",
-  }),
+  }, "What alert rules are configured?"),
   get: fixture("Detail (single rule)", {
     status: "success",
     operation: "get",
@@ -112,7 +112,7 @@ export const manageAlertsFixtures: FixtureSet = {
       { label: "Disable this rule", prompt: `Disable rule ${ruleA.id}` },
       { label: "Delete this rule", prompt: `Delete rule ${ruleA.id}` },
     ],
-  }),
+  }, "Show me the checkout p99 latency alert rule."),
   create: fixture("Created", {
     status: "success",
     operation: "create",
@@ -129,10 +129,10 @@ export const manageAlertsFixtures: FixtureSet = {
     tags: ["checkout", "latency"],
     enabled: true,
     message: "Rule created and enabled.",
-  }),
+  }, "Create an alert for checkout when p95 latency exceeds 400ms."),
   error: fixture("Error", {
     status: "error",
     error: "kibana_unreachable",
     message: "Kibana API returned 503 (connect ECONNREFUSED).",
-  }),
+  }, "List my alert rules."),
 };

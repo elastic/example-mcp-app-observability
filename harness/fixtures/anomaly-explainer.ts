@@ -67,7 +67,7 @@ export const anomalyExplainerFixtures: FixtureSet = {
       prompt_template: "Explain checkout anomaly over the last {lookback}",
       presets: ["15m", "1h", "6h", "24h"],
     },
-  }),
+  }, "Why is checkout slow? Show me the latency anomaly."),
   overview: fixture("Overview — 12 anomalies", {
     headline: "12 anomalies across 4 services in prod-us over the last hour",
     total: 12,
@@ -120,12 +120,12 @@ export const anomalyExplainerFixtures: FixtureSet = {
     investigation_actions: [
       { label: "Drill into checkout", prompt: "Explain anomalies for service.name=checkout over the last 1h" },
     ],
-  }),
+  }, "What anomalies are firing in prod-us right now?"),
   empty: fixture("No anomalies", {
     headline: "No anomalies in the selected window.",
     total: 0,
     returned: 0,
     anomalies: [],
     filters: { lookback: "1h" },
-  }),
+  }, "Are there any anomalies right now?"),
 };

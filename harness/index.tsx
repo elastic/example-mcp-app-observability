@@ -193,6 +193,21 @@ function HarnessShell() {
               mock server-tool calls log to browser console
             </span>
           </div>
+          {fixture?.prompt && (
+            <div className="harness-prompt-strip" role="note" aria-label="Sample prompt">
+              <span className="harness-prompt-label">Demo prompt</span>
+              <span className="harness-prompt-text">"{fixture.prompt}"</span>
+              <button
+                type="button"
+                className="harness-prompt-copy"
+                onClick={() => navigator.clipboard?.writeText(fixture.prompt!)}
+                title="Copy prompt"
+                aria-label="Copy prompt to clipboard"
+              >
+                Copy
+              </button>
+            </div>
+          )}
           <div className="harness-stage-body" ref={stageBodyRef}>
             <div className={`harness-view-frame${displayMode === "fullscreen" ? " harness-view-frame-fullscreen" : ""}`}>
               <ViewComponent key={`${view.slug}`} />

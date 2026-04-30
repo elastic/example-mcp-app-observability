@@ -150,6 +150,58 @@ html, body, #root {
   background: #0a0c12;
 }
 
+.harness-prompt-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: #c9cbd2;
+  background: #11141b;
+  border-bottom: 1px solid #23262e;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+[data-harness-theme="light"] .harness-prompt-strip {
+  background: #f0f0ec;
+  color: #2a2a2a;
+  border-bottom-color: #d8d8d4;
+}
+.harness-prompt-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7c97fb;
+  flex-shrink: 0;
+}
+.harness-prompt-text {
+  font-style: italic;
+  color: #d6d8df;
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-harness-theme="light"] .harness-prompt-text { color: #1a1a19; }
+.harness-prompt-copy {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid #383c4b;
+  color: #c9cbd2;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.harness-prompt-copy:hover { background: #1e222d; border-color: #4a4d5a; }
+[data-harness-theme="light"] .harness-prompt-copy {
+  border-color: #d8d8d4;
+  color: #1a1a19;
+}
+[data-harness-theme="light"] .harness-prompt-copy:hover { background: #ececea; }
+
 .harness-stage-body {
   flex: 1 1 0;
   min-height: 0;

@@ -317,7 +317,7 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       prompt_template: "Summarize APM health for namespace prod-us over the last {lookback}",
       presets: ["15m", "1h", "6h", "24h"],
     },
-  }),
+  }, "How is prod-us doing right now?"),
   healthy: fixture("Healthy", {
     overall_health: "healthy",
     namespace: "prod-eu",
@@ -335,7 +335,7 @@ export const apmHealthSummaryFixtures: FixtureSet = {
     degraded_services: [],
     anomalies: { total: 0, by_severity: {} },
     recommendation: "All services are within baseline for the selected window.",
-  }),
+  }, "Health check on prod-eu, last hour."),
   apmOnly: fixture("APM only (no k8s)", {
     overall_health: "critical",
     namespace: "prod-us",
@@ -394,7 +394,7 @@ export const apmHealthSummaryFixtures: FixtureSet = {
     },
     warning: "Kubernetes telemetry is unavailable — pod-level context is hidden.",
     pods_note: "Add kubeletstats integration to see pod-level memory/CPU.",
-  }),
+  }, "What's broken right now?"),
   k8sOnly: fixture("K8s only (no APM)", {
     overall_health: "degraded",
     namespace: "prod-us",
@@ -517,5 +517,5 @@ export const apmHealthSummaryFixtures: FixtureSet = {
       timeline_window: METRIC_WINDOW,
     },
     warning: "APM telemetry is unavailable — service-level latency / error rates are hidden.",
-  }),
+  }, "Health rollup on cluster prod-us-east."),
 };

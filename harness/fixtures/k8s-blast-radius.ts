@@ -44,7 +44,7 @@ export const k8sBlastRadiusFixtures: FixtureSet = {
       { label: "Identify pods to evict first", prompt: "List pods on ip-10-0-12-84 sorted by memory" },
       { label: "Add capacity", prompt: "Show available node groups in us-east-2" },
     ],
-  }),
+  }, "What happens if I drain ip-10-0-12-84.us-east-2.compute.internal?"),
   partial: fixture("Partial risk", {
     node: "ip-10-0-20-14.us-east-2.compute.internal",
     status: "PARTIAL RISK",
@@ -65,7 +65,7 @@ export const k8sBlastRadiusFixtures: FixtureSet = {
       feasible: true,
     },
     investigation_actions: [],
-  }),
+  }, "Blast radius for ip-10-0-20-14 — safe to take it offline?"),
   safe: fixture("Safe", {
     node: "ip-10-0-30-07.us-east-2.compute.internal",
     status: "SAFE",
@@ -82,5 +82,5 @@ export const k8sBlastRadiusFixtures: FixtureSet = {
       feasible: true,
     },
     downstream_services_note: "APM not configured — downstream user-facing service impact is unavailable.",
-  }),
+  }, "Is it safe to drain ip-10-0-30-07 for maintenance?"),
 };

@@ -43,7 +43,7 @@ export const observeFixtures: FixtureSet = {
       { label: "Explain the anomaly", prompt: "Explain anomalies for service.name=checkout in prod-us" },
       { label: "Service dependencies", prompt: "Show service dependencies centered on checkout" },
     ],
-  }),
+  }, "Watch checkout p99 latency until it exceeds 800ms."),
   timeout: fixture("TIMEOUT", {
     status: "TIMEOUT",
     description: "p99 latency for checkout over last 1m",
@@ -58,7 +58,7 @@ export const observeFixtures: FixtureSet = {
     threshold_label: "800 ms",
     unit: "ms",
     baseline_value: 210,
-  }),
+  }, "Watch checkout p99 latency until it exceeds 800ms (live sample)."),
   now: fixture("NOW (single value)", {
     status: "NOW",
     description: "Current pod count in prod-us",
@@ -68,7 +68,7 @@ export const observeFixtures: FixtureSet = {
     esql: "FROM metrics-kubeletstats-* | STATS count = COUNT_DISTINCT(kubernetes.pod.uid)",
     namespace: "prod-us",
     unit: "raw",
-  }),
+  }, "How many pods are running in prod-us?"),
   table: fixture("TABLE", {
     status: "TABLE",
     description: "Top 5 services by throughput, last 1h",
@@ -90,7 +90,7 @@ export const observeFixtures: FixtureSet = {
     evaluated_at_ms: Date.parse("2026-04-23T14:20:00Z"),
     message: "Returned 5 rows.",
     esql: "FROM traces-apm-* | STATS rpm = COUNT(*) / 60, p99_ms = PERCENTILE(transaction.duration.us, 99)/1000, error_rate = AVG(CASE(event.outcome==\"failure\", 1, 0)) BY service.name | SORT rpm DESC | LIMIT 5",
-  }),
+  }, "List top services by throughput, last hour."),
   alert: fixture("ALERT (anomaly)", {
     status: "ALERT",
     headline: "Spike detected on checkout p99 latency",
@@ -103,14 +103,14 @@ export const observeFixtures: FixtureSet = {
       { tool: "anomaly-explainer", reason: "Detail on the fired anomaly", args: { entity: "service.name=checkout" } },
     ],
     message: "Anomaly alert fired.",
-  }),
+  }, "Watch for any ML anomalies firing in prod-us."),
   error: fixture("ERROR", {
     status: "ERROR",
     description: "",
     message: "ES|QL compile error: unknown function `PERCENTILE_OF`",
     evaluated_at_ms: Date.parse("2026-04-23T14:20:00Z"),
     esql: "FROM traces-apm-* | STATS PERCENTILE_OF(duration, 99)",
-  }),
+  }, "Run a quick p99 query on traces-apm."),
   welcomeBanner: fixture("NOW + welcome banner", {
     status: "NOW",
     description: "Pod count",
@@ -128,7 +128,7 @@ export const observeFixtures: FixtureSet = {
       install_url:
         "https://github.com/elastic/example-mcp-app-observability/releases/latest",
     },
-  }),
+  }, "What's the current pod count?"),
   errorWithSkillGap: fixture("ERROR (skill gap detected)", {
     status: "ERROR",
     description: "exception messages from checkout",
@@ -150,5 +150,5 @@ export const observeFixtures: FixtureSet = {
       skill: "observe",
       reason: "ECS error field on OTel-native trace index",
     },
-  }),
+  }, "Show me the error messages from checkout in the last 15 minutes."),
 };

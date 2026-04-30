@@ -10,10 +10,16 @@ import type { Fixture } from "../mock-use-app";
 /** Named states for a single view — the sidebar renders these as options. */
 export type FixtureSet = Record<string, Fixture>;
 
-/** Wrap a plain JSON payload into a ToolResultParams for the mock hook. */
-export function fixture(label: string, payload: unknown): Fixture {
+/**
+ * Wrap a plain JSON payload into a ToolResultParams for the mock hook.
+ * Optional `prompt` is the sample user input a demo can show as "this is
+ * what I'd type to Claude to call this tool" — rendered in a strip above
+ * the harness iframe.
+ */
+export function fixture(label: string, payload: unknown, prompt?: string): Fixture {
   return {
     label,
     result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
+    ...(prompt ? { prompt } : {}),
   };
 }
