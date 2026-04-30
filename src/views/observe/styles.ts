@@ -9,14 +9,8 @@
 
 export const viewStyles = `
   .observe-body {
-    /* flex: 0 1 auto so the body sizes to its natural content height
-     * inside a content-sized .ds-view (no parent height to derive
-     * grow space from); shrinks + scrolls when content exceeds the
-     * 100vh cap. Was flex: 1 1 0 which collapsed to 0 in the new
-     * shell. */
     flex: 0 1 auto;
     min-height: 0;
-    overflow: auto;
     padding: 16px 20px;
   }
 

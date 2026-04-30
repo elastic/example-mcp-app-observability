@@ -213,16 +213,20 @@ const DS_STYLESHEET = `
    * that want the SVG to scale with the viewport use CSS aspect-ratio on
    * the SVG itself rather than opting the shell into content-sizing. */
   .ds-view {
-    /* max-height + content-driven sizing. The iframe collapses with
-     * the content when it fits in less than 100vh, and caps at 100vh
-     * when it doesn't (inner overflow:auto bodies handle the scroll).
-     * No min-height — even an empty-state 'Waiting for…' message is
-     * tall enough to be readable, and any floor reintroduces the
-     * whitespace problem for short payloads. */
-    max-height: 100vh;
+    /* Pure content-sized — no max-height, no overflow:hidden.
+     *
+     * The earlier max-height: 100vh was a trap: in an iframe,
+     * 100vh equals the IFRAME's viewport, not the chat window's.
+     * If Claude Desktop initialized the iframe at the empty-state
+     * size (~200px), max-height: 100vh capped ds-view at 200px,
+     * notifySize never reported a larger size, and the iframe
+     * never grew when content arrived — content was clipped.
+     *
+     * Now ds-view grows with content, notifySize reports the true
+     * height, the iframe grows to match. Tall content makes a tall
+     * iframe; the chat scrolls past it normally. */
     display: flex;
     flex-direction: column;
-    overflow: hidden;
     border: 1px solid var(--border);
     background: var(--bg-primary);
     color: var(--text-primary);

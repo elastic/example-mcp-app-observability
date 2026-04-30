@@ -258,12 +258,10 @@ function Frame({
       )}
       {tabs}
       {subheader}
-      {/* flex: 0 1 auto — body sizes to its natural content height when
-       *  content fits within ds-view; shrinks + scrolls when content
-       *  exceeds it. The prior `flex: 1 1 0` always grew to fill,
-       *  creating whitespace below short lists / single-record detail
-       *  views. */}
-      <div style={{ flex: "0 1 auto", minHeight: 0, overflow: "auto" }}>{body}</div>
+      {/* Body grows naturally — overflow visible so the iframe can
+       *  expand to fit content. No internal scroll; the chat handles
+       *  scroll past the iframe. */}
+      <div style={{ flex: "0 1 auto", minHeight: 0 }}>{body}</div>
       {footer}
     </div>
   );
@@ -292,7 +290,9 @@ function ListView({
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
   const [sort, setSort] = useState<SortKey>("attention");
   const [group, setGroup] = useState<GroupKey>("none");
-  const [showDetails, setShowDetails] = useState(true);
+  // Default details OFF — list view stays compact; users can flip the
+  // toggle in the subheader to expand.
+  const [showDetails, setShowDetails] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<5 | 10 | 25 | 50>(5);

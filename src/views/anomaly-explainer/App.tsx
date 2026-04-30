@@ -493,11 +493,9 @@ function Frame({
         />
       )}
       {headline && <div className="anom-headline">{headline}</div>}
-      {/* flex: 0 1 auto so the body sizes to natural content (no
-       *  whitespace below short lists / single-record detail views)
-       *  but still shrinks + scrolls when content exceeds the
-       *  ds-view max-height cap. */}
-      <div style={{ flex: "0 1 auto", minHeight: 0, overflow: "auto" }}>{body}</div>
+      {/* Body grows naturally; iframe expands to fit. Chat handles
+       *  scroll past the iframe. */}
+      <div style={{ flex: "0 1 auto", minHeight: 0 }}>{body}</div>
     </div>
   );
 }

@@ -77,17 +77,13 @@ export const viewStyles = `
     margin-right: 6px;
   }
 
-  /* Graph wants a definite height — the SVG inside uses height: 100%
-   * which collapses to 0 if the parent has no concrete height. Use a
-   * sensible min-height (240px) that fits inside small iframes without
-   * forcing internal scroll, plus flex-grow so the graph fills any
-   * extra space. When inspect cards are pinned, they append below
-   * in-flow; ds-view + notifySize tell the iframe to grow. */
+  /* Graph has a concrete min-height so the SVG (height: 100%) has
+   * something to fill. No overflow — ds-view grows with the graph,
+   * iframe grows to match via notifySize. */
   .dep-graph {
     position: relative;
     flex: 1 1 auto;
-    min-height: 240px;
-    overflow: auto;
+    min-height: 460px;
     padding: 8px 14px;
   }
 

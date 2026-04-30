@@ -9,14 +9,10 @@
 
 export const viewStyles = `
   .health-body {
-    /* flex: 0 1 auto — body sizes to its natural content height when
-     * ds-view fits the content, shrinks + scrolls when content
-     * exceeds the 100vh cap. The prior flex: 1 1 0 collapsed to
-     * zero in a content-sized parent (no min-height to derive grow
-     * space from). */
+    /* Body grows naturally; ds-view + iframe expand to match. No
+     * internal scroll — the chat scrolls past the iframe. */
     flex: 0 1 auto;
     min-height: 0;
-    overflow: auto;
     padding: 14px 16px;
   }
 

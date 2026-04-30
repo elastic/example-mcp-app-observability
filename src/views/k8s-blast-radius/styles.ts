@@ -15,8 +15,7 @@ export const viewStyles = `
   .blast-graph {
     position: relative;
     flex: 1 1 auto;
-    min-height: 240px;
-    overflow: auto;
+    min-height: 460px;
     padding: 8px 14px;
   }
 
