@@ -18,20 +18,45 @@ once its window closes, or — in `now` / `table` mode — immediately.
 
 ## Modes
 
+### Decision tree — pick based on tense FIRST, then on shape
+
+```
+Does the user phrase it as past or future?
+
+PAST tense / windowed lookback                    FUTURE tense / live monitoring
+("what WAS / over the past N /                    ("watch / monitor / wait until /
+ in the last N / how did X look")                  live-sample / for the NEXT N")
+       │                                                  │
+       ▼                                                  ▼
+Is it a single number or a series?                Is there a threshold to fire on?
+       │                                                  │
+   ┌───┴────┐                                          ┌──┴──┐
+single   series                                       yes    no
+   │        │                                          │      │
+   ▼        ▼                                          ▼      ▼
+ now     table                                      metric  metric
+                                                    (with    (live-
+                                                  condition) sample)
+
+Other:
+  • "tell me when anything unusual fires" → anomaly (default)
+  • "list X / which X are Y / top N" (any tense) → table
+  • "page me whenever..." → use manage-alerts instead
+```
+
 | Mode | When to pick it | Blocks? |
 |------|-----------------|---------|
-| `anomaly` (default) | "tell me when anything unusual fires", "watch for anomalies", open-ended monitoring | Until an anomaly fires or `max_wait` elapses |
-| `metric` | **Forward-looking** monitoring of a specific metric — either with a threshold ("wait until memory drops below 80MB", "watch p99 until it exceeds 500ms") or without ("show me a live chart of X going forward", "live-sample CPU for 60 seconds"). Always blocks and polls. | Polls for `max_wait` seconds (default 60s, interval 5s) |
-| `now` | "what is X right now", "check X", "current value of Y", **or any past-tense windowed query** ("what was X over the past hour", "average CPU in the last 15 minutes") — single-instance **scalar** read with the time window inside the ES\|QL | Returns immediately |
-| `table` | "list …", "which … are …", group-by / top-N queries, time-bucketed series ("memory by 5-minute bucket"), or any ES\|QL result with mixed-type columns | Returns immediately |
+| `now` | **Past-tense windowed scalar.** "What was X right now / over the past 60 seconds / in the last 15 minutes / average X for the last hour". Put the window inside the ES\|QL via `WHERE @timestamp > NOW() - <window>`. Single number out. | Returns immediately |
+| `table` | **Past-tense time series OR group-by.** "How did X look over the past hour" (with `BUCKET()` for the chart), "list X", "which X are Y", any group-by / top-N. The view auto-charts 2-column time-series tables. | Returns immediately |
+| `metric` | **Forward-looking only.** "Watch X", "wait until X drops", "live-sample X for the next 60s", "wake me when X exceeds Y". Polls live for `max_wait` seconds. **Never use this for past-tense / "what was X" queries** — it will block for `max_wait` seconds before returning a value, which is the opposite of what the user asked. | Polls for `max_wait` seconds (default 60s) |
+| `anomaly` (default) | "Tell me when anything unusual fires", open-ended monitoring | Until an anomaly fires or `max_wait` elapses |
 
-> **Tense matters.** "What WAS the frontend memory over the past 60 seconds" is **historical** — it's already happened, no need to wait. Use `now` mode (with the 60-second window inside the ES\|QL via `WHERE @timestamp > NOW() - 60s`) or `table` mode if the user wants a time series. Do **not** pick `metric` mode for past-tense queries — that polls live for 60 seconds before returning, which is the opposite of what the user asked for.
+> ⚠️ **Most common mistake: picking `metric` for a past-tense query.** A prompt like "what was the frontend memory over the past 60 seconds?" is asking about data that already exists — it's a windowed lookup, not a request to wait 60 more seconds and watch. Always inspect the verb before choosing `metric`:
 >
-> Quick check before picking `metric`:
-> - "watch / monitor / wait until / wake me / live-sample / for the next N seconds" → `metric`
-> - "what was / show me / how did X look / over the past N / in the last N" → `now` or `table`
-
-If the user wants durable alerting ("page me whenever..."), use `manage-alerts` instead.
+> - **was / were / averaged / hit / spiked / over the past / in the last / for the last** → `now` or `table`. NEVER `metric`.
+> - **watch / monitor / poll / wait until / wake me / for the next / until X happens / live-sample** → `metric`.
+>
+> If the user wants durable alerting ("page me whenever..."), use `manage-alerts` instead.
 
 ## Prerequisites
 

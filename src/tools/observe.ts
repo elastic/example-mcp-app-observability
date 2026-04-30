@@ -377,12 +377,16 @@ export function registerObserveTool(server: McpServer) {
         "Unlike `manage-alerts`, observe is transient and session-scoped — nothing is persisted to Kibana.",
       inputSchema: {
         mode: z.enum(["anomaly", "metric", "now", "table"]).optional().describe(
-          "Observe mode. 'anomaly' (default) polls ML anomaly results — use when the user asks 'tell me when anything " +
-          "unusual fires'. 'metric' polls an ES|QL query over time — use when the user names a specific metric " +
-          "and wants a live trend or a threshold condition ('wait until memory drops below 80MB', 'show me a live " +
-          "chart'). 'now' runs the query once and returns a single scalar value — use when the user asks 'what is " +
-          "X right now' and X is a single number. 'table' runs the query once and returns all rows and columns — " +
-          "use when the query groups, lists, or returns mixed-type data ('list pods by node', 'which clusters are reporting')."
+          "Observe mode. **Tense matters — pick first based on whether the user is asking about the past or the future:**\n" +
+          "  • PAST-TENSE / WINDOWED ('what WAS X', 'over the past N', 'in the last N', 'last hour') → use 'now' " +
+          "(single scalar) or 'table' (time series with BUCKET()). Put the time window inside the ES|QL via " +
+          "`WHERE @timestamp > NOW() - <window>`. Returns immediately. **DO NOT use 'metric' for past-tense queries** — " +
+          "metric polls live for max_wait seconds before returning, the opposite of what the user asked for.\n" +
+          "  • FORWARD-LOOKING ('watch X', 'wait until', 'wake me when', 'live-sample for the next N') → use 'metric' " +
+          "with optional condition. Polls for max_wait seconds.\n" +
+          "  • Open-ended monitoring ('tell me when anything unusual fires') → 'anomaly' (default). Polls ML anomaly results.\n" +
+          "  • Group-by / top-N / mixed-type rows ('list pods by node', 'which clusters…') → 'table'.\n" +
+          "Quick decision: if the user says 'was', 'were', 'last', 'past', 'over the…' — it's NOT metric."
         ),
         min_score: z.number().optional().describe(
           "[Anomaly mode] Minimum anomaly score 0-100 to trigger. Default 75 (major+). Lower to 50 to include " +
