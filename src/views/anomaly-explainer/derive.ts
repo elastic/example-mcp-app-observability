@@ -38,7 +38,17 @@ export function entityLabel(a: Anomaly): string {
 
 export function inferUnit(jobId: string | undefined, fieldName: string | undefined): ValueUnit {
   const s = `${jobId ?? ""} ${fieldName ?? ""}`.toLowerCase();
-  if (s.includes("memory") || s.includes("bytes") || s.includes("working_set")) return "bytes";
+  // Byte-shaped fields. Covers OTel kubeletstats counters (k8s.pod.network.io,
+  // k8s.node.network.io — measured in bytes despite the .io suffix), ECS
+  // network metrics (network.bytes, *.in.bytes, *.out.bytes), filesystem
+  // usage gauges, and the existing memory / working_set family. `.io`
+  // anchored next to network/disk/storage so the match doesn't catch
+  // unrelated fields like "iops" or "io_priority".
+  if (
+    /(?:memory|working_set|bytes|filesystem\.?usage|storage|network\.?io|disk\.?io|fs\.?usage)/.test(s)
+  ) {
+    return "bytes";
+  }
   if (s.includes("latency") || s.includes("duration") || s.includes("ms")) return "ms";
   if (s.includes("cpu") || s.includes("utilization") || s.includes("pct")) return "pct";
   return "raw";

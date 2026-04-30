@@ -182,6 +182,68 @@ export const viewStyles = `
   }
   .anom-group-header:first-child { margin-top: 0; }
 
+  .anom-empty-page {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .anom-paginator {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 4px 4px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .anom-paginator-range {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .anom-paginator-range strong {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+  .anom-paginator-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .anom-paginator-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .anom-paginator-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+  .anom-paginator-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .anom-paginator-btn:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 1px;
+  }
+  .anom-paginator-page {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    min-width: 44px;
+    text-align: center;
+  }
+
   .anom-entity-card {
     position: relative;
     display: grid;

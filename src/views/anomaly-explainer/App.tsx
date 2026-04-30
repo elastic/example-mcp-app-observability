@@ -38,7 +38,7 @@ import {
 import { AppGlyph, ExitFullscreenIcon, FullscreenIcon } from "@shared/icons";
 import { AnomalyDetailView } from "./components/AnomalyDetailView";
 import { AnomalyEntityCard } from "./components/AnomalyEntityCard";
-import { applyGroup, applySort, entityLabel, pickMode, severityCounts } from "./derive";
+import { applySort, entityLabel, pickMode, severityCounts } from "./derive";
 import type { Anomaly, AnomalyData, GroupKey, SortKey } from "./types";
 import { viewStyles } from "./styles";
 
@@ -151,6 +151,64 @@ export function App() {
   );
 }
 
+// ─── Paginator ───────────────────────────────────────────────────────────────
+//
+// Compact prev/next + range strip that sits at the bottom of the anomaly
+// list. Single page count → no controls render (saves chrome on small
+// result sets). Range string is always inclusive 1-indexed for human
+// reading: "Showing 1–10 of 25". Keyboard: tab to either button + Enter.
+
+function Paginator({
+  page,
+  pageCount,
+  rangeStart,
+  rangeEnd,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageCount: number;
+  rangeStart: number;
+  rangeEnd: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (pageCount <= 1) return null;
+  return (
+    <div className="anom-paginator" role="navigation" aria-label="Anomaly list pagination">
+      <span className="anom-paginator-range">
+        Showing <strong>{rangeStart}</strong>–<strong>{rangeEnd}</strong> of{" "}
+        <strong>{total}</strong>
+      </span>
+      <div className="anom-paginator-controls">
+        <button
+          type="button"
+          className="anom-paginator-btn"
+          onClick={onPrev}
+          disabled={page <= 1}
+          aria-label="Previous page"
+        >
+          ← Prev
+        </button>
+        <span className="anom-paginator-page" aria-current="page">
+          {page} / {pageCount}
+        </span>
+        <button
+          type="button"
+          className="anom-paginator-btn"
+          onClick={onNext}
+          disabled={page >= pageCount}
+          aria-label="Next page"
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Overview view ───────────────────────────────────────────────────────────
 
 function OverviewView({
@@ -171,9 +229,46 @@ function OverviewView({
   const [sort, setSort] = useState<SortKey>("score");
   const [group, setGroup] = useState<GroupKey>("none");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
 
   const sorted = useMemo(() => applySort(anomalies, sort), [anomalies, sort]);
-  const grouped = useMemo(() => applyGroup(sorted, group), [sorted, group]);
+
+  // Pagination model: slice the flat sorted list. When a group is active,
+  // emit group headers inline as the bucket changes within the slice — so
+  // each page stays under the heading of whichever group's anomalies it
+  // contains, even when the page boundary cuts across groups.
+  const PAGE_SIZE = 10;
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  // Reset to page 1 whenever the source list, sort, or group changes —
+  // otherwise the user can land on page 3 of what is now a 1-page list.
+  useEffect(() => { setPage(1); }, [anomalies, sort, group]);
+  // Clamp the page if the data shrinks beneath it (e.g. a follow-up tool
+  // call reduces the list).
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  const pageStart = (page - 1) * PAGE_SIZE;
+  const pageEnd = pageStart + PAGE_SIZE;
+  const pageSlice = useMemo(
+    () => sorted.slice(pageStart, pageEnd),
+    [sorted, pageStart, pageEnd]
+  );
+
+  // Bucket-key for the current group, used to decide where to emit
+  // inline group headers in the page slice.
+  const bucketKey = useCallback((a: Anomaly): string => {
+    if (group === "severity") return a.severity;
+    if (group === "job") return a.jobId;
+    return "all";
+  }, [group]);
+  const bucketLabel = useCallback((a: Anomaly): string => {
+    if (group === "severity") {
+      return a.severity === "critical" ? "Critical" : a.severity === "major" ? "Major" : "Minor";
+    }
+    if (group === "job") return a.jobId;
+    return "";
+  }, [group]);
 
   const anomalyKey = (a: Anomaly) =>
     `${a.jobId}|${a.entity ?? entityLabel(a)}|${a.timestamp}`;
@@ -225,29 +320,64 @@ function OverviewView({
     />
   );
 
+  // Walk the page slice and emit inline group headers when the bucket key
+  // changes. Each header carries the bucket's TOTAL count (across all
+  // pages, not just the slice) so users see the group's full size even
+  // when only some of its cards fit on the current page.
+  const groupTotals = useMemo(() => {
+    if (group === "none") return new Map<string, number>();
+    const m = new Map<string, number>();
+    for (const a of sorted) {
+      const k = bucketKey(a);
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  }, [sorted, group, bucketKey]);
+
   const list = (
     <div className="anom-list">
-      {grouped.map((bucket) => (
-        <React.Fragment key={bucket.key}>
-          {group !== "none" && (
-            <div className="anom-group-header">
-              <span>{bucket.label}</span>
-              <span style={{ color: "var(--ds-text-label)" }}>· {bucket.anomalies.length}</span>
-            </div>
-          )}
-          {bucket.anomalies.map((a) => {
-            const k = anomalyKey(a);
-            return (
-              <AnomalyEntityCard
-                key={k}
-                anomaly={a}
-                selected={k === selectedKey}
-                onClick={() => setSelectedKey((prev) => (prev === k ? null : k))}
-              />
+      {pageSlice.length === 0 && (
+        <div className="anom-empty-page">No anomalies on this page.</div>
+      )}
+      {(() => {
+        const items: React.ReactNode[] = [];
+        let lastBucket = "";
+        for (const a of pageSlice) {
+          const bk = bucketKey(a);
+          if (group !== "none" && bk !== lastBucket) {
+            items.push(
+              <div key={`hdr-${bk}-${page}`} className="anom-group-header">
+                <span>{bucketLabel(a)}</span>
+                <span style={{ color: "var(--ds-text-label)" }}>
+                  · {groupTotals.get(bk) ?? 0}
+                </span>
+              </div>
             );
-          })}
-        </React.Fragment>
-      ))}
+            lastBucket = bk;
+          }
+          const k = anomalyKey(a);
+          items.push(
+            <AnomalyEntityCard
+              key={k}
+              anomaly={a}
+              selected={k === selectedKey}
+              onClick={() => setSelectedKey((prev) => (prev === k ? null : k))}
+            />
+          );
+        }
+        return items;
+      })()}
+      {sorted.length > PAGE_SIZE && (
+        <Paginator
+          page={page}
+          pageCount={pageCount}
+          rangeStart={pageStart + 1}
+          rangeEnd={Math.min(pageEnd, sorted.length)}
+          total={sorted.length}
+          onPrev={() => setPage((p) => Math.max(1, p - 1))}
+          onNext={() => setPage((p) => Math.min(pageCount, p + 1))}
+        />
+      )}
     </div>
   );
 
