@@ -279,11 +279,30 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
     const ro = new ResizeObserver(notifySize);
     ro.observe(document.documentElement);
     ro.observe(document.body);
+
+    // MutationObserver as a safety net. ResizeObserver only fires when
+    // the observed element's box size changes. If the iframe's html /
+    // body has a fixed size (depending on host CSS), ds-view content
+    // changes might not bubble up as a resize event. The MutationObserver
+    // catches DOM changes that DIDN'T trigger a resize, which is the
+    // common case when tool-result data arrives after first render.
+    const mo = new MutationObserver(notifySize);
+    mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+
+    // Aggressive initial polling. The first measurement happens before
+    // tool-result data arrives, so .ds-view at that moment is just the
+    // empty-state shell. Several follow-up measurements after mount
+    // catch the data-arrival render even if neither observer fires.
     notifySize();
+    const earlyTicks = [50, 200, 600, 1500, 3000].map((ms) =>
+      setTimeout(notifySize, ms)
+    );
 
     return () => {
       window.removeEventListener("message", handleMessage);
       ro.disconnect();
+      mo.disconnect();
+      for (const t of earlyTicks) clearTimeout(t);
     };
   }, []);
 
