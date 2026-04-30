@@ -213,7 +213,12 @@ const DS_STYLESHEET = `
    * that want the SVG to scale with the viewport use CSS aspect-ratio on
    * the SVG itself rather than opting the shell into content-sizing. */
   .ds-view {
-    height: 100vh;
+    /* max-height (not height): the iframe sizes to whichever is smaller,
+     * the natural content height or the viewport. When content fits in
+     * less than 100vh, the iframe collapses with it (no whitespace below).
+     * When content exceeds 100vh, the cap kicks in and the inner
+     * flex:1 + overflow:auto bodies handle the scroll. */
+    max-height: 100vh;
     min-height: 500px;
     display: flex;
     flex-direction: column;

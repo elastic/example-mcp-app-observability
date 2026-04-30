@@ -78,6 +78,53 @@ export const viewStyles = `
     letter-spacing: 0.06em;
   }
   .rule-group-header:first-child { margin-top: 0; }
+
+  .rule-paginator {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 4px 4px;
+    margin-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .rule-paginator-range {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .rule-paginator-range strong {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+  .rule-paginator-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .rule-paginator-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .rule-paginator-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+  .rule-paginator-btn:disabled { opacity: 0.4; cursor: default; }
+  .rule-paginator-page {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    min-width: 44px;
+    text-align: center;
+  }
   .rule-group-header-count {
     color: var(--ds-text-label);
   }

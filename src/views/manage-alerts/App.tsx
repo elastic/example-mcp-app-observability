@@ -39,7 +39,7 @@ import {
 import { AppGlyph, FullscreenIcon, ExitFullscreenIcon } from "@shared/icons";
 import { RuleCard } from "./components/RuleCard";
 import { RuleDetailView } from "./components/RuleDetailView";
-import { applyGroup, applySearch, applySort, applyStatusTab, statusTabCounts } from "./derive";
+import { applySearch, applySort, applyStatusTab, ruleHealth, statusTabCounts } from "./derive";
 import type {
   CreateResult,
   DeleteResult,
@@ -289,6 +289,7 @@ function ListView({
   const [group, setGroup] = useState<GroupKey>("none");
   const [showDetails, setShowDetails] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
 
   const counts = useMemo(() => statusTabCounts(d.rules), [d.rules]);
 
@@ -298,7 +299,59 @@ function ListView({
     return applySort(bySearch, sort);
   }, [d.rules, statusTab, search, sort]);
 
-  const grouped = useMemo(() => applyGroup(filtered, group), [filtered, group]);
+  // Pagination: same pattern as anomaly-explainer overview. Slice the
+  // flat filtered list per page; emit inline group headers when the
+  // bucket key changes within the slice. Group totals show the full
+  // bucket count across all pages.
+  const PAGE_SIZE = 10;
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Reset to page 1 when filters / sort / group / data change.
+  useEffect(() => { setPage(1); }, [d.rules, statusTab, search, sort, group]);
+  // Clamp if the data shrinks past the current page.
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  const pageStart = (page - 1) * PAGE_SIZE;
+  const pageEnd = pageStart + PAGE_SIZE;
+  const pageSlice = useMemo(
+    () => filtered.slice(pageStart, pageEnd),
+    [filtered, pageStart, pageEnd]
+  );
+
+  const bucketKeyFor = useCallback(
+    (r: typeof filtered[number]): string => {
+      if (group === "status") return ruleHealth(r);
+      if (group === "rule-type") return r.rule_type_id || "unknown";
+      if (group === "index") return r.index_pattern || "(no index)";
+      if (group === "tag") return r.tags?.[0] ?? "__untagged__";
+      return "all";
+    },
+    [group]
+  );
+  const bucketLabelFor = useCallback(
+    (r: typeof filtered[number]): string => {
+      if (group === "status") {
+        const h = ruleHealth(r);
+        return h === "error" ? "Error" : h === "alerting" ? "Alerting" : h === "disabled" ? "Disabled" : "Healthy";
+      }
+      if (group === "rule-type") return r.rule_type_id || "unknown";
+      if (group === "index") return r.index_pattern || "(no index)";
+      if (group === "tag") return r.tags?.[0] ?? "Untagged";
+      return "";
+    },
+    [group]
+  );
+  const groupTotals = useMemo(() => {
+    if (group === "none") return new Map<string, number>();
+    const m = new Map<string, number>();
+    for (const r of filtered) {
+      const k = bucketKeyFor(r);
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  }, [filtered, group, bucketKeyFor]);
+
   const selected = useMemo(
     () => (selectedId ? d.rules.find((r) => r.id === selectedId) ?? null : null),
     [selectedId, d.rules],
@@ -351,25 +404,64 @@ function ListView({
           </div>
         </div>
       ) : (
-        grouped.map((bucket) => (
-          <React.Fragment key={bucket.key}>
-            {group !== "none" ? (
-              <div className="rule-group-header">
-                <span>{bucket.label}</span>
-                <span className="rule-group-header-count">· {bucket.rules.length}</span>
+        <>
+          {(() => {
+            const items: React.ReactNode[] = [];
+            let lastBucket = "";
+            for (const r of pageSlice) {
+              const bk = bucketKeyFor(r);
+              if (group !== "none" && bk !== lastBucket) {
+                items.push(
+                  <div key={`hdr-${bk}-${page}`} className="rule-group-header">
+                    <span>{bucketLabelFor(r)}</span>
+                    <span className="rule-group-header-count">
+                      · {groupTotals.get(bk) ?? 0}
+                    </span>
+                  </div>
+                );
+                lastBucket = bk;
+              }
+              items.push(
+                <RuleCard
+                  key={r.id}
+                  rule={r}
+                  selected={r.id === selectedId}
+                  detailed={showDetails}
+                  onClick={() => setSelectedId((prev) => (prev === r.id ? null : r.id))}
+                />
+              );
+            }
+            return items;
+          })()}
+          {filtered.length > PAGE_SIZE && (
+            <div className="rule-paginator" role="navigation" aria-label="Alert rule pagination">
+              <span className="rule-paginator-range">
+                Showing <strong>{pageStart + 1}</strong>–
+                <strong>{Math.min(pageEnd, filtered.length)}</strong> of{" "}
+                <strong>{filtered.length}</strong>
+              </span>
+              <div className="rule-paginator-controls">
+                <button
+                  type="button"
+                  className="rule-paginator-btn"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                >
+                  ← Prev
+                </button>
+                <span className="rule-paginator-page">{page} / {pageCount}</span>
+                <button
+                  type="button"
+                  className="rule-paginator-btn"
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={page >= pageCount}
+                >
+                  Next →
+                </button>
               </div>
-            ) : null}
-            {bucket.rules.map((r) => (
-              <RuleCard
-                key={`${bucket.key}-${r.id}`}
-                rule={r}
-                selected={r.id === selectedId}
-                detailed={showDetails}
-                onClick={() => setSelectedId((prev) => (prev === r.id ? null : r.id))}
-              />
-            ))}
-          </React.Fragment>
-        ))
+            </div>
+          )}
+        </>
       )}
     </div>
   );
