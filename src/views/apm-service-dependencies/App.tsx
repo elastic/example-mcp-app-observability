@@ -17,7 +17,6 @@ import { applyTheme, theme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
 import {
   Dropdown,
-  InvestigationActions,
   InvestigationAction,
   QueryPill,
   RerunContext,
@@ -573,40 +572,6 @@ function NodeCard({
   );
 }
 
-function StatChip({ label, value, color }: { label: string; value: number | string; color: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-      <span
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color,
-          fontFamily: "'JetBrains Mono', monospace",
-        }}
-      >
-        {value}
-      </span>
-      <span style={{ fontSize: 9, color: theme.textMuted }}>{label}</span>
-    </div>
-  );
-}
-
-function LegendDot({ color, label }: { color: string; label: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-      <div
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: `${color}40`,
-          border: `1.5px solid ${color}`,
-        }}
-      />
-      <span style={{ fontSize: 9, color: theme.textMuted }}>{label}</span>
-    </div>
-  );
-}
 
 const DIRECTION_OPTIONS: DropdownOption<GraphDirection>[] = [
   { value: "vertical", label: "Vertical (top → bottom)" },
@@ -796,6 +761,52 @@ export function App() {
     </>
   );
 
+  // Compact stats inline in the header instead of a full row above the
+  // graph — every pixel of vertical real estate matters; this row was
+  // taking ~40px for information that fits comfortably in the header.
+  const headerStats = data && stats ? (
+    <span className="dep-header-stats" title="Service graph counts">
+      <span className="dep-header-stat"><strong>{data.service_count}</strong> svc</span>
+      <span className="dep-header-stat-sep">·</span>
+      <span className="dep-header-stat"><strong>{data.edge_count}</strong> edges</span>
+      <span className="dep-header-stat-sep">·</span>
+      <span className="dep-header-stat" style={{ color: theme.green }}>
+        <strong>{stats.roots}</strong> root{stats.roots === 1 ? "" : "s"}
+      </span>
+      <span className="dep-header-stat-sep">·</span>
+      <span className="dep-header-stat" style={{ color: theme.amber }}>
+        <strong>{stats.leaves}</strong> leaves
+      </span>
+      {stats.unhealthy > 0 && (
+        <>
+          <span className="dep-header-stat-sep">·</span>
+          <span className="dep-header-stat" style={{ color: theme.red }}>
+            <strong>{stats.unhealthy}</strong> unhealthy
+          </span>
+        </>
+      )}
+    </span>
+  ) : null;
+
+  // Investigation actions also move into the header — typically 1–2
+  // single-action buttons. Slim button styling so they fit alongside
+  // the dropdown + fullscreen toggle without crowding.
+  const headerActions = data?.investigation_actions?.length ? (
+    <span className="dep-header-actions-inline">
+      {data.investigation_actions.map((a, i) => (
+        <button
+          key={i}
+          type="button"
+          className="dep-header-action-btn"
+          onClick={() => onSend(a.prompt)}
+          title={a.prompt}
+        >
+          {a.label} <span aria-hidden="true">↗</span>
+        </button>
+      ))}
+    </span>
+  ) : null;
+
   const Header = (
     <header className="ds-header">
       <AppGlyph size={20} />
@@ -809,6 +820,8 @@ export function App() {
           label="Graph layout"
           triggerPrefix="Layout:"
         />
+        {headerStats}
+        {headerActions}
         <button
           type="button"
           className="ds-btn-icon"
@@ -887,16 +900,6 @@ export function App() {
           onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
         />
       )}
-
-      <div className="dep-stats">
-        <StatChip label="services" value={data.service_count} color={theme.blue} />
-        <StatChip label="edges" value={data.edge_count} color={theme.cyan} />
-        <StatChip label="roots" value={stats.roots} color={theme.green} />
-        <StatChip label="leaves" value={stats.leaves} color={theme.amber} />
-        {stats.unhealthy > 0 && (
-          <StatChip label="unhealthy" value={stats.unhealthy} color={theme.red} />
-        )}
-      </div>
 
       {data.data_coverage_note && (
         <div className="dep-coverage"><strong>Data coverage</strong>{data.data_coverage_note}</div>
@@ -1033,10 +1036,9 @@ export function App() {
           onReset={panZoom.resetView}
           isDragging={isDragging}
         />
-      </div>
 
-      {inspected.length > 0 && (
-        <div className="dep-inspect-strip" role="region" aria-label="Compare panel">
+        {inspected.length > 0 && (
+          <div className="dep-inspect-strip" role="region" aria-label="Compare panel">
           {inspected.map((name) => {
             const svc = data.services.find((s) => s.name === name);
             if (!svc) return null;
@@ -1104,32 +1106,9 @@ export function App() {
               </div>
             );
           })}
-        </div>
-      )}
-
-      <div className="dep-legend">
-        <LegendDot color={theme.green} label="Root (no upstream)" />
-        <LegendDot color={theme.blue} label="Internal" />
-        <LegendDot color={theme.amber} label="Leaf (no downstream)" />
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <div
-            style={{
-              width: 20,
-              height: 2,
-              background: theme.blue,
-              borderRadius: 1,
-              opacity: 0.6,
-            }}
-          />
-          <span style={{ fontSize: 9, color: "var(--text-muted)" }}>Call edge</span>
-        </div>
+          </div>
+        )}
       </div>
-
-      {data.investigation_actions?.length ? (
-        <div className="dep-actions">
-          <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
-        </div>
-      ) : null}
     </div>
   );
 }

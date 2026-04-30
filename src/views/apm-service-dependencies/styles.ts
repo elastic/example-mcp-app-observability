@@ -10,14 +10,53 @@
  */
 
 export const viewStyles = `
-  .dep-stats {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-primary);
-    flex-shrink: 0;
+  /* Inline header stats — replaces the prior full-width .dep-stats row.
+   * Sits next to the layout dropdown; on narrow viewports the
+   * .ds-header-actions wrap keeps everything readable. */
+  .dep-header-stats {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .dep-header-stat strong {
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+  .dep-header-stat-sep {
+    color: var(--text-dim);
+    opacity: 0.5;
+  }
+
+  .dep-header-actions-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dep-header-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .dep-header-action-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
   }
 
   .dep-coverage {
@@ -51,23 +90,6 @@ export const viewStyles = `
     padding: 8px 14px;
   }
 
-  .dep-legend {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
-    align-items: center;
-    padding: 10px 16px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-primary);
-    flex-shrink: 0;
-  }
-
-  .dep-actions {
-    padding: 12px 16px 16px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-primary);
-    flex-shrink: 0;
-  }
 
   /* Inspect "+" badge on a NodeCard. Hidden by default, appears on node
    * hover, stays visible while the node is inspected. */
@@ -111,16 +133,25 @@ export const viewStyles = `
     outline-offset: 2px;
   }
 
-  /* Bottom inspect strip — collapses when empty. Scrolls horizontally if
-   * we ever allow > 4 cards; currently capped at 4. */
+  /* Inspect strip is now an OVERLAY at the bottom of the graph
+   * container — it floats over the SVG instead of pushing the graph
+   * up. Semi-transparent backdrop so the graph stays visible behind
+   * the cards; horizontal scroll for > 4 cards. */
   .dep-inspect-strip {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
     display: flex;
     gap: 10px;
-    padding: 12px 16px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-primary);
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(6px);
     overflow-x: auto;
-    flex-shrink: 0;
+    z-index: 5;
   }
 
   .dep-inspect-card {
