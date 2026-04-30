@@ -28,7 +28,6 @@ import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme, theme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
 import {
-  InvestigationActions,
   InvestigationAction,
   QueryPill,
   type Severity as DSSeverity,
@@ -423,6 +422,24 @@ export function App() {
   const clearHover = useCallback(() => setTooltip(null), []);
 
   const headerNode = (data?.node ?? "").trim();
+  // Investigation actions move into the header as slim buttons so they
+  // don't eat ~80px of vertical space on the body. Same pattern adopted
+  // by apm-service-dependencies for the same graph-first layout reason.
+  const headerActions = data?.investigation_actions?.length ? (
+    <span className="blast-header-actions-inline">
+      {data.investigation_actions.map((a, i) => (
+        <button
+          key={i}
+          type="button"
+          className="blast-header-action-btn"
+          onClick={() => onSend(a.prompt)}
+          title={a.prompt}
+        >
+          {a.label} <span aria-hidden="true">↗</span>
+        </button>
+      ))}
+    </span>
+  ) : null;
   const Header = (
     <header className="ds-header">
       <AppGlyph size={20} />
@@ -440,6 +457,7 @@ export function App() {
             label={statusStyle(data.status).label}
           />
         )}
+        {headerActions}
         <button
           type="button"
           className="ds-btn-icon"
@@ -823,48 +841,46 @@ export function App() {
           onReset={panZoom.resetView}
           isDragging={isDragging}
         />
-      </div>
 
-      {inspected.length > 0 && (
-        <div className="blast-inspect-strip" role="region" aria-label="Compare panel">
-          {inspected.map((item) => (
-            <div key={item.name} className="blast-inspect-card">
-              <div className="blast-inspect-card-head">
-                <span className="blast-inspect-card-name" title={item.name}>{item.name}</span>
-                <button
-                  type="button"
-                  className="blast-inspect-card-close"
-                  aria-label={`Remove ${item.name} from compare`}
-                  onClick={() => toggleInspect(item.name, item.details)}
-                >
-                  ×
-                </button>
+        {/* Inspect strip overlays the bottom of the graph instead of
+         *  pushing the layout. Same pattern as apm-service-dependencies. */}
+        {inspected.length > 0 && (
+          <div className="blast-inspect-strip" role="region" aria-label="Compare panel">
+            {inspected.map((item) => (
+              <div key={item.name} className="blast-inspect-card">
+                <div className="blast-inspect-card-head">
+                  <span className="blast-inspect-card-name" title={item.name}>{item.name}</span>
+                  <button
+                    type="button"
+                    className="blast-inspect-card-close"
+                    aria-label={`Remove ${item.name} from compare`}
+                    onClick={() => toggleInspect(item.name, item.details)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="blast-inspect-card-body">
+                  {item.details.map((d, i) => (
+                    <div key={i}>{d}</div>
+                  ))}
+                </div>
               </div>
-              <div className="blast-inspect-card-body">
-                {item.details.map((d, i) => (
-                  <div key={i}>{d}</div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="blast-meta">
-        <div className="blast-meta-row">
-          {resched.memory_required} required / {resched.memory_available} available across{" "}
-          {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
-        </div>
-        {data.downstream_services_note && (
-          <div className="blast-meta-note">{data.downstream_services_note}</div>
+            ))}
+          </div>
         )}
-      </div>
 
-      {data.investigation_actions?.length ? (
-        <div className="blast-actions">
-          <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
+        {/* Rescheduling capacity line as an unobtrusive overlay along
+         *  the bottom — was a separate row eating ~40px below. */}
+        <div className="blast-meta-overlay">
+          <span className="mono">
+            {resched.memory_required} required / {resched.memory_available} available across{" "}
+            {resched.remaining_nodes} node{resched.remaining_nodes === 1 ? "" : "s"}
+          </span>
+          {data.downstream_services_note && (
+            <span className="blast-meta-note">{data.downstream_services_note}</span>
+          )}
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }

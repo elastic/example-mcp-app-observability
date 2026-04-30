@@ -69,17 +69,25 @@ export const viewStyles = `
     align-items: center;
   }
 
-  /* Bottom inspect strip — click a node to pin its details into a card here.
-   * Up to 4 cards; hidden when empty. Replaces the single top-right panel
-   * that was there in the earlier W5 iteration. */
+  /* Inspect strip OVERLAYS the bottom of the graph instead of pushing
+   * layout — same pattern as apm-service-dependencies. Backdrop blur +
+   * semi-transparent fill so the graph stays visible behind. Up to 4
+   * cards before horizontal scroll kicks in. */
   .blast-inspect-strip {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 36px; /* leaves room for the meta overlay below */
     display: flex;
     gap: 10px;
-    padding: 12px 16px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-primary);
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(6px);
     overflow-x: auto;
-    flex-shrink: 0;
+    z-index: 5;
   }
   .blast-inspect-card {
     flex: 0 0 240px;
@@ -127,32 +135,56 @@ export const viewStyles = `
     line-height: 1.5;
   }
 
-  .blast-meta {
-    padding: 12px 16px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-primary);
-    flex-shrink: 0;
+  /* Bottom meta overlay — replaces the prior 40px+ row taking real
+   * estate below the graph. Slim, flush with the bottom of the
+   * graph container so the rescheduling capacity line stays visible
+   * but doesn't compete with the diagram. */
+  .blast-meta-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .blast-meta-row {
-    font-family: var(--font-mono);
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 6px 14px;
+    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    border-top: 1px solid var(--border-subtle);
     font-size: 11px;
     color: var(--text-muted);
+    backdrop-filter: blur(4px);
+    z-index: 3;
   }
-  .blast-meta-note {
+  .blast-meta-overlay .blast-meta-note {
     font-family: var(--font-sans);
-    font-size: 11px;
     color: var(--text-secondary);
-    line-height: 1.5;
   }
 
-  .blast-actions {
-    padding: 12px 16px 16px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-primary);
-    flex-shrink: 0;
+  /* Header-inline action buttons — moved from a bottom card so the
+   * graph gets the full vertical space. */
+  .blast-header-actions-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .blast-header-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .blast-header-action-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
   }
 
   .blast-empty {
