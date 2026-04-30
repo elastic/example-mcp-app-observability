@@ -91,6 +91,42 @@ export const observeFixtures: FixtureSet = {
     message: "Returned 5 rows.",
     esql: "FROM traces-apm-* | STATS rpm = COUNT(*) / 60, p99_ms = PERCENTILE(transaction.duration.us, 99)/1000, error_rate = AVG(CASE(event.outcome==\"failure\", 1, 0)) BY service.name | SORT rpm DESC | LIMIT 5",
   }, "List top services by throughput, last hour."),
+  tableTimeseries: fixture(
+    "TABLE (time series — chart auto-renders)",
+    {
+      status: "TABLE",
+      description: "frontend memory · last 60s · 5s buckets",
+      columns: [
+        { name: "bucket", type: "date" },
+        { name: "v", type: "double" },
+      ],
+      rows: (() => {
+        const now = Date.parse("2026-04-30T12:00:00Z");
+        // 12 5-second buckets, ~85 MB ramping to ~91 MB with light noise
+        return [
+          [now - 55_000, 89_128_960],
+          [now - 50_000, 89_390_080],
+          [now - 45_000, 89_653_248],
+          [now - 40_000, 89_915_392],
+          [now - 35_000, 90_177_536],
+          [now - 30_000, 90_316_800],
+          [now - 25_000, 90_472_448],
+          [now - 20_000, 90_679_296],
+          [now - 15_000, 90_851_840],
+          [now - 10_000, 90_972_672],
+          [now - 5_000, 91_103_232],
+          [now, 91_226_112],
+        ];
+      })(),
+      row_count: 12,
+      truncated: false,
+      evaluated_at_ms: Date.parse("2026-04-30T12:00:00Z"),
+      message: "Returned 12 rows.",
+      esql:
+        'FROM metrics-kubeletstatsreceiver.otel* | WHERE resource.attributes.k8s.pod.name == "frontend-7d4b8f9c5-x2k9m" AND @timestamp > NOW() - 60 seconds | STATS v = AVG(metrics.k8s.pod.memory.working_set) BY bucket = BUCKET(@timestamp, 5 second) | SORT bucket ASC',
+    },
+    "What was the frontend memory over the past 60 seconds?"
+  ),
   alert: fixture("ALERT (anomaly)", {
     status: "ALERT",
     headline: "Spike detected on checkout p99 latency",

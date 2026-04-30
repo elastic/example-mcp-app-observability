@@ -395,6 +395,99 @@ function formatCell(value: unknown, type: string): string {
   return String(value);
 }
 
+// When a table-mode result is shaped as a time series — exactly two
+// columns where the first is a date and the second is numeric — we
+// extract a chartable series and render a sparkline above the rows.
+// Otherwise the chart is omitted and the table renders as before.
+function detectTimeSeries(
+  columns: TableResult["columns"],
+  rows: TableResult["rows"]
+): { xs: number[]; ys: number[] } | null {
+  if (columns.length !== 2 || rows.length < 3) return null;
+  const dateCol = DATE_ES_TYPES.has(columns[0].type) ? 0 : DATE_ES_TYPES.has(columns[1].type) ? 1 : -1;
+  if (dateCol === -1) return null;
+  const valCol = dateCol === 0 ? 1 : 0;
+  if (!NUMERIC_ES_TYPES.has(columns[valCol].type)) return null;
+
+  const points: { x: number; y: number }[] = [];
+  for (const r of rows) {
+    const xRaw = r[dateCol];
+    const yRaw = r[valCol];
+    const x = typeof xRaw === "number" ? xRaw : Date.parse(String(xRaw));
+    const y = typeof yRaw === "number" ? yRaw : parseFloat(String(yRaw));
+    if (Number.isNaN(x) || Number.isNaN(y)) continue;
+    points.push({ x, y });
+  }
+  if (points.length < 3) return null;
+  points.sort((a, b) => a.x - b.x);
+  return { xs: points.map((p) => p.x), ys: points.map((p) => p.y) };
+}
+
+// Lightweight SVG sparkline + filled area, reused inline rather than
+// pulled from another view. Y-axis labels show min/max; x-axis shows the
+// time range. Hovering isn't worth the complexity for this case — the
+// raw values are right below the chart in the table.
+function TableSparkline({
+  xs,
+  ys,
+  unit,
+}: {
+  xs: number[];
+  ys: number[];
+  unit: "bytes" | "ms" | "pct" | "raw";
+}) {
+  const W = 600;
+  const H = 90;
+  const PAD_X = 8;
+  const PAD_Y = 6;
+  const plotW = W - PAD_X * 2;
+  const plotH = H - PAD_Y * 2;
+  const min = Math.min(...ys);
+  const max = Math.max(...ys);
+  const range = max - min || Math.abs(max) || 1;
+  const xMin = xs[0];
+  const xMax = xs[xs.length - 1];
+  const xSpan = xMax - xMin || 1;
+  const xAt = (i: number) => PAD_X + ((xs[i] - xMin) / xSpan) * plotW;
+  const yAt = (v: number) => PAD_Y + plotH - ((v - min) / range) * plotH;
+  const line = ys.map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i).toFixed(1)} ${yAt(v).toFixed(1)}`).join(" ");
+  const area = `${line} L ${xAt(ys.length - 1).toFixed(1)} ${PAD_Y + plotH} L ${xAt(0).toFixed(1)} ${PAD_Y + plotH} Z`;
+  const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        style={{
+          width: "100%",
+          height: H,
+          display: "block",
+          background: theme.bgTertiary,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 4,
+        }}
+      >
+        <path d={area} fill={theme.blue} opacity={0.18} />
+        <path d={line} fill="none" stroke={theme.blue} strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div
+        className="mono"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: 10,
+          color: theme.textDim,
+          marginTop: 4,
+        }}
+      >
+        <span>{fmtTime(xMin)}</span>
+        <span>min {fmt(min, unit)} · max {fmt(max, unit)}</span>
+        <span>{fmtTime(xMax)}</span>
+      </div>
+    </div>
+  );
+}
+
 function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) => void }) {
   const { columns, rows } = data;
   const ageSec = Math.max(0, Math.round((Date.now() - data.evaluated_at_ms) / 1000));
@@ -402,6 +495,9 @@ function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) =>
   const alignments = columns.map((c) =>
     NUMERIC_ES_TYPES.has(c.type) ? "right" : ("left" as const)
   );
+
+  const series = detectTimeSeries(columns, rows);
+  const sparklineUnit = series ? inferUnit(data.description ?? "", data.esql) : "raw";
 
   return (
     <>
@@ -412,6 +508,10 @@ function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) =>
           {" · "}
           {ageSec === 0 ? "evaluated just now" : `evaluated ${ageSec}s ago`}
         </div>
+
+        {series && (
+          <TableSparkline xs={series.xs} ys={series.ys} unit={sparklineUnit} />
+        )}
 
         {columns.length === 0 || rows.length === 0 ? (
           <div
