@@ -135,4 +135,19 @@ export const manageAlertsFixtures: FixtureSet = {
     error: "kibana_unreachable",
     message: "Kibana API returned 503 (connect ECONNREFUSED).",
   }, "List my alert rules."),
+  deleteConfirm: fixture(
+    "Delete (confirmation pending)",
+    {
+      status: "success",
+      operation: "delete",
+      rule_id: ruleA.id,
+      deleted: false,
+      confirmation_required: true,
+      preview: ruleA,
+      investigation_actions: [
+        { label: "Cancel deletion", prompt: "Cancel the deletion of this rule." },
+      ],
+    },
+    "Delete the alert rule 'checkout · p99 latency above 800ms'."
+  ),
 };

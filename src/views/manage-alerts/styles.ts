@@ -304,6 +304,86 @@ export const viewStyles = `
     filter: brightness(1.15);
   }
 
+  /* Delete-confirmation pane.
+   *
+   * Constrains the max-width and centers content so the irreversible
+   * banner + rule preview don't stretch to the full iframe width on a
+   * wide screen. The footer indicator at the bottom anchors the empty
+   * space below — without it, short content under a flex:1 parent
+   * leaves a "missing UI?" gap.
+   */
+  .rule-delete-confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 20px 24px 0;
+  }
+  .rule-delete-banner {
+    padding: 12px 16px;
+    background: var(--severity-critical-bg);
+    border: 1px solid var(--severity-critical-border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.45;
+  }
+  .rule-delete-banner-title {
+    font-weight: 700;
+    color: var(--severity-critical-text);
+    margin-bottom: 4px;
+    font-size: 13px;
+    letter-spacing: 0.01em;
+  }
+  .rule-delete-banner-body {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .rule-delete-banner-body code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--border-subtle);
+  }
+  .rule-delete-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .rule-delete-footer code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--border-subtle);
+  }
+  .rule-delete-footer-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--severity-major);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--severity-major) 25%, transparent);
+    animation: rule-delete-pulse 1.6s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  @keyframes rule-delete-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+  }
+
   /* Empty state */
   .rule-empty {
     display: flex;

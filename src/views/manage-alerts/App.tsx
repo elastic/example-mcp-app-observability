@@ -416,30 +416,29 @@ function ListView({
 function DeleteBody({ d }: { d: DeleteResult }) {
   if (d.confirmation_required && d.preview) {
     return (
-      <div style={{ padding: 20 }}>
-        <div
-          style={{
-            padding: "10px 14px",
-            background: "var(--severity-critical-bg)",
-            border: "1px solid var(--severity-critical-border)",
-            borderRadius: "var(--radius-sm)",
-            marginBottom: 16,
-            fontSize: 12,
-            color: "var(--text-primary)",
-          }}
-        >
-          <strong>This is irreversible.</strong> The alert rule below will be permanently
-          removed from Kibana. Confirm with the user before dispatching the delete.
+      <div className="rule-delete-confirm">
+        <div className="rule-delete-banner">
+          <div className="rule-delete-banner-title">This is irreversible.</div>
+          <div className="rule-delete-banner-body">
+            The alert rule below will be permanently removed from Kibana.{" "}
+            <strong>Reply <code className="mono">yes</code> in chat to confirm</strong>,
+            or anything else to cancel.
+          </div>
         </div>
         <RuleDetailView
           rule={d.preview}
-          eyebrow={<span>Confirm deletion</span>}
+          eyebrow={<span>Pending deletion</span>}
         />
+        <div className="rule-delete-footer" role="status" aria-live="polite">
+          <span className="rule-delete-footer-dot" aria-hidden="true" />
+          Awaiting confirmation in chat — reply{" "}
+          <code className="mono">yes</code> to dispatch.
+        </div>
       </div>
     );
   }
   return (
-    <div style={{ padding: 20 }}>
+    <div className="rule-delete-confirm">
       <div className="rule-detail-eyebrow" style={{ marginBottom: 8 }}>
         Alert rule deleted
       </div>
