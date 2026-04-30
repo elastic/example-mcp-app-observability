@@ -2,11 +2,14 @@
 name: apm-health-summary
 description: >
   Get a cluster-level rollup of service health from APM telemetry — the "how's my environment right now?"
-  entry point for observability investigations. Use when the user asks "how's my cluster", "what's broken",
-  "any issues", "give me a status report", "what should I look at", or opens a session with a vague symptom
-  ("things feel slow"). Gracefully degrades: layers in Kubernetes pod data and ML anomaly context when those
-  backends are present, but still returns useful APM-only output if they aren't. Do not use for log-only or
-  metrics-only customers — this tool requires Elastic APM.
+  entry point for observability investigations. Use whenever the user asks about HEALTH, STATUS, or
+  general wellbeing of an environment / cluster / namespace ("how's my cluster", "status of the X env",
+  "what's broken", "any issues", "show me the health of …", "give me a status report", "what should I
+  look at", "things feel slow"). This applies regardless of any time qualifier — "show me the health
+  of X over the past hour" still routes here (with lookback="1h"), NOT to observe. observe is for
+  raw-metric queries; this tool is for the rollup. Gracefully degrades: layers in Kubernetes pod data
+  and ML anomaly context when those backends are present, but still returns useful APM-only output if
+  they aren't. Do not use for log-only or metrics-only customers — this tool requires Elastic APM.
 ---
 
 # APM Health Summary
@@ -48,7 +51,9 @@ anomaly detection) or `observe` / `manage-alerts` (both universal).
 
 - **`cluster`**: only when the user names a Kubernetes cluster — e.g. "how's prod-us-east doing", "check the staging cluster". Resolves fuzzily against `k8s.cluster.name` (OTel) / `orchestrator.cluster.name` (ECS); on miss the response includes `cluster_candidates`. Omit for single-cluster deployments or when the user wants a cross-cluster view.
 - **`namespace`**: only if the user scopes to a K8s namespace. Omit for cross-namespace or non-K8s.
-- **`lookback`**: default `15m`. Use `5m` for "right now," `1h` for "since I noticed the issue."
+- **`lookback`**: default `1h` (good general-purpose window for "what's been going on"). Use `5m`–`15m`
+  when the user implies "right now / this moment". Use the user's time window literally when they
+  give one ("over the past 30 minutes" → `30m`; "in the last 6 hours" → `6h`).
 - **`job_filter`**: optional ML-job prefix, e.g. `k8s-`. Rarely needed.
 - **`exclude_entities`**: optional wildcard to hide known noise, e.g. `chaos-*`.
 

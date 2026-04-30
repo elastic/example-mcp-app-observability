@@ -916,14 +916,13 @@ export function App() {
           preserveAspectRatio="xMidYMid meet"
           {...panZoom.svgHandlers}
           style={{
+            // SVG sizes to its viewBox aspect — width fills the
+            // container, height is derived from the viewBox ratio.
+            // No more letterboxing inside a fixed-height container,
+            // and no wasted vertical space below the diagram.
             display: "block",
-            // SVG fills the graph container both ways. viewBox content stays
-            // at its natural aspect and is centered via preserveAspectRatio;
-            // any whitespace lives inside the SVG and blends with the
-            // container background, so the graph canvas fills the available
-            // vertical space cleanly even when the compare strip is empty.
             width: "100%",
-            height: "100%",
+            height: "auto",
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",

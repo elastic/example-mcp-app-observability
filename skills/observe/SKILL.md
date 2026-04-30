@@ -57,6 +57,13 @@ Other:
 > - **watch / monitor / poll / wait until / wake me / for the next / until X happens / live-sample** → `metric`.
 >
 > If the user wants durable alerting ("page me whenever..."), use `manage-alerts` instead.
+>
+> ⚠️ **Don't use observe for health rollups.** "Show me the health of X", "status of the X
+> environment", "how is X doing" — even with a time qualifier like "over the past hour" — should
+> route to `apm-health-summary`, not observe. observe is for raw-metric / single-query investigations;
+> apm-health-summary returns the full rollup (degraded services, anomalies, pod resources). Pick
+> apm-health-summary whenever the user is asking a HEALTH question rather than a specific metric
+> question.
 
 ## Prerequisites
 

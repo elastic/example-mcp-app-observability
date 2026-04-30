@@ -1321,8 +1321,10 @@ export function registerApmHealthSummaryTool(server: McpServer) {
           "are K8s-deployed. Omit for all namespaces or non-K8s deployments."
         ),
         lookback: z.string().optional().describe(
-          "Time range to assess. Default '15m'. Examples: '5m' (very recent), '15m' (default, good for 'right now'), " +
-          "'1h' (wider trend)."
+          "Time range to assess. Default '1h'. Examples: '5m' / '15m' (right-now snapshots), " +
+          "'1h' (default — good general-purpose window), '6h' / '24h' (wider trend). When the user " +
+          "gives an explicit time window in their prompt ('over the past 30 minutes', 'in the last 6 hours'), " +
+          "pass that literally."
         ),
         job_filter: z.string().optional().describe(
           "Only include ML anomalies from jobs whose id starts with this prefix — e.g. 'k8s-' to see only the " +
@@ -1336,7 +1338,10 @@ export function registerApmHealthSummaryTool(server: McpServer) {
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
     async ({ cluster, namespace, lookback, job_filter, exclude_entities }) => {
-      const lb = lookback || "15m";
+      // Default 1h — matches user expectation for unqualified "show me the
+      // health of X" prompts, gives enough window to surface degradation
+      // patterns. 15m default was too tight for vague-symptom investigations.
+      const lb = lookback || "1h";
       const queryErrors: string[] = [];
 
       // Resolve cluster + namespace in parallel so a fuzzy match on either

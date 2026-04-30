@@ -77,13 +77,11 @@ export const viewStyles = `
     margin-right: 6px;
   }
 
-  /* Graph has a concrete min-height so the SVG (height: 100%) has
-   * something to fill. No overflow — ds-view grows with the graph,
-   * iframe grows to match via notifySize. */
+  /* Graph container sizes to the SVG inside (which uses height:auto
+   * + viewBox to derive height from width). No min-height — the
+   * graph occupies exactly its natural size, no letterboxing. */
   .dep-graph {
     position: relative;
-    flex: 1 1 auto;
-    min-height: 460px;
     padding: 8px 14px;
   }
 

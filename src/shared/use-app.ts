@@ -253,6 +253,13 @@ export function useApp({ appInfo, onAppCreated }: UseAppOptions): {
         pending = false;
         const h = measureContent();
         const w = Math.ceil(window.innerWidth);
+        // Sanity floor: ignore measurements below 50px. They happen
+        // transiently during re-render (DOM briefly empty, ds-view
+        // not yet mounted, etc.). If we report 0 or 12 to Claude
+        // Desktop, the iframe collapses to that — and the host
+        // typically doesn't grow it back. Skip the notification and
+        // wait for the next stable measurement.
+        if (h < 50) return;
         if (w !== lastW || h !== lastH) {
           lastW = w;
           lastH = h;

@@ -9,13 +9,10 @@
  */
 
 export const viewStyles = `
-  /* See .dep-graph in apm-service-dependencies — same constraints
-   * here. Concrete min-height so the SVG doesn't collapse, flex-grow
-   * to fill any extra body space, in-flow siblings append below. */
+  /* See .dep-graph in apm-service-dependencies — same approach.
+   * SVG sizes to its viewBox; container fits exactly. */
   .blast-graph {
     position: relative;
-    flex: 1 1 auto;
-    min-height: 460px;
     padding: 8px 14px;
   }
 

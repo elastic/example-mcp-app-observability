@@ -531,9 +531,11 @@ export function App() {
           }
           preserveAspectRatio="xMidYMid meet"
           style={{
+            // height: auto so the SVG sizes to its viewBox aspect.
+            // Container collapses to fit; iframe grows via notifySize.
             display: "block",
             width: "100%",
-            height: "100%",
+            height: "auto",
             cursor: isDragging ? "grabbing" : "grab",
             userSelect: "none",
             touchAction: "none",
