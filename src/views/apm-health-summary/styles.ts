@@ -9,7 +9,12 @@
 
 export const viewStyles = `
   .health-body {
-    flex: 1 1 0;
+    /* flex: 0 1 auto — body sizes to its natural content height when
+     * ds-view fits the content, shrinks + scrolls when content
+     * exceeds the 100vh cap. The prior flex: 1 1 0 collapsed to
+     * zero in a content-sized parent (no min-height to derive grow
+     * space from). */
+    flex: 0 1 auto;
     min-height: 0;
     overflow: auto;
     padding: 14px 16px;
@@ -34,6 +39,45 @@ export const viewStyles = `
   .health-empty-sub {
     font-size: 12px;
     color: var(--text-muted);
+  }
+
+  .health-provenance {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: help;
+    user-select: none;
+    line-height: 16px;
+  }
+  .health-provenance::after {
+    content: attr(data-provenance-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: -4px;
+    z-index: 20;
+    width: max-content;
+    max-width: 280px;
+    padding: 8px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--text-primary);
+    white-space: normal;
+    text-align: left;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 0.12s, transform 0.12s;
+  }
+  .health-provenance:hover::after,
+  .health-provenance:focus-visible::after {
+    opacity: 1;
+    transform: translateY(0);
   }
 
   .health-namespace-warn {
@@ -168,10 +212,91 @@ export const viewStyles = `
     letter-spacing: 0;
     font-family: var(--font-mono);
   }
+
+  .health-scope-groups-helpwrap {
+    position: relative;
+    display: inline-flex;
+    margin-left: 6px;
+    vertical-align: baseline;
+  }
+  .health-scope-groups-help {
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 50%;
+    font-family: var(--font-sans);
+    font-size: 9px;
+    font-style: italic;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+  }
+  .health-scope-groups-help:hover,
+  .health-scope-groups-help[aria-expanded="true"] {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+    background: var(--bg-hover);
+  }
+  .health-scope-groups-help:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .health-scope-groups-help-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: -4px;
+    z-index: 20;
+    width: 360px;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .health-scope-groups-help-lead {
+    font-size: 12px;
+    color: var(--text-primary);
+    line-height: 1.45;
+    margin-bottom: 8px;
+  }
+  .health-scope-groups-help-legend {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px 12px;
+    align-items: start;
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .health-scope-groups-help-legend dt {
+    display: inline-flex;
+    align-items: center;
+    padding-top: 1px;
+    color: var(--text-primary);
+  }
+  .health-scope-groups-help-legend dd {
+    margin: 0;
+    line-height: 1.45;
+  }
+  .health-scope-groups-help-legend .mono {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
   .health-scope-groups-list {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+  }
+  .health-scope-group-wrap {
+    position: relative;
+    display: inline-flex;
   }
   .health-scope-group {
     display: inline-flex;
@@ -220,8 +345,98 @@ export const viewStyles = `
   }
   .health-scope-group-overflow {
     color: var(--severity-major-text);
+    font-family: var(--font-mono);
     font-size: 10px;
+    font-weight: 600;
     line-height: 1;
+  }
+
+  .health-scope-group-example {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    font-size: 11px;
+    cursor: default;
+    vertical-align: middle;
+  }
+  .health-scope-group-example.is-partial {
+    border-color: color-mix(in srgb, var(--severity-major) 40%, transparent);
+    background: color-mix(in srgb, var(--severity-major) 8%, var(--bg-tertiary));
+  }
+  .health-scope-group-example.is-pseudo .health-scope-group-label {
+    font-style: italic;
+    color: var(--text-muted);
+  }
+
+  .health-scope-group-pop {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 240px;
+    max-width: 320px;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    text-align: left;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    white-space: normal;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(2px);
+    pointer-events: none;
+    transition: opacity 0.12s, transform 0.12s, visibility 0s 0.12s;
+  }
+  .health-scope-group-wrap:hover .health-scope-group-pop,
+  .health-scope-group-wrap:focus-within .health-scope-group-pop {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+    transition: opacity 0.12s, transform 0.12s;
+  }
+  .health-scope-group-pop strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .health-scope-group-broaden {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .health-scope-group-broaden:hover {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    border-color: var(--accent);
+  }
+  .health-scope-group-broaden:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .health-scope-filter-active {

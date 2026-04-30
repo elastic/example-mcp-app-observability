@@ -77,15 +77,16 @@ export const viewStyles = `
     margin-right: 6px;
   }
 
-  /* Graph container holds a stable minimum height so the diagram
-   * doesn't shrink when sibling rows (inspect strip) appear below it.
-   * The flex: 1 1 0 lets it grow into available space when there's
-   * no other content below; min-height keeps it tall enough to be
-   * usable when the inspect strip is in the layout. */
+  /* Graph wants a definite height — the SVG inside uses height: 100%
+   * which collapses to 0 if the parent has no concrete height. Use a
+   * sensible min-height (240px) that fits inside small iframes without
+   * forcing internal scroll, plus flex-grow so the graph fills any
+   * extra space. When inspect cards are pinned, they append below
+   * in-flow; ds-view + notifySize tell the iframe to grow. */
   .dep-graph {
     position: relative;
     flex: 1 1 auto;
-    min-height: 460px;
+    min-height: 240px;
     overflow: auto;
     padding: 8px 14px;
   }

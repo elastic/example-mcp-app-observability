@@ -9,13 +9,13 @@
  */
 
 export const viewStyles = `
-  /* Graph keeps a stable minimum height so the radial diagram doesn't
-   * shrink when sibling rows (inspect strip, meta) appear below.
-   * flex: 1 1 auto lets it grow when there's room. */
+  /* See .dep-graph in apm-service-dependencies — same constraints
+   * here. Concrete min-height so the SVG doesn't collapse, flex-grow
+   * to fill any extra body space, in-flow siblings append below. */
   .blast-graph {
     position: relative;
     flex: 1 1 auto;
-    min-height: 460px;
+    min-height: 240px;
     overflow: auto;
     padding: 8px 14px;
   }

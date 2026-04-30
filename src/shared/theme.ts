@@ -213,19 +213,13 @@ const DS_STYLESHEET = `
    * that want the SVG to scale with the viewport use CSS aspect-ratio on
    * the SVG itself rather than opting the shell into content-sizing. */
   .ds-view {
-    /* max-height (not height): the iframe sizes to whichever is smaller,
-     * the natural content height or the viewport. When content fits in
-     * less than 100vh, the iframe collapses with it (no whitespace below).
-     * When content exceeds 100vh, the cap kicks in and the inner
-     * flex:1 + overflow:auto bodies handle the scroll.
-     *
-     * min-height intentionally low (200px) — prior 500px floor was
-     * creating visible whitespace on short lists (single-card detail
-     * views, last page of paginated lists). Anything substantively
-     * useful renders well above 200px in practice; the floor only
-     * matters for the empty-state ('Waiting for...') screens. */
+    /* max-height + content-driven sizing. The iframe collapses with
+     * the content when it fits in less than 100vh, and caps at 100vh
+     * when it doesn't (inner overflow:auto bodies handle the scroll).
+     * No min-height — even an empty-state 'Waiting for…' message is
+     * tall enough to be readable, and any floor reintroduces the
+     * whitespace problem for short payloads. */
     max-height: 100vh;
-    min-height: 200px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
