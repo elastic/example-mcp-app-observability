@@ -80,4 +80,55 @@ export const apmServiceDependenciesFixtures: FixtureSet = {
     data_coverage: { apm: false },
     data_coverage_note: "No APM traces found for the selected window.",
   }, "What's calling what in prod-us?"),
+  // Demo for severity-aware edges + "called slowly" tag + anomalies
+  // banner. The recommendation → flagd edge sits at 600s avg latency
+  // — way past the 10s critical floor and 3000× the next-slowest
+  // edge. Triggers the red edge styling, the leaf-node "called slowly"
+  // tag on flagd, and the top-of-graph anomalies banner.
+  criticalEdge: fixture("Critical-latency edge (flagd timeout pattern)", {
+    focal_service: "recommendation",
+    upstream: ["frontend"],
+    downstream: ["product-catalog", "flagd"],
+    service_count: 4,
+    edge_count: 3,
+    services: [
+      {
+        name: "frontend",
+        role: "root",
+        language: "nodejs",
+        deployment: "frontend",
+        namespace: "oteldemo",
+        health: { span_count: 157402, avg_duration_us: 161742, p99_duration_us: 2617851, error_count: 739 },
+      },
+      {
+        name: "recommendation",
+        role: "internal",
+        language: "python",
+        namespace: "oteldemo",
+        health: { span_count: 17396, avg_duration_us: 14035379, p99_duration_us: 600005543, error_count: 91 },
+      },
+      {
+        name: "product-catalog",
+        role: "leaf",
+        health: { span_count: 2710, avg_duration_us: 11687 },
+      },
+      {
+        name: "flagd",
+        role: "leaf",
+        health: { span_count: 4140, avg_duration_us: 240 },
+      },
+    ],
+    edges: [
+      { source: "frontend", target: "recommendation", call_count: 83, protocol: "grpc", port: "8080", avg_latency_us: 529001 },
+      { source: "recommendation", target: "product-catalog", call_count: 43, protocol: "grpc", avg_latency_us: 11687 },
+      { source: "recommendation", target: "flagd", call_count: 6, protocol: "grpc", avg_latency_us: 600005572 },
+    ],
+    filters: { lookback: "1h" },
+    investigation_actions: [
+      {
+        label: "Check flagd pod health",
+        prompt: "Use apm-health-summary to check the pod hosting flagd for resource pressure or restarts.",
+      },
+    ],
+  }, "Map dependencies for recommendation — and tell me why everyone's hanging."),
 };
