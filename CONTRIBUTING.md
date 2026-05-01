@@ -31,6 +31,8 @@ npm run build:views  # Build views only (Vite)
 
 The dev server runs on `http://localhost:3001/mcp` in HTTP mode. Use `npm run start:stdio` to test stdio transport locally.
 
+For the **end-to-end dev workflow** — using [Forge](https://github.com/elastic/forge) to drive realistic K8s incident telemetry against a real cluster while you iterate on tools — see [`docs/development-with-forge.md`](./docs/development-with-forge.md). It covers the validation suite, patterns for enhancing existing tools and adding new ones, and the Claude Code skill that automates env bootstrap.
+
 ## Project Structure
 
 | Path            | Description                                                  |
