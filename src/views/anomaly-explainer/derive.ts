@@ -36,23 +36,10 @@ export function entityLabel(a: Anomaly): string {
   return infl ?? "unknown";
 }
 
-export function inferUnit(jobId: string | undefined, fieldName: string | undefined): ValueUnit {
-  const s = `${jobId ?? ""} ${fieldName ?? ""}`.toLowerCase();
-  // Byte-shaped fields. Covers OTel kubeletstats counters (k8s.pod.network.io,
-  // k8s.node.network.io — measured in bytes despite the .io suffix), ECS
-  // network metrics (network.bytes, *.in.bytes, *.out.bytes), filesystem
-  // usage gauges, and the existing memory / working_set family. `.io`
-  // anchored next to network/disk/storage so the match doesn't catch
-  // unrelated fields like "iops" or "io_priority".
-  if (
-    /(?:memory|working_set|bytes|filesystem\.?usage|storage|network\.?io|disk\.?io|fs\.?usage)/.test(s)
-  ) {
-    return "bytes";
-  }
-  if (s.includes("latency") || s.includes("duration") || s.includes("ms")) return "ms";
-  if (s.includes("cpu") || s.includes("utilization") || s.includes("pct")) return "pct";
-  return "raw";
-}
+// Re-export so existing call sites keep importing from this file. The
+// implementation lives in src/shared/infer-unit.ts and is shared with
+// the ml-anomalies tool — preventing tool/view drift.
+export { inferUnit } from "@shared/infer-unit";
 
 export function fmtValue(v: number | undefined, unit: ValueUnit): string {
   if (v === undefined || v === null || Number.isNaN(v)) return "—";

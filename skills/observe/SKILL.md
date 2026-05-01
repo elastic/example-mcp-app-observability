@@ -222,6 +222,16 @@ Each kubeletstats scrape emits **separate documents per metric** — a CPU doc, 
 
 > For **counter** fields (network I/O, network errors, uptime), see the "Counter fields" section below — these require `TS` + `RATE()`.
 
+**Fields that may NOT exist in every cluster's kubeletstats schema** — depends on whether the OTel collector / kubelet is configured to scrape pod-spec data:
+
+| Field | When it's missing | What to do |
+|---|---|---|
+| `metrics.k8s.pod.cpu.limit` | Pods don't declare CPU limits, OR the collector isn't scraping pod-spec | Don't reference it — use raw `metrics.k8s.pod.cpu.usage` and report cores instead of % utilization |
+| `metrics.k8s.pod.memory.limit` | Same as above for memory | Same — report bytes instead of % |
+| `metrics.k8s.container.restart_count` | Collector isn't scraping pod-status (this is COMMON) | Don't reference it. Use APM error rates or alert reasons as a proxy for "things crashing." There is no canonical alternative field name (`k8s.pod.restarts` is wrong — don't try it) |
+
+**Schema-aware error recovery.** When ESQL returns `Unknown column [X], did you mean [Y, Z]?`, read the suggestion and retry with one of `Y` or `Z` — don't blindly retry the same query or guess a different name from memory.
+
 **Dimension fields — use for filtering and `BY` grouping:**
 
 | Dimension | Unprefixed | Prefixed (equivalent) |
@@ -504,3 +514,9 @@ ES|QL string and condition when extending. Capped at 240 points to keep the char
   first — it surfaces the worst-offender services without needing a query. `observe` needs a target
   metric to poll; use it to drill in *after* the rollup names something.
 - **Don't over-tune `min_score`.** 75 catches the important stuff; dropping below 50 produces noise.
+
+## Investigation discipline
+
+- **One tool call per turn.** After this tool returns, narrate the headline finding before the next call. Each call adds a widget — chaining several after one "yes" looks like a runaway agent.
+- **Sequential offers, not OR.** "Want me to check X *or* Y?" → "Want me to start with X? If it's inconclusive I can follow up with Y." The user's "yes" then maps to one call, not both.
+- **Build queries from known fields.** Use the cheat-sheet above — don't guess field names. If an "Unknown column" error returns with a "did you mean…" suggestion, *read it* and adjust; don't blindly retry.

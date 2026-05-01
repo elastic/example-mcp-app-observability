@@ -37,6 +37,14 @@ export interface AnomalyData {
   returned?: number;
   jobsSummary?: Record<string, number>;
   filters?: { entity?: string; jobId?: string; minScore?: number; lookback?: string };
+  /**
+   * Tool-side message attached when the query succeeded but returned 0
+   * anomalies (e.g. "No anomalies above score 1 in the last 1h …"). The
+   * view uses it as the empty-state body instead of the generic
+   * "Waiting for anomaly data…" placeholder, which previously rendered
+   * for both "no result yet" AND "definitive empty result."
+   */
+  hint?: string;
   headline?: string;
   affected_services?: string[];
   time_series?: TimePoint[];

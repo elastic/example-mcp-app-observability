@@ -364,7 +364,7 @@ function NowView({ data, onSend }: { data: NowResult; onSend: (p: string) => voi
         <div style={{ fontSize: 11, color: theme.textDim }}>
           {hasValue
             ? `evaluated ${ageSec === 0 ? "just now" : `${ageSec}s ago`}`
-            : "query returned no numeric value"}
+            : "No matching rows in the query window — the filter may be too narrow or no events fell in this slice."}
         </div>
       </SectionCard>
 
@@ -912,6 +912,16 @@ export function App() {
   const description = data ? headerDescription(data) : undefined;
   const fullEsql = data ? (data as { esql?: string }).esql : undefined;
 
+  // Hook MUST live above any early-return path. Previously this was
+  // declared after `if (!data) return …`, which meant the hook count
+  // jumped from N to N+1 the first time data arrived — a Rules-of-Hooks
+  // violation that triggered React's "Rendered more hooks than during
+  // the previous render" error and unmounted the entire view. Symptom:
+  // observe iframe went blank the moment a metric-mode result arrived
+  // (the user saw the empty state during polling, then the iframe
+  // disappeared after polling completed).
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+
   const Header = (
     <header className="ds-header">
       <AppGlyph size={20} />
@@ -950,7 +960,6 @@ export function App() {
   // _setup-dismiss-welcome tool); skill-gap notices fire from a real
   // failure each time and aren't silenced by a single click.
   const setupNotice = (data as { _setup_notice?: SetupNotice })._setup_notice;
-  const [noticeDismissed, setNoticeDismissed] = useState(false);
   const onDismissNotice =
     setupNotice?.type === "welcome" && app
       ? () => {

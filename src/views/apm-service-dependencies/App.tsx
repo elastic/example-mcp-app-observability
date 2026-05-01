@@ -110,6 +110,102 @@ function healthIndicator(svc: ServiceNode): { color: string; label: string } {
   return { color: theme.green, label: "healthy" };
 }
 
+// ── Edge severity ──────────────────────────────────────────────────────────
+//
+// Two signals combine to flag an edge:
+//   1. Absolute floor — avg latency above 10s is universally pathological
+//      (timeouts, deadlocks, hung downstreams). 1–10s is degraded.
+//   2. Relative outlier — > 5× the median latency in this graph, with a
+//      small absolute floor so a graph where everything is sub-10ms
+//      doesn't trigger on jitter.
+// The two combine: critical = either rule's "critical" tier hits;
+// warning = either rule's "warning" tier hits and we're not already
+// critical. Self-calibrating without a config knob.
+type EdgeSeverity = "critical" | "warning" | "normal";
+
+const LAT_CRITICAL_ABSOLUTE_US = 10_000_000; // 10s
+const LAT_WARNING_ABSOLUTE_US = 1_000_000;   //  1s
+const LAT_OUTLIER_FLOOR_US = 200_000;        // ignore relative-outlier below 200ms
+
+interface EdgeSeverityInfo {
+  severity: EdgeSeverity;
+  reason: string; // short, human-readable trigger ("avg 600.0s", "8× median")
+}
+
+function computeEdgeSeverities(edges: Edge[]): Map<Edge, EdgeSeverityInfo> {
+  const out = new Map<Edge, EdgeSeverityInfo>();
+  if (edges.length === 0) return out;
+
+  // Median latency over edges that report a non-zero value.
+  const lats = edges
+    .map((e) => e.avg_latency_us ?? 0)
+    .filter((v) => v > 0)
+    .sort((a, b) => a - b);
+  const median = lats.length ? lats[Math.floor(lats.length / 2)] : 0;
+
+  for (const edge of edges) {
+    const lat = edge.avg_latency_us ?? 0;
+    let severity: EdgeSeverity = "normal";
+    let reason = "";
+
+    if (lat >= LAT_CRITICAL_ABSOLUTE_US) {
+      severity = "critical";
+      reason = `avg ${formatDuration(lat)}`;
+    } else if (median > 0 && lat > LAT_OUTLIER_FLOOR_US && lat >= median * 5) {
+      severity = "critical";
+      reason = `${(lat / median).toFixed(1)}× median`;
+    } else if (lat >= LAT_WARNING_ABSOLUTE_US) {
+      severity = "warning";
+      reason = `avg ${formatDuration(lat)}`;
+    } else if (median > 0 && lat > LAT_OUTLIER_FLOOR_US && lat >= median * 3) {
+      severity = "warning";
+      reason = `${(lat / median).toFixed(1)}× median`;
+    }
+
+    out.set(edge, { severity, reason });
+  }
+  return out;
+}
+
+/**
+ * Per-node severity derived from incoming edges. A leaf service whose
+ * own spans look fine but is being CALLED slowly (every caller times
+ * out reaching it) should be flagged — that's the flagd pattern.
+ * Returns the worst severity across incoming edges + a short reason.
+ */
+function computeNodeIncomingSeverity(
+  edges: Edge[],
+  edgeSev: Map<Edge, EdgeSeverityInfo>,
+): Map<string, EdgeSeverityInfo> {
+  const byTarget = new Map<string, Edge[]>();
+  for (const e of edges) {
+    if (!byTarget.has(e.target)) byTarget.set(e.target, []);
+    byTarget.get(e.target)!.push(e);
+  }
+  const out = new Map<string, EdgeSeverityInfo>();
+  for (const [target, incoming] of byTarget) {
+    let worst: EdgeSeverityInfo | null = null;
+    for (const e of incoming) {
+      const sev = edgeSev.get(e);
+      if (!sev || sev.severity === "normal") continue;
+      if (
+        worst === null ||
+        (sev.severity === "critical" && worst.severity === "warning")
+      ) {
+        worst = sev;
+      }
+    }
+    if (worst) {
+      const callerNote =
+        incoming.length === 1
+          ? `from ${incoming[0].source}`
+          : `${incoming.filter((e) => edgeSev.get(e)?.severity !== "normal").length}/${incoming.length} callers`;
+      out.set(target, { severity: worst.severity, reason: `${worst.reason} ${callerNote}` });
+    }
+  }
+  return out;
+}
+
 function edgeWidth(callCount: number, maxCalls: number): number {
   if (maxCalls <= 0) return 1.5;
   const ratio = callCount / maxCalls;
@@ -201,6 +297,10 @@ function computeLayout(
     // inter-layer horizontal spacing mirrors LAYER_GAP_Y.
     const INTER_NODE = NODE_GAP_X;
     const INTER_LAYER_X = LAYER_GAP_Y + NODE_W; // column-to-column distance
+    // Horizontal layout has nodes stacked vertically per layer, so it
+    // already uses screen height effectively — no floor bump needed
+    // (doubling here over-tall the frame). Only the vertical layout
+    // gets the 2x treatment below.
     svgH = Math.max(maxPerLayer * (NODE_H + INTER_NODE) + PAD_TOP * 2, 360);
     svgW = numLayers * INTER_LAYER_X + PAD_X * 2;
 
@@ -222,7 +322,17 @@ function computeLayout(
     }
   } else {
     svgW = Math.max(maxPerLayer * (NODE_W + NODE_GAP_X) + PAD_X * 2, 500);
-    svgH = numLayers * (NODE_H + LAYER_GAP_Y) + PAD_TOP * 2;
+    // Vertical layout sizing: track stackHeight (the actual node area)
+    // + a modest 60-unit buffer for breathing room. Apply a 480 floor
+    // ONLY for 1–2 layer diagrams (those would look squat in a wide
+    // iframe without padding). For 3+ tier the floor is dropped so the
+    // frame fits content tightly — earlier the floor was 612 across the
+    // board, which left 130+ viewBox-units of dead space below a 3-tier.
+    const stackHeight = numLayers * NODE_H + Math.max(0, numLayers - 1) * LAYER_GAP_Y;
+    const baseline = stackHeight + 60;
+    svgH = numLayers <= 2 ? Math.max(baseline, 480) : baseline;
+    // Center the layer stack vertically in the (possibly floored) frame.
+    const startY = (svgH - stackHeight) / 2;
 
     for (const [layer, names] of byLayer) {
       const totalW = names.length * NODE_W + (names.length - 1) * NODE_GAP_X;
@@ -236,7 +346,7 @@ function computeLayout(
           layer,
           col,
           x: startX + col * (NODE_W + NODE_GAP_X),
-          y: PAD_TOP + layer * (NODE_H + LAYER_GAP_Y),
+          y: startY + layer * (NODE_H + LAYER_GAP_Y),
         });
       });
     }
@@ -321,6 +431,7 @@ function EdgePath({
   maxCalls,
   dimmed,
   direction,
+  severity,
   onHover,
   onLeave,
 }: {
@@ -330,6 +441,7 @@ function EdgePath({
   maxCalls: number;
   dimmed: boolean;
   direction: GraphDirection;
+  severity: EdgeSeverity;
   onHover: (e: React.MouseEvent) => void;
   onLeave: () => void;
 }) {
@@ -361,8 +473,21 @@ function EdgePath({
 
   const latencyStr = edge.avg_latency_us ? formatDuration(edge.avg_latency_us) : "";
 
-  const opacity = dimmed ? 0.12 : 0.65;
-  const strokeColor = dimmed ? theme.border : theme.blue;
+  // Severity styling \u2014 critical edges get red stroke + thicker weight +
+  // bolder/redder label so a 600s latency outlier is unmissable. Warning
+  // gets amber, normal stays blue. Dimmed (focus-mode out-of-scope) wins.
+  const isCritical = !dimmed && severity === "critical";
+  const isWarning = !dimmed && severity === "warning";
+  const baseColor = isCritical ? theme.red : isWarning ? theme.amber : theme.blue;
+  const opacity = dimmed ? 0.12 : isCritical ? 0.95 : 0.65;
+  const strokeColor = dimmed ? theme.border : baseColor;
+  const sevWeightBoost = isCritical ? 1.5 : isWarning ? 0.6 : 0;
+  const sevStroke = dimmed ? Math.max(w * 0.5, 0.5) : w + sevWeightBoost;
+  const labelFontSize = isCritical ? 9 : 8;
+  const valueFontSize = isCritical ? 8.5 : 7;
+  const labelColor = isCritical ? theme.red : theme.textMuted;
+  const valueColor = isCritical ? theme.red : isWarning ? theme.amber : theme.textDim;
+  const valueWeight = isCritical ? 700 : 400;
 
   return (
     <g onMouseEnter={onHover} onMouseLeave={onLeave} style={{ cursor: "pointer" }}>
@@ -371,7 +496,7 @@ function EdgePath({
         d={d}
         fill="none"
         stroke={strokeColor}
-        strokeWidth={dimmed ? Math.max(w * 0.5, 0.5) : w}
+        strokeWidth={sevStroke}
         opacity={opacity}
         strokeLinecap="round"
       />
@@ -382,29 +507,31 @@ function EdgePath({
               ? `${x2},${y2} ${x2 - 8},${y2 - 4} ${x2 - 8},${y2 + 4}`
               : `${x2},${y2} ${x2 - 4},${y2 - 8} ${x2 + 4},${y2 - 8}`
           }
-          fill={theme.blue}
-          opacity={0.6}
+          fill={baseColor}
+          opacity={isCritical ? 0.9 : 0.6}
         />
       )}
       {!dimmed && label && (
         <text
           x={mx + (x2 > x1 ? 6 : -6)}
           y={my - 4}
-          fill={theme.textMuted}
-          fontSize={8}
+          fill={labelColor}
+          fontSize={labelFontSize}
           fontFamily="'JetBrains Mono', monospace"
+          fontWeight={isCritical ? 700 : 400}
           textAnchor={x2 > x1 ? "start" : "end"}
         >
-          {label}
+          {isCritical ? `\u26a0 ${label}` : label}
         </text>
       )}
       {!dimmed && (latencyStr || edge.call_count > 0) && (
         <text
           x={mx + (x2 > x1 ? 6 : -6)}
           y={my + 8}
-          fill={theme.textDim}
-          fontSize={7}
+          fill={valueColor}
+          fontSize={valueFontSize}
           fontFamily="'JetBrains Mono', monospace"
+          fontWeight={valueWeight}
           textAnchor={x2 > x1 ? "start" : "end"}
         >
           {[latencyStr, edge.call_count > 0 ? `${formatCount(edge.call_count)} calls` : ""]
@@ -413,6 +540,149 @@ function EdgePath({
         </text>
       )}
     </g>
+  );
+}
+
+/**
+ * Floating "called slowly" tag rendered above the top-right corner of
+ * a node card. Lives outside the foreignObject (as a sibling SVG `<g>`)
+ * so it doesn't compete with the in-card fan-in/out chip for space.
+ * Width auto-sizes around the text via SVG <text>'s natural box.
+ */
+function IncomingSeverityTag({
+  node,
+  severity,
+}: {
+  node: LayoutNode;
+  severity: EdgeSeverityInfo;
+}) {
+  const text = "⚠ called slowly";
+  // Approx width — SVG <text> doesn't auto-size <rect> behind it, so we
+  // estimate. 6.4px per character at fontSize 9 is roughly right for
+  // JetBrains Mono; ⚠ glyph is wider so add a small fudge.
+  const padX = 6;
+  const padY = 2;
+  const charW = 6.4;
+  const fontSize = 9;
+  const tagH = fontSize + padY * 2 + 2;
+  const tagW = Math.ceil(text.length * charW) + padX * 2;
+
+  // Anchor the tag's RIGHT edge to the node's right edge, and lift it
+  // so it overhangs the top-right corner of the card.
+  const tagX = node.x + NODE_W - tagW;
+  const tagY = node.y - tagH + 4; // 4px overlap so it visually attaches
+
+  const isCrit = severity.severity === "critical";
+  const fg = isCrit ? theme.red : theme.amber;
+  const bg = isCrit ? "#3a1a16" : "#3a2a10"; // muted opaque to read on dark bg
+  const stroke = isCrit ? `${theme.red}` : `${theme.amber}`;
+
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      <title>{`Callers see ${severity.severity} latency to this service`}</title>
+      <rect
+        x={tagX}
+        y={tagY}
+        width={tagW}
+        height={tagH}
+        rx={tagH / 2}
+        ry={tagH / 2}
+        fill={bg}
+        stroke={stroke}
+        strokeWidth={1}
+      />
+      <text
+        x={tagX + tagW / 2}
+        y={tagY + tagH / 2 + fontSize / 2 - 1}
+        fill={fg}
+        fontSize={fontSize}
+        fontFamily="'JetBrains Mono', monospace"
+        fontWeight={700}
+        textAnchor="middle"
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
+/**
+ * Top-of-graph anomalies strip — surfaces the worst edges in the
+ * current topology so a 600s outlier can't hide between two healthy
+ * edges. Caps at 3 issues; only fires when ≥1 critical edge exists
+ * (won't show on healthy graphs). Conservative thresholds —
+ * computeEdgeSeverities already requires either an absolute floor
+ * (>10s) or a strong relative outlier (>5× median, >200ms floor) — so
+ * false positives are unlikely. Hidden entirely on tiny graphs (<3
+ * edges) where the median is meaningless.
+ */
+function AnomaliesBanner({
+  data,
+  edgeSeverityMap,
+}: {
+  data: DepData;
+  edgeSeverityMap: Map<Edge, EdgeSeverityInfo>;
+}) {
+  if (data.edges.length < 3) return null;
+  const criticals: { edge: Edge; info: EdgeSeverityInfo }[] = [];
+  for (const e of data.edges) {
+    const info = edgeSeverityMap.get(e);
+    if (info?.severity === "critical") criticals.push({ edge: e, info });
+  }
+  if (criticals.length === 0) return null;
+
+  // Worst-first by latency.
+  criticals.sort((a, b) => (b.edge.avg_latency_us ?? 0) - (a.edge.avg_latency_us ?? 0));
+  const top = criticals.slice(0, 3);
+  const moreCount = criticals.length - top.length;
+
+  return (
+    <div
+      role="status"
+      aria-label="Topology anomalies"
+      style={{
+        margin: "8px 14px 12px",
+        padding: "10px 14px",
+        background: `${theme.red}10`,
+        border: `1px solid ${theme.red}55`,
+        borderLeft: `3px solid ${theme.red}`,
+        borderRadius: 6,
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: theme.red,
+          textTransform: "uppercase",
+          letterSpacing: 0.06,
+        }}
+      >
+        ⚠ {criticals.length} critical edge{criticals.length === 1 ? "" : "s"} in this topology
+      </div>
+      {top.map(({ edge, info }) => (
+        <div
+          key={`${edge.source}->${edge.target}`}
+          style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: theme.text, lineHeight: 1.5 }}
+        >
+          <span style={{ color: theme.text, fontWeight: 600 }}>{edge.source}</span>
+          <span style={{ color: theme.textDim, margin: "0 4px" }}>→</span>
+          <span style={{ color: theme.text, fontWeight: 600 }}>{edge.target}</span>
+          <span style={{ color: theme.red, marginLeft: 8 }}>{info.reason}</span>
+          {edge.call_count > 0 && (
+            <span style={{ color: theme.textDim, marginLeft: 6 }}>· {formatCount(edge.call_count)} calls</span>
+          )}
+        </div>
+      ))}
+      {moreCount > 0 && (
+        <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 2 }}>
+          +{moreCount} more — hover or click into red edges to inspect
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -647,6 +917,18 @@ export function App() {
     if (!data) return 0;
     return Math.max(...data.edges.map((e) => e.call_count), 1);
   }, [data]);
+
+  // Edge severities (relative outlier + absolute floor) and the derived
+  // "incoming-issue" severity per node. Both feed visual treatment AND
+  // the top-of-graph anomalies banner.
+  const edgeSeverityMap = useMemo(() => {
+    if (!data) return new Map<Edge, EdgeSeverityInfo>();
+    return computeEdgeSeverities(data.edges);
+  }, [data]);
+  const nodeIncomingSeverity = useMemo(() => {
+    if (!data) return new Map<string, EdgeSeverityInfo>();
+    return computeNodeIncomingSeverity(data.edges, edgeSeverityMap);
+  }, [data, edgeSeverityMap]);
 
   const fanMap = useMemo(() => {
     const m = new Map<string, { in: number; out: number }>();
@@ -905,6 +1187,8 @@ export function App() {
         <div className="dep-coverage"><strong>Data coverage</strong>{data.data_coverage_note}</div>
       )}
 
+      <AnomaliesBanner data={data} edgeSeverityMap={edgeSeverityMap} />
+
       <div className="dep-graph">
         <svg
           ref={panZoom.svgRef}
@@ -976,6 +1260,7 @@ export function App() {
                 maxCalls={maxCalls}
                 dimmed={dim}
                 direction={direction}
+                severity={edgeSeverityMap.get(edge)?.severity ?? "normal"}
                 onHover={(e) => handleEdgeHover(e, edge)}
                 onLeave={clearEdgeTooltip}
               />
@@ -990,35 +1275,40 @@ export function App() {
               (!connected || !connected.has(node.name));
             const isHov = hovered === node.name;
             const isPin = pinned === node.name;
+            const incoming = nodeIncomingSeverity.get(node.name);
             return (
-              <NodeCard
-                key={node.name}
-                node={node}
-                dimmed={dim}
-                isHovered={isHov}
-                isPinned={isPin}
-                isInspected={isIns}
-                canInspect={canInspectMore}
-                fanIn={fanMap.get(node.name)?.in ?? 0}
-                fanOut={fanMap.get(node.name)?.out ?? 0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPinned((prev) => (prev === node.name ? null : node.name));
-                }}
-                onToggleInspect={() => toggleInspect(node.name)}
-                onHover={(e) => {
-                  if (isDragging) return;
-                  setHovered(node.name);
-                  handleNodeHover(e, node);
-                }}
-                onMove={(e) => {
-                  if (!isDragging) handleNodeHover(e, node);
-                }}
-                onLeave={() => {
-                  setHovered(null);
-                  clearNodeTooltip();
-                }}
-              />
+              <g key={node.name}>
+                <NodeCard
+                  node={node}
+                  dimmed={dim}
+                  isHovered={isHov}
+                  isPinned={isPin}
+                  isInspected={isIns}
+                  canInspect={canInspectMore}
+                  fanIn={fanMap.get(node.name)?.in ?? 0}
+                  fanOut={fanMap.get(node.name)?.out ?? 0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPinned((prev) => (prev === node.name ? null : node.name));
+                  }}
+                  onToggleInspect={() => toggleInspect(node.name)}
+                  onHover={(e) => {
+                    if (isDragging) return;
+                    setHovered(node.name);
+                    handleNodeHover(e, node);
+                  }}
+                  onMove={(e) => {
+                    if (!isDragging) handleNodeHover(e, node);
+                  }}
+                  onLeave={() => {
+                    setHovered(null);
+                    clearNodeTooltip();
+                  }}
+                />
+                {incoming && !dim && (
+                  <IncomingSeverityTag node={node} severity={incoming} />
+                )}
+              </g>
             );
           })}
         </svg>

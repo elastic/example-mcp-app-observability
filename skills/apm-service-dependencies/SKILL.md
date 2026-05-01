@@ -66,7 +66,7 @@ Parameter-filling guidance:
   ask the user to confirm before calling. If the tool returns no edges for the named focal service,
   confirm the name with the user before fuzzy-matching.
 - **`namespace`**: only if the user scopes to a K8s namespace AND services are K8s-deployed.
-- **`lookback`**: default `1h`. Use `15m` for "right now," `24h` to smooth transient topology changes.
+- **`lookback`**: **default `1h`** for any unqualified prompt. Don't drop to 15m unless the user explicitly says something time-localized ("right now / this second"). Use `24h` to smooth transient topology changes; use the user's literal window when they give one ("past 30 minutes" → `30m`).
 - **`include_health`**: default true. Set false for a topology-only response when you don't need latency/error
   data.
 
@@ -101,3 +101,9 @@ Lead your narrative with:
   high-port HTTP call to a specific target hints at a sidecar or proxy.
 - **Empty or tiny graphs are a signal.** If the focal service has zero edges, either the lookback is too
   narrow, the service isn't instrumented, or the name is wrong. Do not silently report "no dependencies."
+
+## Investigation discipline
+
+- **One tool call per turn.** After this tool returns, narrate what the topology shows — root, leaves, edges with abnormal latency or error rates — *before* firing another tool. Each call adds a widget to the chat; piling 3-4 in a row after a single "yes" looks like a runaway agent.
+- **Sequential offers, not OR.** Don't ask "Want me to check pod health *or* ML anomalies?" — phrase as a chain: "Want me to start with X? If that doesn't explain it, I can follow up with Y." The user's "yes" then maps to one call, not several.
+- **Commit to a plan before "yes."** When a follow-up needs multiple tools (e.g. flagd pod resources → flagd traces → upstream caller anomalies), lay out the chain first and execute one step at a time, narrating between each. Don't pre-fire the chain because the user agreed in principle.

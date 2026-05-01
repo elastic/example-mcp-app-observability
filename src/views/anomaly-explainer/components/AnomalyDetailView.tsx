@@ -10,7 +10,7 @@
  */
 
 import React, { useState } from "react";
-import { ExpandSection, FactCol, SeverityChip, type InvestigationAction } from "@shared/components";
+import { ExpandSection, SeverityChip, type InvestigationAction } from "@shared/components";
 import type { Anomaly, AnomalyData } from "../types";
 import {
   entityLabel,
@@ -45,50 +45,52 @@ export function AnomalyDetailView({
   const actual = firstNum(top.actual);
   const typical = firstNum(top.typical);
   const dev = top.deviationPercent;
-  const unit = data.detail?.unit_format ?? inferUnit(top.jobId, top.fieldName);
+  // Derive everything from `top` (the anomaly being rendered RIGHT NOW),
+  // not from `data.detail.*` / `data.headline`. The tool sets those
+  // strings from `data.anomalies[0]` once at response time. In overview
+  // drilldown mode, `top` is the row the user clicked — which may be a
+  // different anomaly than `[0]`. Falling back to the cached strings
+  // produced the bug where the headline showed the worst anomaly's
+  // entity even after the user clicked a different one in the list.
+  const unit = inferUnit(top.jobId, top.fieldName);
+  const label = entityLabel(top);
+  const actualLabel =
+    unit === "bytes"
+      ? "Actual memory"
+      : unit === "ms"
+        ? "Actual latency"
+        : unit === "pct"
+          ? "Actual utilization"
+          : "Actual";
+  const typicalLabel =
+    unit === "bytes"
+      ? "Typical memory"
+      : unit === "ms"
+        ? "Typical latency"
+        : unit === "pct"
+          ? "Typical utilization"
+          : "Typical";
 
-  const label = data.detail?.entity_label || entityLabel(top);
-  const namespace = data.detail?.namespace;
-  const actualLabel = data.detail?.actual_label || "Actual";
-  const typicalLabel = data.detail?.typical_label || "Typical";
+  const headline = `${label} · score ${top.recordScore.toFixed(1)}`;
 
-  const fnField = top.functionName && top.fieldName
-    ? `${top.functionName}(${top.fieldName})`
-    : top.fieldName ?? null;
-
-  const headline = data.headline ?? `${label} · score ${top.recordScore.toFixed(1)}`;
-  const subtitleBits = [
-    fmtRelativeTime(top.timestamp),
-    typical !== undefined && actual !== undefined
-      ? `${(actual / typical).toFixed(1)}× ${typicalLabel.toLowerCase()}`
-      : null,
-    namespace ? `namespace ${namespace}` : null,
-  ].filter(Boolean);
-
-  const facts: { label: React.ReactNode; value: React.ReactNode }[] = [
-    { label: "Function", value: top.functionName ?? null },
-    { label: "Field", value: top.fieldName ?? null },
-    { label: "Entity", value: label },
-    {
-      label: actualLabel,
-      value: actual !== undefined ? fmtValue(actual, unit) : null,
-    },
-    {
-      label: typicalLabel,
-      value: typical !== undefined ? fmtValue(typical, unit) : null,
-    },
-    {
-      label: "Deviation",
-      value:
-        dev !== undefined
-          ? `${dev >= 0 ? "+" : ""}${dev.toFixed(1)}%`
-          : null,
-    },
-    { label: "Detected", value: fmtRelativeTime(top.timestamp) },
-  ];
-
+  // Information-density redesign for the detail panel:
+  //   - Drop the "Anomaly facts" header (context is clear from the
+  //     summary row above it).
+  //   - Skip Entity (already in the summary headline).
+  //   - Group fields into rows with explicit column counts:
+  //       Row 1 (3 cols): Function / Deviation / Detected   — short values
+  //       Row 2 (2 cols): Actual / Typical                  — medium-length pair
+  //       Row 3 (1 col):  Field                             — long
+  //       Row 4+ (1 col): each influencer                   — long, full width
+  //   - Order is "what kind → how surprising → when → magnitude → field
+  //     → context", matching how an SRE actually reads an anomaly.
+  const deviationStr = dev !== undefined ? `${dev >= 0 ? "+" : ""}${dev.toFixed(1)}%` : null;
+  const actualStr = actual !== undefined ? fmtValue(actual, unit) : null;
+  const typicalStr = typical !== undefined ? fmtValue(typical, unit) : null;
+  const detectedStr = fmtRelativeTime(top.timestamp);
+  const influencerEntries: { label: string; value: string }[] = [];
   for (const [k, vs] of Object.entries(top.influencers ?? {})) {
-    if (vs?.length) facts.push({ label: k, value: vs.join(", ") });
+    if (vs?.length) influencerEntries.push({ label: k, value: vs.join(", ") });
   }
 
   // Related anomalies preview — when the result has more than one anomaly.
@@ -106,18 +108,31 @@ export function AnomalyDetailView({
             <SeverityChip severity={sev} label={sev} />
             <span className="anom-summary-headline">{headline}</span>
           </div>
-          {subtitleBits.length > 0 && (
-            <div className="anom-summary-sub">{subtitleBits.join(" · ")}</div>
-          )}
-          {fnField && (
-            <div className="anom-summary-sub">{fnField}</div>
-          )}
+          {/* Subtitle and fnField removed — Detected, Deviation, Function,
+              Field, and namespace influencer all live in the fact grid
+              just below, so duplicating them here only ate vertical
+              space in an already-cramped right pane. */}
         </div>
       </div>
 
       <div className="anom-section">
-        <div className="anom-section-title">Anomaly facts</div>
-        <FactCol items={facts} />
+        <div className="anom-fact-grid">
+          <div className="anom-fact-row anom-fact-row-3">
+            <FactItem label="Function" value={top.functionName} />
+            <FactItem label="Deviation" value={deviationStr} />
+            <FactItem label="Detected" value={detectedStr} />
+          </div>
+          {(actualStr || typicalStr) && (
+            <div className="anom-fact-row anom-fact-row-2">
+              <FactItem label={actualLabel} value={actualStr} />
+              <FactItem label={typicalLabel} value={typicalStr} />
+            </div>
+          )}
+          <FactItem label="Field" value={top.fieldName} />
+          {influencerEntries.map((it) => (
+            <FactItem key={it.label} label={it.label} value={it.value} />
+          ))}
+        </div>
       </div>
 
       {data.time_series && data.time_series.length > 1 && (
@@ -203,5 +218,25 @@ export function AnomalyDetailView({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * One label/value cell for the anomaly fact grid. Empty values render
+ * an em-dash so column alignment stays even.
+ */
+function FactItem({
+  label,
+  value,
+}: {
+  label: React.ReactNode;
+  value: React.ReactNode;
+}) {
+  const empty = value === null || value === undefined || value === "";
+  return (
+    <div className="anom-fact-item">
+      <div className="anom-fact-label">{label}</div>
+      <div className="anom-fact-value">{empty ? "—" : value}</div>
+    </div>
   );
 }

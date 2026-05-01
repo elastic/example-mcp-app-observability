@@ -67,6 +67,33 @@ export function severityLabel(score: number): Severity {
   return "minor";
 }
 
+/**
+ * Normalize the user-supplied `entity` argument into a single matchable
+ * value. Accepts:
+ *   - "kube-proxy-…"                                 → "kube-proxy-…"
+ *   - "k8s.pod.name=kube-proxy-…"                    → "kube-proxy-…"
+ *   - "attributes.direction=receive; k8s.pod.name=X" → "X"
+ *
+ * The composite form is exactly what `formatAnomaly` emits as `entity`
+ * on each result, so the LLM commonly pastes it back in. Without this
+ * normalization the wildcard `*<whole_string>*` matches nothing.
+ *
+ * For the multi-pair composite we return the LAST value, not all of
+ * them. ML anomalies use partition (often direction/category) and by
+ * (often the actual entity name like a pod) fields; `formatAnomaly`
+ * orders them partition → by → over, so the trailing value is the
+ * most specific. OR-ing all values would over-broaden — e.g. matching
+ * every anomaly with partition=receive across all pods.
+ */
+export function parseEntityArg(raw: string): string {
+  const parts = raw.split(";").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return raw;
+  const last = parts[parts.length - 1];
+  const eq = last.indexOf("=");
+  const value = eq === -1 ? last : last.slice(eq + 1).trim();
+  return value || raw;
+}
+
 function formatAnomaly(hit: RawAnomalyHit) {
   const src = hit._source;
   const entityParts: string[] = [];
@@ -131,7 +158,14 @@ export async function mlAnomalyIndicesExist(): Promise<boolean> {
 }
 
 export async function queryAnomalies(input: AnomalyQueryInput): Promise<AnomalyQueryResult> {
-  const minScore = input.minScore ?? 50;
+  // Default minScore = 1 (any actual anomaly record). Was 50 ("minor or
+  // worse"), which silently filtered out everything below the "minor"
+  // band — turning a vague "what anomalies do we have?" into "what
+  // minor-or-worse anomalies do we have?" without making that
+  // assumption visible. Score 1 includes everything ML flagged; the
+  // limit + score-desc sort still surfaces the worst ones first, so a
+  // noisy environment doesn't drown the user.
+  const minScore = input.minScore ?? 1;
   const lookback = input.lookback ?? "24h";
   const limit = input.limit ?? 25;
 
@@ -143,9 +177,10 @@ export async function queryAnomalies(input: AnomalyQueryInput): Promise<AnomalyQ
 
   if (input.jobId) must.push({ term: { job_id: input.jobId } });
   if (input.entity) {
-    // influencers is a nested mapping — the wildcard must be inside a nested
-    // query or it silently matches nothing. The other three fields are
-    // top-level so they stay outside the nested wrapper.
+    // Normalize composite "field=value; field=value" inputs (the format
+    // formatAnomaly emits on results) down to the last/most-specific
+    // value. See parseEntityArg.
+    const entityValue = parseEntityArg(input.entity);
     must.push({
       bool: {
         should: [
@@ -154,14 +189,14 @@ export async function queryAnomalies(input: AnomalyQueryInput): Promise<AnomalyQ
               path: "influencers",
               query: {
                 wildcard: {
-                  "influencers.influencer_field_values": `*${input.entity}*`,
+                  "influencers.influencer_field_values": `*${entityValue}*`,
                 },
               },
             },
           },
-          { wildcard: { partition_field_value: `*${input.entity}*` } },
-          { wildcard: { by_field_value: `*${input.entity}*` } },
-          { wildcard: { over_field_value: `*${input.entity}*` } },
+          { wildcard: { partition_field_value: `*${entityValue}*` } },
+          { wildcard: { by_field_value: `*${entityValue}*` } },
+          { wildcard: { over_field_value: `*${entityValue}*` } },
         ],
         minimum_should_match: 1,
       },
@@ -214,7 +249,13 @@ export async function queryAnomalies(input: AnomalyQueryInput): Promise<AnomalyQ
   };
 
   if (!anomalies.length) {
-    result.hint = `No anomalies above score ${minScore} in the last ${lookback}. Try lowering min_score or extending lookback.`;
+    // Informational, NOT imperative. Earlier wording ("Try lowering /
+    // extending…") read as an instruction, so the LLM auto-retried —
+    // producing 2-3 empty "Waiting for anomaly data…" widgets in the
+    // chat that looked like the tool was broken. Now the hint just
+    // states the result. The skill tells the LLM to OFFER a broader
+    // search rather than run one automatically.
+    result.hint = `No anomalies above score ${minScore} in the last ${lookback}. Tell the user this is the answer for the requested params; do NOT auto-retry. If they want a wider net, ask them first or surface the option as a single-click follow-up.`;
   }
 
   return result;

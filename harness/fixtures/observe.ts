@@ -127,6 +127,37 @@ export const observeFixtures: FixtureSet = {
     },
     "What was the frontend memory over the past 60 seconds?"
   ),
+  sampled_flat: fixture(
+    "SAMPLED (metric mode — flat memory, repro of bug)",
+    {
+      status: "SAMPLED",
+      description: "frontend pod memory working set",
+      last_value: 77234176,
+      polls: 12,
+      elapsed_seconds: 60,
+      poll_interval_seconds: 5,
+      trend: [
+        { elapsed_seconds: 0,  value: 77234176, timestamp_ms: 1777592105952 },
+        { elapsed_seconds: 5,  value: 77234176, timestamp_ms: 1777592121145 },
+        { elapsed_seconds: 10, value: 77234176, timestamp_ms: 1777592126531 },
+        { elapsed_seconds: 15, value: 77234176, timestamp_ms: 1777592131909 },
+        { elapsed_seconds: 20, value: 77234176, timestamp_ms: 1777592137479 },
+        { elapsed_seconds: 25, value: 77234176, timestamp_ms: 1777592142819 },
+        { elapsed_seconds: 30, value: 77234176, timestamp_ms: 1777592148280 },
+        { elapsed_seconds: 35, value: 77234176, timestamp_ms: 1777592153620 },
+        { elapsed_seconds: 40, value: 77234176, timestamp_ms: 1777592159027 },
+        { elapsed_seconds: 45, value: 77234176, timestamp_ms: 1777592164350 },
+        { elapsed_seconds: 50, value: 77234176, timestamp_ms: 1777592169678 },
+        { elapsed_seconds: 55, value: 77234176, timestamp_ms: 1777592175019 },
+      ],
+      observe_key: "w_kq46gu",
+      message: "frontend pod memory working set: sampled 12 points over 60s.",
+      esql:
+        'FROM metrics-* | WHERE k8s.deployment.name == "frontend" AND k8s.namespace.name == "oteldemo-esyox-default" | STATS v = AVG(k8s.pod.memory.working_set) BY @timestamp | SORT @timestamp',
+      unit: "bytes",
+    },
+    "Show me a live chart of the frontend memory for 60 seconds"
+  ),
   alert: fixture("ALERT (anomaly)", {
     status: "ALERT",
     headline: "Spike detected on checkout p99 latency",

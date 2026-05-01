@@ -67,6 +67,39 @@ export const viewStyles = `
     margin-bottom: 12px;
   }
 
+  /* Anomaly-detail fact grid: explicit per-row column counts. The
+     shared .ds-fact-col uses auto-fit at 140px min, which collapses to
+     a single column in the ~280px right-pane width — that's why the
+     facts stacked vertically before. Forcing 2- and 3-column rows here
+     packs short fields (Function / Deviation / Detected, Actual /
+     Typical) horizontally and only the long ones (Field, influencer
+     names) take a full row. */
+  .anom-fact-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .anom-fact-row {
+    display: grid;
+    gap: 14px 16px;
+  }
+  .anom-fact-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .anom-fact-row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .anom-fact-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .anom-fact-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .anom-fact-value {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    color: var(--text-primary);
+    word-break: break-word;
+  }
+
   /* Time-series chart */
   .anom-chart {
     background: var(--bg-secondary);

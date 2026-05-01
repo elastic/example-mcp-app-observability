@@ -15,12 +15,12 @@ This project provides six interactive SRE tools, each with a rich React-based UI
 
 | Tool | Dependency | What It Does |
 |------|-----------|--------------|
-| **observe** | Universal | Transient ES\|QL + ML-anomaly access primitive — run a query once, live-sample a metric, or block until a threshold or anomaly fires. |
-| **manage-alerts** | Universal *(needs Kibana)* | Create, list, get, and delete Kibana custom-threshold alerting rules. Omit the Kibana URL to run read-only. |
-| **ml-anomalies** | ML jobs | Query ML anomaly records and open an inline anomaly-explainer view. |
-| **apm-health-summary** | Elastic APM | Cluster-level health rollup from APM telemetry; layers in K8s and ML context when available. |
-| **apm-service-dependencies** | Elastic APM | Service dependency graph — upstream/downstream, protocols, call volume. |
-| **k8s-blast-radius** | Kubernetes metrics | Node-outage impact — full outage, degraded, unaffected, reschedule feasibility. |
+| **observe** | Universal | Transient ES\|QL + ML-anomaly access primitive. Modes: `now` (single read), `table` (full result with auto-chart for time-series shapes), `metric` (live-sample or block until a threshold), `anomaly` (block until an ML anomaly fires). |
+| **manage-alerts** | Universal *(needs Kibana)* | Create, list, get, and delete Kibana custom-threshold alerting rules. Filter the list by source (MCP-created vs all), paginate, and inspect rule details inline. Omit the Kibana URL to run read-only. |
+| **ml-anomalies** | ML jobs | Query ML anomaly records and open an inline anomaly explainer with overview list + drill-into-detail flow, byte/ms/pct unit inference on Actual / Typical, and an annotated time-series chart of actual vs learned-typical. |
+| **apm-health-summary** | Elastic APM | Tabbed cluster-state rollup — **Health** (KPI tiles, degraded-service triage chips, recommendation), **Signals** (SLO violations, ML-anomaly heatmap, fired alerts — all in one place), **Resources** (top pods by memory, service throughput). Cluster + namespace scoping with fuzzy match and disambiguation; per-app filter chips; SLO + alert data baked into the same response so most "what's going on?" investigations stay in one tool call. |
+| **apm-service-dependencies** | Elastic APM | Service dependency graph — upstream / downstream / protocols / call volume — with severity-aware edge styling: critical edges (avg latency > 10s or ≥ 5× the graph's median) light up in red, and a top-of-graph banner names the worst outliers. Nodes whose callers all hang on them get a "called slowly" tag — surfacing the leaf-looks-healthy / everyone-times-out-on-it pattern. |
+| **k8s-blast-radius** | Kubernetes metrics | Node-outage impact — full outage, degraded, unaffected, reschedule feasibility. Graph-first layout with header actions and an in-flow inspect strip. |
 
 Every tool emits an `investigation_actions` list so the UI can surface opinionated next-step prompts — click-to-send without forcing the user to guess the right follow-up tool.
 

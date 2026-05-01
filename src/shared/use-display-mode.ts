@@ -10,7 +10,7 @@
  * expand the iframe in the conversation — NOT browser-native fullscreen.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AppLike, DisplayMode } from "./use-app.js";
 
 export function useDisplayMode(app: AppLike | null): {
@@ -32,6 +32,23 @@ export function useDisplayMode(app: AppLike | null): {
       console.warn("[useDisplayMode] requestDisplayMode failed:", err);
     }
   }, [app, mode]);
+
+  // Escape exits fullscreen — common keyboard expectation. Skip when
+  // focus is in a text input so Escape can still cancel autocomplete /
+  // close inline editors instead of yanking the user out of the view.
+  useEffect(() => {
+    if (mode !== "fullscreen") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+      e.preventDefault();
+      void toggle();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, toggle]);
 
   return { mode, isFullscreen: mode === "fullscreen", toggle };
 }

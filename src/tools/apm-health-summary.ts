@@ -24,6 +24,7 @@ import {
   resolveServicesInCluster,
   buildClusterFilter,
   listAvailableClusters,
+  listNamespacesInCluster,
 } from "../elastic/apm.js";
 import { resolveViewPath } from "./view-path.js";
 import { ANOMALY_BY_ENTITY_CAP, PODS_BY_APP_CAP } from "./_limits.js";
@@ -122,6 +123,19 @@ function statusForCpuUtil(pct: number): TileStatus {
   if (pct >= 90) return "critical";
   if (pct >= 80) return "degraded";
   return "ok";
+}
+/** "0.5", "1.2", "12" — one decimal under 10, integer above. */
+function formatCores(cores: number): string {
+  if (cores < 10) return cores.toFixed(2).replace(/\.?0+$/, "") || "0";
+  return cores.toFixed(0);
+}
+/** Convert bytes to a compact display + unit pair (e.g. "1.2" + "GB"). */
+function formatBytes(bytes: number): { value: string; unit: string } {
+  if (bytes >= 1e12) return { value: (bytes / 1e12).toFixed(1), unit: "TB" };
+  if (bytes >= 1e9) return { value: (bytes / 1e9).toFixed(1), unit: "GB" };
+  if (bytes >= 1e6) return { value: (bytes / 1e6).toFixed(0), unit: "MB" };
+  if (bytes >= 1e3) return { value: (bytes / 1e3).toFixed(0), unit: "KB" };
+  return { value: bytes.toFixed(0), unit: "B" };
 }
 function statusForMemUtil(pct: number): TileStatus {
   if (pct >= 95) return "critical";
@@ -586,6 +600,12 @@ interface PodResourceSnapshot {
   restart_delta: number;
 }
 
+/**
+ * Per-pod resource snapshot. Splits the query the same way as the
+ * utilization timeline (usage column always exists; limits + restart
+ * are optional). When the optional columns are missing the snapshot
+ * still returns usage values; consumers must tolerate zeros.
+ */
 async function queryPodResourceSnapshot(
   namespace: string | undefined,
   cluster: string | undefined,
@@ -595,39 +615,73 @@ async function queryPodResourceSnapshot(
   const out = new Map<string, PodResourceSnapshot>();
   const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace.replace(/"/g, '\\"')}"` : "";
   const clusterFilter = cluster ? `\n  AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}"` : "";
-  // MAX-MIN on the monotonic restart counter gives delta over the window
-  // (matches the existing aggregate-restart-timeline semantics).
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-*
+  const usageEsql = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE @timestamp > NOW() - ${lookback}
   AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
 | STATS
     cpu_use = MAX(metrics.k8s.pod.cpu.usage),
+    mem_use = MAX(metrics.k8s.pod.memory.working_set)
+  BY k8s.pod.name
+| LIMIT 1000`;
+  const limitsEsql = `FROM metrics-kubeletstatsreceiver.otel-*
+| WHERE @timestamp > NOW() - ${lookback}
+  AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
+| STATS
     cpu_lim = MAX(metrics.k8s.pod.cpu.limit),
-    mem_use = MAX(metrics.k8s.pod.memory.working_set),
-    mem_lim = MAX(metrics.k8s.pod.memory.limit),
+    mem_lim = MAX(metrics.k8s.pod.memory.limit)
+  BY k8s.pod.name
+| LIMIT 1000`;
+  const restartEsql = `FROM metrics-kubeletstatsreceiver.otel-*
+| WHERE @timestamp > NOW() - ${lookback}
+  AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
+| STATS
     restart_max = MAX(metrics.k8s.container.restart_count),
     restart_min = MIN(metrics.k8s.container.restart_count)
   BY k8s.pod.name
 | LIMIT 1000`;
-  const rows = await safeEsqlRows<{
-    "k8s.pod.name"?: string;
-    cpu_use?: number;
-    cpu_lim?: number;
-    mem_use?: number;
-    mem_lim?: number;
-    restart_max?: number;
-    restart_min?: number;
-  }>(esql, errors, { optional: true });
-  for (const r of rows) {
+
+  const [usageRows, limitsRows, restartRows] = await Promise.all([
+    safeEsqlRows<{
+      "k8s.pod.name"?: string;
+      cpu_use?: number;
+      mem_use?: number;
+    }>(usageEsql, errors, { optional: true }),
+    safeEsqlRows<{
+      "k8s.pod.name"?: string;
+      cpu_lim?: number;
+      mem_lim?: number;
+    }>(limitsEsql, errors, { optional: true }),
+    safeEsqlRows<{
+      "k8s.pod.name"?: string;
+      restart_max?: number;
+      restart_min?: number;
+    }>(restartEsql, errors, { optional: true }),
+  ]);
+
+  const limitsByPod = new Map<string, { cpu_lim: number; mem_lim: number }>();
+  for (const r of limitsRows) {
     const pod = r["k8s.pod.name"];
     if (!pod) continue;
+    limitsByPod.set(pod, { cpu_lim: r.cpu_lim ?? 0, mem_lim: r.mem_lim ?? 0 });
+  }
+  const restartByPod = new Map<string, number>();
+  for (const r of restartRows) {
+    const pod = r["k8s.pod.name"];
+    if (!pod) continue;
+    restartByPod.set(pod, Math.max(0, (r.restart_max ?? 0) - (r.restart_min ?? 0)));
+  }
+
+  for (const r of usageRows) {
+    const pod = r["k8s.pod.name"];
+    if (!pod) continue;
+    const lim = limitsByPod.get(pod);
     out.set(pod, {
       pod,
       cpu_use_cores: r.cpu_use ?? 0,
-      cpu_lim_cores: r.cpu_lim ?? 0,
+      cpu_lim_cores: lim?.cpu_lim ?? 0,
       mem_use_bytes: r.mem_use ?? 0,
-      mem_lim_bytes: r.mem_lim ?? 0,
-      restart_delta: Math.max(0, (r.restart_max ?? 0) - (r.restart_min ?? 0)),
+      mem_lim_bytes: lim?.mem_lim ?? 0,
+      restart_delta: restartByPod.get(pod) ?? 0,
     });
   }
   return out;
@@ -756,40 +810,106 @@ async function queryApmErrorRateTimeline(
 
 // ─── K8s aggregate timelines + node counts ──────────────────────────────────
 
+interface K8sUtilizationTimeline {
+  cpu: MetricTimelineBucket[];
+  mem: MetricTimelineBucket[];
+  /**
+   * "pct" when CPU limits are populated (cpu = % utilization across the
+   * cluster), "cores" when limits are absent (cpu = total cores in use).
+   * The view formats accordingly.
+   */
+  cpuMode: "pct" | "cores";
+  memMode: "pct" | "bytes";
+}
+
+/**
+ * Pod CPU/memory utilization timeline. The OTel kubeletstats receiver
+ * doesn't always emit `metrics.k8s.pod.cpu.limit` / `mem.limit` — some
+ * cluster configurations only ship usage. Querying for a missing
+ * column 400s the WHOLE query, so we run a usage-only query first
+ * (always works) and a separate optional query for limits. When
+ * limits come back we report % utilization; otherwise we report
+ * cores/bytes (`cpuMode`/`memMode`) and the view formats accordingly.
+ */
 async function queryK8sUtilizationTimeline(
   namespace: string | undefined,
   cluster: string | undefined,
   lookback: string,
   errors: string[]
-): Promise<{
-  cpu: MetricTimelineBucket[];
-  mem: MetricTimelineBucket[];
-}> {
+): Promise<K8sUtilizationTimeline> {
   const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
   const clusterFilter = cluster ? `AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" ` : "";
-  // Sums per bucket over the cluster: usage / limit yields utilization %.
-  // If limits aren't populated, the divide returns 0/null and we surface the
-  // raw usage instead in the calling code.
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_use = SUM(metrics.k8s.pod.cpu.usage), cpu_lim = SUM(metrics.k8s.pod.cpu.limit), mem_use = SUM(metrics.k8s.pod.memory.working_set), mem_lim = SUM(metrics.k8s.pod.memory.limit) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
-  const rows = await safeEsqlRows<{
-    cpu_use?: number;
-    cpu_lim?: number;
-    mem_use?: number;
-    mem_lim?: number;
-    bucket?: string | number;
-  }>(esql, errors, { optional: true });
+
+  const usageEsql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_use = SUM(metrics.k8s.pod.cpu.usage), mem_use = SUM(metrics.k8s.pod.memory.working_set) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  const limitsEsql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_lim = SUM(metrics.k8s.pod.cpu.limit), mem_lim = SUM(metrics.k8s.pod.memory.limit) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+
+  const [usageRowsAll, limitsRowsAll] = await Promise.all([
+    safeEsqlRows<{
+      cpu_use?: number;
+      mem_use?: number;
+      bucket?: string | number;
+    }>(usageEsql, errors, { optional: true }),
+    // Optional: silently empty when the cluster doesn't track limits.
+    safeEsqlRows<{
+      cpu_lim?: number;
+      mem_lim?: number;
+      bucket?: string | number;
+    }>(limitsEsql, errors, { optional: true }),
+  ]);
+
+  // Index limits by bucket for cheap lookup when joining with usage.
+  const limitsByBucket = new Map<number, { cpu_lim: number; mem_lim: number }>();
+  for (const r of limitsRowsAll) {
+    if (r.bucket == null) continue;
+    const ts = typeof r.bucket === "number" ? r.bucket : Date.parse(r.bucket as string);
+    if (Number.isNaN(ts)) continue;
+    limitsByBucket.set(ts, { cpu_lim: r.cpu_lim ?? 0, mem_lim: r.mem_lim ?? 0 });
+  }
+
+  // Re-shape usage rows to look like the original combined-row format,
+  // pulling matching limits from the lookup. Lets the existing
+  // pct/cores/bytes selection logic stay the same.
+  const rows = usageRowsAll.map((r) => {
+    const ts = r.bucket == null ? null : typeof r.bucket === "number" ? r.bucket : Date.parse(r.bucket as string);
+    const lim = ts != null && !Number.isNaN(ts) ? limitsByBucket.get(ts) : undefined;
+    return {
+      cpu_use: r.cpu_use,
+      mem_use: r.mem_use,
+      cpu_lim: lim?.cpu_lim ?? 0,
+      mem_lim: lim?.mem_lim ?? 0,
+      bucket: r.bucket,
+    };
+  });
+
+  // Decide mode per metric based on whether limits are populated anywhere
+  // in the lookback window. If they are, we report % utilization. If they
+  // aren't (common in real clusters where pods don't set resource limits),
+  // we fall back to raw usage — total cores in use for CPU, total bytes
+  // working-set for memory. Without this fallback the tile shows '—'
+  // even when the cluster is reporting plenty of usage data.
+  const cpuLimSeen = rows.some((r) => (r.cpu_lim ?? 0) > 0);
+  const memLimSeen = rows.some((r) => (r.mem_lim ?? 0) > 0);
+  const cpuMode: "pct" | "cores" = cpuLimSeen ? "pct" : "cores";
+  const memMode: "pct" | "bytes" = memLimSeen ? "pct" : "bytes";
+
   const cpu: MetricTimelineBucket[] = [];
   const mem: MetricTimelineBucket[] = [];
   for (const r of rows) {
     if (r.bucket == null) continue;
     const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
     if (Number.isNaN(ts)) continue;
-    const cpuPct = r.cpu_lim && r.cpu_lim > 0 ? ((r.cpu_use ?? 0) / r.cpu_lim) * 100 : 0;
-    const memPct = r.mem_lim && r.mem_lim > 0 ? ((r.mem_use ?? 0) / r.mem_lim) * 100 : 0;
-    cpu.push({ ts, value: Math.round(cpuPct * 10) / 10 });
-    mem.push({ ts, value: Math.round(memPct * 10) / 10 });
+    const cpuVal =
+      cpuMode === "pct"
+        ? r.cpu_lim && r.cpu_lim > 0 ? ((r.cpu_use ?? 0) / r.cpu_lim) * 100 : 0
+        : r.cpu_use ?? 0;
+    const memVal =
+      memMode === "pct"
+        ? r.mem_lim && r.mem_lim > 0 ? ((r.mem_use ?? 0) / r.mem_lim) * 100 : 0
+        : r.mem_use ?? 0;
+    cpu.push({ ts, value: Math.round(cpuVal * 10) / 10 });
+    mem.push({ ts, value: Math.round(memVal * 10) / 10 });
   }
-  return { cpu, mem };
+  return { cpu, mem, cpuMode, memMode };
 }
 
 async function queryK8sRestartTimeline(
@@ -883,7 +1003,7 @@ async function queryPodResources(
     "k8s.pod.name"?: string;
     avg_mem?: number;
     avg_cpu?: number;
-  }>(esql, errors);
+  }>(esql, errors, { optional: true });
   return rows
     .filter((r) => !!r["k8s.pod.name"])
     .map((r) => ({
@@ -930,18 +1050,304 @@ interface AnomalyRollup {
 const TIMELINE_BUCKET_SPAN = "5m";
 const TIMELINE_BUCKET_SPAN_MS = 5 * 60 * 1000;
 
+// ─── Fired alerts rollup ────────────────────────────────────────────────────
+//
+// Pulled from Kibana's `.alerts-*` index (the catch-all union — covers
+// observability.threshold, observability.metrics, stack.alerts, custom rules).
+// We aggregate by status (active vs recovered) and by rule name, plus surface
+// a few sample reasons so the payload is useful for triage without bloating
+// context. Cluster-scoping is best-effort: alerts don't carry k8s.cluster.name
+// reliably, so we filter by lookback window only and let the user/agent
+// recognize cluster-relevant alerts from the rule name + reason text.
+
+interface AlertsRollup {
+  active_count: number;
+  recovered_count: number;
+  top_rules: { name: string; count: number; severity?: string }[];
+  /** Full reason text + instance for the highest-priority handful of active
+   *  alerts. Caps at 5 to keep the payload compact. */
+  active_samples: {
+    rule: string;
+    reason: string;
+    instance_id?: string;
+    severity?: string;
+    started_ms?: number;
+  }[];
+  error?: string;
+}
+
+async function queryFiredAlerts(lookback: string): Promise<AlertsRollup> {
+  const empty: AlertsRollup = {
+    active_count: 0,
+    recovered_count: 0,
+    top_rules: [],
+    active_samples: [],
+  };
+  try {
+    const body = {
+      size: 5,
+      query: {
+        bool: {
+          must: [
+            { range: { "@timestamp": { gte: `now-${lookback}` } } },
+          ],
+          should: [{ term: { "kibana.alert.status": "active" } }],
+        },
+      },
+      // Active alerts first; within those, most-recent first.
+      sort: [
+        { "kibana.alert.status": { order: "asc" } }, // "active" sorts before "recovered"
+        { "@timestamp": { order: "desc" } },
+      ],
+      aggs: {
+        by_status: {
+          terms: { field: "kibana.alert.status", size: 5 },
+        },
+        active_only: {
+          filter: { term: { "kibana.alert.status": "active" } },
+          aggs: {
+            by_rule: {
+              terms: { field: "kibana.alert.rule.name", size: 10 },
+              aggs: {
+                top_severity: {
+                  top_hits: {
+                    size: 1,
+                    _source: ["kibana.alert.severity"],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      _source: [
+        "@timestamp",
+        "kibana.alert.rule.name",
+        "kibana.alert.status",
+        "kibana.alert.reason",
+        "kibana.alert.start",
+        "kibana.alert.severity",
+        "kibana.alert.instance.id",
+      ],
+    };
+    const res = await esRequest<{
+      aggregations?: {
+        by_status?: { buckets: { key: string; doc_count: number }[] };
+        active_only?: {
+          by_rule?: {
+            buckets: {
+              key: string;
+              doc_count: number;
+              top_severity?: { hits?: { hits?: { _source?: { kibana?: { alert?: { severity?: string } } } }[] } };
+            }[];
+          };
+        };
+      };
+      hits?: {
+        hits?: {
+          _source?: {
+            "@timestamp"?: string;
+            kibana?: {
+              alert?: {
+                rule?: { name?: string };
+                status?: string;
+                reason?: string;
+                start?: string;
+                severity?: string;
+                instance?: { id?: string };
+              };
+            };
+          };
+        }[];
+      };
+    }>(`/.alerts-*/_search`, { method: "POST", body });
+
+    const statusBuckets = res.aggregations?.by_status?.buckets ?? [];
+    let active = 0;
+    let recovered = 0;
+    for (const b of statusBuckets) {
+      if (b.key === "active") active = b.doc_count;
+      else if (b.key === "recovered") recovered = b.doc_count;
+    }
+
+    const ruleBuckets = res.aggregations?.active_only?.by_rule?.buckets ?? [];
+    const top_rules: AlertsRollup["top_rules"] = ruleBuckets.slice(0, 8).map((b) => ({
+      name: b.key,
+      count: b.doc_count,
+      severity:
+        b.top_severity?.hits?.hits?.[0]?._source?.kibana?.alert?.severity || undefined,
+    }));
+
+    const sampleHits = res.hits?.hits ?? [];
+    const active_samples: AlertsRollup["active_samples"] = [];
+    for (const h of sampleHits) {
+      const a = h._source?.kibana?.alert;
+      if (!a) continue;
+      active_samples.push({
+        rule: a.rule?.name || "(unnamed)",
+        reason: a.reason || "",
+        instance_id: a.instance?.id,
+        severity: a.severity,
+        started_ms: a.start ? Date.parse(a.start) : undefined,
+      });
+    }
+
+    return { active_count: active, recovered_count: recovered, top_rules, active_samples };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // 404 = no alerting indices in this env — return empty silently.
+    if (msg.includes("404") || msg.includes("index_not_found_exception")) return empty;
+    return { ...empty, error: msg };
+  }
+}
+
+// ─── SLO status ─────────────────────────────────────────────────────────────
+//
+// Pulled from the SLO summary index `.slo-observability.summary-v3*` —
+// authoritative for SLO health regardless of whether burn-rate alerting
+// rules are attached. (Previously we hit the alerts index, which only has
+// data when explicit SLO alerting rules fire — meaning SLOs that were
+// "VIOLATED" per the transform but had no alert rule looked healthy here.)
+
+interface SloStatus {
+  configured: boolean;
+  violated_count?: number;
+  healthy_count?: number;
+  /** Up to 12 currently-violated SLOs, sorted by lowest sliValue first
+   *  (worst breaches first). Includes target + burn rate so the view +
+   *  agent can prioritize by severity. */
+  top_violations?: {
+    name: string;
+    sli_value: number;
+    target: number;
+    error_budget_remaining?: number;
+    one_hour_burn_rate?: number;
+    one_day_burn_rate?: number;
+    indicator_type?: string;
+    last_evaluated_ms?: number;
+  }[];
+  /** Note shown when no SLOs are configured (the common case in stock envs). */
+  note?: string;
+}
+
+async function querySloStatus(): Promise<SloStatus> {
+  try {
+    const body = {
+      size: 0,
+      query: { term: { isTempDoc: false } },
+      aggs: {
+        by_status: { terms: { field: "status", size: 5 } },
+        violations: {
+          filter: { term: { status: "VIOLATED" } },
+          aggs: {
+            top: {
+              top_hits: {
+                size: 12,
+                sort: [{ sliValue: { order: "asc" } }],
+                _source: [
+                  "slo.name",
+                  "slo.objective.target",
+                  "slo.indicator.type",
+                  "status",
+                  "sliValue",
+                  "errorBudgetRemaining",
+                  "errorBudgetConsumed",
+                  "oneHourBurnRate.value",
+                  "oneDayBurnRate.value",
+                  "summaryUpdatedAt",
+                ],
+              },
+            },
+          },
+        },
+      },
+    };
+    const res = await esRequest<{
+      aggregations?: {
+        by_status?: { buckets: { key: string; doc_count: number }[] };
+        violations?: { top?: { hits?: { hits: { _source?: Record<string, unknown> }[] } } };
+      };
+    }>(`/.slo-observability.summary-v3*/_search`, { method: "POST", body });
+
+    const buckets = res.aggregations?.by_status?.buckets ?? [];
+    if (buckets.length === 0) {
+      return {
+        configured: false,
+        note: "No SLOs configured for this cluster. Create SLOs in Kibana → Observability → SLOs to track service-level objectives in this view.",
+      };
+    }
+    let violated = 0;
+    let healthy = 0;
+    for (const b of buckets) {
+      if (b.key === "VIOLATED") violated = b.doc_count;
+      else if (b.key === "HEALTHY") healthy = b.doc_count;
+    }
+
+    const top_violations: NonNullable<SloStatus["top_violations"]> = [];
+    for (const h of res.aggregations?.violations?.top?.hits?.hits ?? []) {
+      const s = h._source as {
+        slo?: { name?: string; objective?: { target?: number }; indicator?: { type?: string } };
+        status?: string;
+        sliValue?: number;
+        errorBudgetRemaining?: number;
+        oneHourBurnRate?: { value?: number };
+        oneDayBurnRate?: { value?: number };
+        summaryUpdatedAt?: string;
+      };
+      top_violations.push({
+        name: s.slo?.name || "(unnamed SLO)",
+        sli_value: typeof s.sliValue === "number" ? s.sliValue : 0,
+        target: s.slo?.objective?.target ?? 0,
+        error_budget_remaining: s.errorBudgetRemaining,
+        one_hour_burn_rate: s.oneHourBurnRate?.value,
+        one_day_burn_rate: s.oneDayBurnRate?.value,
+        indicator_type: s.slo?.indicator?.type,
+        last_evaluated_ms: s.summaryUpdatedAt ? Date.parse(s.summaryUpdatedAt) : undefined,
+      });
+    }
+
+    return {
+      configured: true,
+      violated_count: violated,
+      healthy_count: healthy,
+      top_violations,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("404") || msg.includes("index_not_found_exception")) {
+      return {
+        configured: false,
+        note: "No SLOs configured for this cluster. Create SLOs in Kibana → Observability → SLOs to track service-level objectives in this view.",
+      };
+    }
+    return { configured: false, note: `SLO status unavailable: ${msg.slice(0, 120)}` };
+  }
+}
+
 async function queryActiveAnomalies(
   namespace: string | undefined,
   cluster: string | undefined,
   jobFilter: string | undefined,
-  excludeEntities: string | undefined
+  excludeEntities: string | undefined,
+  // Namespaces present in the supplied cluster (via kubeletstats). Used as
+  // a permissive fallback when the strict cluster-influencer filter would
+  // miss anomalies — most ML jobs use k8s.namespace.name as an influencer
+  // but NOT k8s.cluster.name, so requiring cluster.name to match excludes
+  // valid in-cluster anomalies. With this list we OR (cluster.name match)
+  // with (namespace IN cluster_namespaces) and recover the missed ones.
+  clusterNamespaces: string[] | undefined
 ): Promise<AnomalyRollup> {
   if (!(await mlAnomalyIndicesExist())) {
     return { total: 0, by_severity: {}, top_entities: [] };
   }
 
   const must: unknown[] = [
-    { range: { record_score: { gte: 50 } } },
+    // Floor at score 1 (any actual anomaly record). Was 50, which silently
+    // filtered to "minor or worse" — turning the rollup into a critical-
+    // ish view rather than a general overview. The skill positions this
+    // tool as "what's been going on?", not "what's broken right now?",
+    // so all anomalies belong here. Heatmap also renders denser.
+    { range: { record_score: { gte: 1 } } },
     { term: { result_type: "record" } },
     { range: { timestamp: { gte: "now-1h" } } },
   ];
@@ -969,7 +1375,7 @@ async function queryActiveAnomalies(
     });
   }
   if (cluster) {
-    must.push({
+    const clusterInfluencerMatch = {
       nested: {
         path: "influencers",
         query: {
@@ -989,7 +1395,42 @@ async function queryActiveAnomalies(
           },
         },
       },
-    });
+    };
+    if (clusterNamespaces && clusterNamespaces.length > 0) {
+      // OR the strict cluster-influencer match with "namespace IN
+      // cluster_namespaces" so jobs that only carry k8s.namespace.name
+      // as an influencer aren't excluded.
+      const namespaceInClusterMatch = {
+        nested: {
+          path: "influencers",
+          query: {
+            bool: {
+              must: [
+                {
+                  terms: {
+                    "influencers.influencer_field_name": [
+                      "k8s.namespace.name",
+                      "resource.attributes.k8s.namespace.name",
+                    ],
+                  },
+                },
+                {
+                  terms: { "influencers.influencer_field_values": clusterNamespaces },
+                },
+              ],
+            },
+          },
+        },
+      };
+      must.push({
+        bool: {
+          should: [clusterInfluencerMatch, namespaceInClusterMatch],
+          minimum_should_match: 1,
+        },
+      });
+    } else {
+      must.push(clusterInfluencerMatch);
+    }
   }
   if (jobFilter) must.push({ prefix: { job_id: jobFilter } });
 
@@ -1010,7 +1451,12 @@ async function queryActiveAnomalies(
       by_severity: {
         range: {
           field: "record_score",
+          // "warning" (1-49) added so weak anomalies have a bucket once
+          // the score floor dropped from 50 → 1. Without this they'd
+          // count toward total but disappear from the donut, making
+          // the rollup feel incomplete.
           ranges: [
+            { key: "warning", from: 1, to: 50 },
             { key: "minor", from: 50, to: 75 },
             { key: "major", from: 75, to: 90 },
             { key: "critical", from: 90 },
@@ -1035,7 +1481,7 @@ async function queryActiveAnomalies(
               by_value: {
                 terms: {
                   field: "influencers.influencer_field_values",
-                  size: 5,
+                  size: 10,
                   order: { "parent>max_score": "desc" },
                 },
                 aggs: {
@@ -1066,7 +1512,7 @@ async function queryActiveAnomalies(
         },
       },
       top_entities_by_partition: {
-        terms: { field: "partition_field_value", size: 5, order: { max_score: "desc" } },
+        terms: { field: "partition_field_value", size: 10, order: { max_score: "desc" } },
         aggs: {
           max_score: { max: { field: "record_score" } },
           timeline: {
@@ -1115,6 +1561,7 @@ async function queryActiveAnomalies(
                         range: {
                           field: "record_score",
                           ranges: [
+                            { key: "warning", from: 1, to: 50 },
                             { key: "minor", from: 50, to: 75 },
                             { key: "major", from: 75, to: 90 },
                             { key: "critical", from: 90 },
@@ -1287,10 +1734,18 @@ function assessHealth(
     if (reasons.length) degraded.push({ service: svc.service, reasons });
   }
 
+  // Health verdict counts MINOR-OR-WORSE anomalies only. With the score
+  // floor dropped to 1 the rollup includes "warning" tier (1-49) for
+  // visibility, but those are weak signals and shouldn't tip the
+  // overall verdict — otherwise a quiet cluster with 6 statistical
+  // warnings would falsely flip to "degraded".
   const critical = anomalies.by_severity?.critical || 0;
+  const major = anomalies.by_severity?.major || 0;
+  const minor = anomalies.by_severity?.minor || 0;
+  const significantAnomalies = critical + major + minor;
   let health: string;
   if (critical > 0 || degraded.length >= 3) health = "critical";
-  else if (degraded.length >= 1 || (anomalies.total || 0) > 5) health = "degraded";
+  else if (degraded.length >= 1 || significantAnomalies > 5) health = "degraded";
   else health = "healthy";
 
   return { health, degraded };
@@ -1311,14 +1766,19 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         "a data_coverage field showing which backends contributed.",
       inputSchema: {
         cluster: z.string().optional().describe(
-          "Kubernetes cluster name to scope to — e.g. 'prod-us-east'. Resolves against k8s.cluster.name " +
-          "(OTel) or orchestrator.cluster.name (ECS). Fuzzy-matched against the set of clusters present " +
-          "in recent telemetry; if not found, the response includes candidates. Omit for single-cluster " +
-          "deployments or to span all clusters."
+          "PASS THIS whenever the user names a cluster, even partially or vaguely — phrases like " +
+          "'the X cluster', 'my X env', 'how is X doing' (where X looks like a cluster identifier) " +
+          "should map here. Resolves against k8s.cluster.name (OTel) or orchestrator.cluster.name (ECS); " +
+          "fuzzy-matched (exact → prefix → substring). When the input is ambiguous (multiple matches) " +
+          "or doesn't match anything, the tool returns `disambiguation_needed` with " +
+          "`cluster_candidates` instead of running the analysis — surface those candidates to the " +
+          "user and re-call with the chosen exact name. Omit only when the user clearly wants a " +
+          "cross-cluster view or there's only one cluster in the env."
         ),
         namespace: z.string().optional().describe(
-          "Kubernetes namespace to scope to — e.g. 'otel-demo', 'prod', 'checkout'. Only applicable if services " +
-          "are K8s-deployed. Omit for all namespaces or non-K8s deployments."
+          "Kubernetes namespace to scope to — e.g. 'otel-demo', 'prod', 'checkout'. Same fuzzy-match + " +
+          "disambiguation flow as `cluster`: when ambiguous or absent the tool returns " +
+          "`namespace_candidates` for clarification. Only applicable if services are K8s-deployed."
         ),
         lookback: z.string().optional().describe(
           "Time range to assess. Default '1h'. Examples: '5m' / '15m' (right-now snapshots), " +
@@ -1354,8 +1814,42 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         resolveCluster(cluster, lb, queryErrors),
         resolveNamespace(namespace, lb, queryErrors),
       ]);
-      const effectiveCluster = clusterResolution.resolved ?? cluster;
-      const effectiveNs = nsResolution.resolved ?? namespace;
+
+      // Disambiguation short-circuit: when the user-supplied cluster or
+      // namespace either matches multiple candidates (ambiguous) or
+      // matches none (not found in telemetry), return early with the
+      // candidate list. Running the rest of the queries with a silently-
+      // picked first match — or no filter at all — would mislead the
+      // user about what they're looking at. Claude reads
+      // `disambiguation_needed` and asks the user to pick one before
+      // re-calling.
+      const clusterNeedsClarify = !!cluster && !clusterResolution.resolved && !!clusterResolution.candidates?.length;
+      const nsNeedsClarify = !!namespace && !nsResolution.resolved && !!nsResolution.candidates?.length;
+      if (clusterNeedsClarify || nsNeedsClarify) {
+        const ambiguous: Record<string, unknown> = {
+          disambiguation_needed: clusterNeedsClarify && nsNeedsClarify ? "cluster_and_namespace" : clusterNeedsClarify ? "cluster" : "namespace",
+          lookback: lb,
+        };
+        if (clusterNeedsClarify) {
+          ambiguous.cluster_requested = cluster;
+          ambiguous.cluster_candidates = clusterResolution.candidates;
+          ambiguous.cluster_note = clusterResolution.note;
+          ambiguous.cluster_match = clusterResolution.ambiguous ? "multiple" : "none";
+        }
+        if (nsNeedsClarify) {
+          ambiguous.namespace_requested = namespace;
+          ambiguous.namespace_candidates = nsResolution.candidates;
+          ambiguous.namespace_note = nsResolution.note;
+          ambiguous.namespace_match = nsResolution.ambiguous ? "multiple" : "none";
+        }
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(ambiguous, null, 2) }],
+          structuredContent: ambiguous,
+        };
+      }
+
+      const effectiveCluster = clusterResolution.resolved;
+      const effectiveNs = nsResolution.resolved;
 
       // Service tiers scope by service.name IN (…) to dodge schema-drift gotchas
       // (pre-agg rollups missing k8s.namespace.name as a dimension; traces-apm*
@@ -1377,12 +1871,23 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         ((effectiveNs && servicesInNs && servicesInNs.length === 0) ||
           (effectiveCluster && servicesInCluster && servicesInCluster.length === 0)) ?? false;
 
-      const [services, pods, anomalies] = await Promise.all([
+      // Resolve cluster namespaces ahead of the anomaly query so it can
+      // OR (cluster.name match) with (namespace IN cluster_namespaces).
+      // Other queries don't depend on this and run in parallel.
+      const clusterNamespacesPromise = effectiveCluster
+        ? listNamespacesInCluster(effectiveCluster, lb, queryErrors)
+        : Promise.resolve<string[] | undefined>(undefined);
+
+      const [services, pods, anomalies, alerts, slos] = await Promise.all([
         noServicesInScope
           ? Promise.resolve<ServiceRow[]>([])
           : queryServices(serviceFilter, lb, queryErrors),
         queryPodResources(effectiveNs, effectiveCluster, lb, queryErrors),
-        queryActiveAnomalies(effectiveNs, effectiveCluster, job_filter, exclude_entities),
+        clusterNamespacesPromise.then((ns) =>
+          queryActiveAnomalies(effectiveNs, effectiveCluster, job_filter, exclude_entities, ns)
+        ),
+        queryFiredAlerts(lb),
+        querySloStatus(),
       ]);
 
       // Fetch per-item timelines for the top rows the view actually renders +
@@ -1469,6 +1974,7 @@ export function registerApmHealthSummaryTool(server: McpServer) {
 
       const result: Record<string, unknown> = {
         overall_health: health,
+        cluster: effectiveCluster || cluster || "all",
         namespace: effectiveNs || namespace || "all",
         lookback: lb,
         data_coverage: dataCoverage,
@@ -1583,35 +2089,79 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         const cpuLatest = k8sUtil.cpu.length ? k8sUtil.cpu[k8sUtil.cpu.length - 1].value : 0;
         const memLatest = k8sUtil.mem.length ? k8sUtil.mem[k8sUtil.mem.length - 1].value : 0;
         const restartTotal = k8sRestartTl.reduce((s, b) => s + b.value, 0);
+        // CPU formatting: when limits aren't populated (cpuMode === "cores")
+        // we report total cores in use rather than %; thresholds only apply
+        // in pct mode. Memory the same — bytes vs %.
+        const cpuTile: KpiTile =
+          k8sUtil.cpuMode === "pct"
+            ? {
+                key: "cpu",
+                label: "CPU",
+                value_display: cpuLatest > 0 ? `${cpuLatest.toFixed(0)}` : "—",
+                unit: cpuLatest > 0 ? "%" : undefined,
+                timeline: k8sUtil.cpu,
+                peak: peakOf(k8sUtil.cpu),
+                status: cpuLatest > 0 ? statusForCpuUtil(cpuLatest) : undefined,
+              }
+            : {
+                key: "cpu",
+                label: "CPU",
+                value_display: cpuLatest > 0 ? formatCores(cpuLatest) : "—",
+                unit: cpuLatest > 0 ? "cores" : undefined,
+                secondary: "limits not set",
+                timeline: k8sUtil.cpu,
+                peak: peakOf(k8sUtil.cpu),
+              };
+        const memTile: KpiTile =
+          k8sUtil.memMode === "pct"
+            ? {
+                key: "memory",
+                label: "Memory",
+                value_display: memLatest > 0 ? `${memLatest.toFixed(0)}` : "—",
+                unit: memLatest > 0 ? "%" : undefined,
+                timeline: k8sUtil.mem,
+                peak: peakOf(k8sUtil.mem),
+                status: memLatest > 0 ? statusForMemUtil(memLatest) : undefined,
+              }
+            : (() => {
+                const formatted = memLatest > 0 ? formatBytes(memLatest) : null;
+                return {
+                  key: "memory",
+                  label: "Memory",
+                  value_display: formatted ? formatted.value : "—",
+                  unit: formatted ? formatted.unit : undefined,
+                  secondary: "limits not set",
+                  timeline: k8sUtil.mem,
+                  peak: peakOf(k8sUtil.mem),
+                };
+              })();
+        // Restart count is optional in the OTel kubeletstats receiver — when
+        // the cluster doesn't export `metrics.k8s.container.restart_count`,
+        // the timeline query 400s and we fall through to an empty array.
+        // Distinguish "metric absent" (show — / "not tracked") from a real
+        // zero ("0 / last 1h"). Without the distinction the tile lies.
+        const restartTracked = k8sRestartTl.length > 0;
+        const restartTile: KpiTile = restartTracked
+          ? {
+              key: "restarts",
+              label: "Restarts",
+              value_display: `${restartTotal}`,
+              secondary: `last ${lb}`,
+              timeline: k8sRestartTl,
+              peak: peakOf(k8sRestartTl),
+              spark: "bar",
+              status: statusForRestarts(restartTotal),
+            }
+          : {
+              key: "restarts",
+              label: "Restarts",
+              value_display: "—",
+              secondary: "not tracked",
+            };
         const k8sTiles: KpiTile[] = [
-          {
-            key: "cpu",
-            label: "CPU",
-            value_display: cpuLatest > 0 ? `${cpuLatest.toFixed(0)}` : "—",
-            unit: cpuLatest > 0 ? "%" : undefined,
-            timeline: k8sUtil.cpu,
-            peak: peakOf(k8sUtil.cpu),
-            status: cpuLatest > 0 ? statusForCpuUtil(cpuLatest) : undefined,
-          },
-          {
-            key: "memory",
-            label: "Memory",
-            value_display: memLatest > 0 ? `${memLatest.toFixed(0)}` : "—",
-            unit: memLatest > 0 ? "%" : undefined,
-            timeline: k8sUtil.mem,
-            peak: peakOf(k8sUtil.mem),
-            status: memLatest > 0 ? statusForMemUtil(memLatest) : undefined,
-          },
-          {
-            key: "restarts",
-            label: "Restarts",
-            value_display: `${restartTotal}`,
-            secondary: `last ${lb}`,
-            timeline: k8sRestartTl,
-            peak: peakOf(k8sRestartTl),
-            spark: "bar",
-            status: statusForRestarts(restartTotal),
-          },
+          cpuTile,
+          memTile,
+          restartTile,
           {
             key: "nodes",
             label: "Nodes",
@@ -1653,12 +2203,33 @@ export function registerApmHealthSummaryTool(server: McpServer) {
           "Configure anomaly detection jobs in Kibana ML to enrich this summary with anomaly signals.";
       }
 
+      // Fired alerts rollup. Always emitted (even if zero) so the view
+      // can render a stable "no alerts in window" state. Saves Claude
+      // a separate manage-alerts call for the common "what fired
+      // recently?" question.
+      result.alerts = alerts;
+
+      // SLO status stub. When SLOs aren't configured, the `note` field
+      // tells Claude (and the view) to surface the gap as a
+      // configuration nudge rather than a missing-data error.
+      result.slos = slos;
+
       if (!services.length) {
         result.warning =
           "No APM service telemetry found. This tool requires Elastic APM — if you're a logs- or metrics-only " +
           "customer, reach for 'ml-anomalies', 'observe', or 'manage-alerts' instead.";
       } else if (degraded.length) {
-        result.recommendation = `Investigate ${degraded[0].service}: ${degraded[0].reasons.join(", ")}. Use ml-anomalies for details.`;
+        // Single-tool recommendation. apm-service-dependencies is the
+        // highest-yield drilldown for a named-degraded service — topology
+        // is universally available and almost always points at the
+        // upstream/downstream causing the symptom. We avoid chaining a
+        // "then optionally drill into ml-anomalies" sentence: Claude
+        // reads that as a parallel tool call and fires both at once,
+        // cluttering the chat with an empty anomaly widget. Users can
+        // ask for ml-anomalies explicitly as a follow-up.
+        const svc = degraded[0].service;
+        const reasons = degraded[0].reasons.join(", ");
+        result.recommendation = `Investigate ${svc}: ${reasons}. Use apm-service-dependencies (entity "${svc}") to map the neighborhood and spot upstream/downstream root causes.`;
       }
 
       // Investigation-action buttons for the view footer.
@@ -1680,9 +2251,12 @@ export function registerApmHealthSummaryTool(server: McpServer) {
         });
       }
       if (degraded.length) {
+        const svc = degraded[0].service;
+        // Single-tool prompt — see the recommendation comment above for
+        // why we don't chain "then optionally call ml-anomalies".
         actions.push({
-          label: `Investigate ${degraded[0].service}`,
-          prompt: `Use ml-anomalies with entity "${degraded[0].service}" and lookback "1h" to find the root cause.`,
+          label: `Map dependencies for ${svc}`,
+          prompt: `Use apm-service-dependencies with service "${svc}" and lookback "1h" to map the neighborhood and spot upstream/downstream root causes.`,
         });
       }
       // Note: do NOT suggest k8s-blast-radius here. APM service telemetry proves the services

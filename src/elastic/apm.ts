@@ -76,6 +76,8 @@ export interface ResolvedNamespace {
   resolved?: string;
   note?: string;
   candidates?: string[];
+  /** See ResolvedCluster.ambiguous — same semantics for namespaces. */
+  ambiguous?: boolean;
 }
 
 // Fuzzy-resolve a user-supplied namespace string against the set actually
@@ -120,18 +122,32 @@ export async function resolveNamespace(
   if (names.includes(requested)) return { resolved: requested };
   const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
   const target = norm(requested);
-  const prefix = names.find((n) => norm(n).startsWith(target));
-  if (prefix) {
+  const prefixMatches = names.filter((n) => norm(n).startsWith(target));
+  if (prefixMatches.length === 1) {
     return {
-      resolved: prefix,
-      note: `Resolved namespace "${requested}" → "${prefix}" (prefix match).`,
+      resolved: prefixMatches[0],
+      note: `Resolved namespace "${requested}" → "${prefixMatches[0]}" (prefix match).`,
     };
   }
-  const substr = names.find((n) => norm(n).includes(target));
-  if (substr) {
+  if (prefixMatches.length > 1) {
     return {
-      resolved: substr,
-      note: `Resolved namespace "${requested}" → "${substr}" (fuzzy match).`,
+      ambiguous: true,
+      note: `"${requested}" matches multiple namespaces by prefix. Please specify which one.`,
+      candidates: prefixMatches.slice(0, RESOLUTION_CANDIDATE_CAP),
+    };
+  }
+  const substrMatches = names.filter((n) => norm(n).includes(target));
+  if (substrMatches.length === 1) {
+    return {
+      resolved: substrMatches[0],
+      note: `Resolved namespace "${requested}" → "${substrMatches[0]}" (fuzzy match).`,
+    };
+  }
+  if (substrMatches.length > 1) {
+    return {
+      ambiguous: true,
+      note: `"${requested}" matches multiple namespaces. Please specify which one.`,
+      candidates: substrMatches.slice(0, RESOLUTION_CANDIDATE_CAP),
     };
   }
   return {
@@ -159,6 +175,13 @@ export interface ResolvedCluster {
   resolved?: string;
   note?: string;
   candidates?: string[];
+  /**
+   * Set when the requested name fuzzy-matches more than one cluster
+   * (e.g. user said "oteldemo" but env has both "oteldemo-prod" and
+   * "oteldemo-staging"). Callers should NOT auto-pick — return early
+   * with the candidates list so the user/Claude can disambiguate.
+   */
+  ambiguous?: boolean;
 }
 
 export async function listAvailableClusters(
@@ -200,18 +223,36 @@ export async function resolveCluster(
   if (names.includes(requested)) return { resolved: requested };
   const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
   const target = norm(requested);
-  const prefix = names.find((n) => norm(n).startsWith(target));
-  if (prefix) {
+  // Collect ALL prefix matches first; if more than one, the user's
+  // intent is ambiguous — bubble candidates up so the caller can
+  // ask the user to disambiguate rather than silently picking the
+  // first match.
+  const prefixMatches = names.filter((n) => norm(n).startsWith(target));
+  if (prefixMatches.length === 1) {
     return {
-      resolved: prefix,
-      note: `Resolved cluster "${requested}" → "${prefix}" (prefix match).`,
+      resolved: prefixMatches[0],
+      note: `Resolved cluster "${requested}" → "${prefixMatches[0]}" (prefix match).`,
     };
   }
-  const substr = names.find((n) => norm(n).includes(target));
-  if (substr) {
+  if (prefixMatches.length > 1) {
     return {
-      resolved: substr,
-      note: `Resolved cluster "${requested}" → "${substr}" (fuzzy match).`,
+      ambiguous: true,
+      note: `"${requested}" matches multiple clusters by prefix. Please specify which one.`,
+      candidates: prefixMatches.slice(0, RESOLUTION_CANDIDATE_CAP),
+    };
+  }
+  const substrMatches = names.filter((n) => norm(n).includes(target));
+  if (substrMatches.length === 1) {
+    return {
+      resolved: substrMatches[0],
+      note: `Resolved cluster "${requested}" → "${substrMatches[0]}" (fuzzy match).`,
+    };
+  }
+  if (substrMatches.length > 1) {
+    return {
+      ambiguous: true,
+      note: `"${requested}" matches multiple clusters. Please specify which one.`,
+      candidates: substrMatches.slice(0, RESOLUTION_CANDIDATE_CAP),
     };
   }
   return {
@@ -221,6 +262,34 @@ export async function resolveCluster(
 }
 
 // Resolve a cluster name to the service.name set observed in that cluster.
+/**
+ * List namespaces observed running in a cluster (via kubeletstats). Used by
+ * the anomaly query as a fallback filter: ML jobs frequently use
+ * k8s.namespace.name as an influencer but NOT k8s.cluster.name, so a strict
+ * cluster filter excludes them. Falling back to "namespace IN (cluster's
+ * namespaces)" recovers those anomalies.
+ */
+export async function listNamespacesInCluster(
+  cluster: string,
+  lookback: string,
+  errors: string[]
+): Promise<string[]> {
+  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" AND k8s.namespace.name IS NOT NULL | STATS c = COUNT(*) BY k8s.namespace.name | SORT c DESC | LIMIT 50`;
+  const rows = await safeEsqlRows<{ "k8s.namespace.name"?: string }>(esql, errors, {
+    optional: true,
+  });
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const n = r["k8s.namespace.name"];
+    if (n && !seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  }
+  return out;
+}
+
 // Same rationale as `resolveServicesInNamespace` — we scope downstream APM
 // queries by service.name rather than by direct cluster filter, since the
 // pre-aggregated APM rollup may not carry cluster as a transform dimension.

@@ -14,7 +14,11 @@ import type { TimePoint } from "../types";
 
 const W = 560;
 const H = 160;
-const PAD_L = 40;
+// PAD_L bumped 40 → 64 so byte-formatted labels like "68.1 GB" /
+// "1.2 TB" don't get clipped at the left edge — the previous 40 was
+// only enough for raw numerics (e.g. "478096"). yFormat outputs vary
+// in width; 64 is the safe ceiling for current units (bytes, ms, pct).
+const PAD_L = 64;
 const PAD_R = 10;
 const PAD_T = 14;
 const PAD_B = 20;

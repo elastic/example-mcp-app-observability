@@ -21,6 +21,10 @@ import {
 import { esRequest } from "../elastic/client.js";
 import { resolveViewPath } from "./view-path.js";
 import { consumeWelcomeNotice } from "../setup/notice.js";
+// Unit inference shared with the view — see src/shared/infer-unit.ts. Don't
+// re-implement narrower heuristics here; that's how network.io / disk.io
+// regressed to "raw" in the past while the view already knew better.
+import { inferUnit as detectUnit } from "../shared/infer-unit.js";
 
 const RESOURCE_URI = "ui://anomaly-explainer/mcp-app.html";
 
@@ -141,13 +145,6 @@ async function fetchModelPlot(
   }
 }
 
-function detectUnit(jobId: string, fieldName?: string): "bytes" | "ms" | "pct" | "raw" {
-  const s = `${jobId} ${fieldName || ""}`.toLowerCase();
-  if (s.includes("memory") || s.includes("bytes") || s.includes("working_set")) return "bytes";
-  if (s.includes("latency") || s.includes("duration")) return "ms";
-  if (s.includes("cpu") || s.includes("utilization") || s.includes("pct")) return "pct";
-  return "raw";
-}
 
 async function enrichForView(
   result: AnomalyQueryResult,
@@ -306,8 +303,10 @@ export function registerMlAnomaliesTool(server: McpServer) {
           "Use when the user names a specific job or signal domain ('memory anomalies', 'latency anomalies')."
         ),
         min_score: z.number().optional().describe(
-          "Minimum anomaly score 0-100. Default 50. Guidance: 50-74 minor (worth noting), 75-89 major (investigate), " +
-          "90+ critical (likely real issue). Raise the floor to cut noise; lower it to cast a wider net."
+          "Minimum anomaly score 0-100. **Default 1** (any anomaly record). Severity bands: 50-74 minor, 75-89 major, " +
+          "90+ critical. Only raise the floor when the user explicitly asks for a specific severity (e.g. \"only " +
+          "critical\" → 90; \"only major+\" → 75). For a general \"what anomalies do we have\" prompt, leave as " +
+          "default — the LLM should not assume the user wants critical-only."
         ),
         entity: z.string().optional().describe(
           "Influencer value — typically a pod name, deployment, service name, or host. Matched against all influencer " +

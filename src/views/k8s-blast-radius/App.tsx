@@ -209,7 +209,11 @@ export function App() {
     const outerRadius = ring2Radius;
 
     const svgW = Math.max(600, outerRadius * 2 + 140);
-    const svgH = Math.max(520, outerRadius * 2 + 160);
+    // svgH floor reduced to 80% of the prior 520 baseline — the typical
+    // ring (≤15 items) was overprovisioned with vertical whitespace.
+    // Dynamic ceiling (outerRadius*2 + 160) is unchanged so dense rings
+    // still get the room they need; pan/zoom handles overflow.
+    const svgH = Math.max(416, outerRadius * 2 + 160);
     const cx = svgW / 2;
     const cy = svgH / 2 + 10;
 

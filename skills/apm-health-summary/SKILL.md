@@ -45,15 +45,28 @@ anomaly detection) or `observe` / `manage-alerts` (both universal).
 {
   "cluster": "prod-us-east",
   "namespace": "otel-demo",
-  "lookback": "15m"
+  "lookback": "1h"
 }
 ```
 
-- **`cluster`**: only when the user names a Kubernetes cluster — e.g. "how's prod-us-east doing", "check the staging cluster". Resolves fuzzily against `k8s.cluster.name` (OTel) / `orchestrator.cluster.name` (ECS); on miss the response includes `cluster_candidates`. Omit for single-cluster deployments or when the user wants a cross-cluster view.
-- **`namespace`**: only if the user scopes to a K8s namespace. Omit for cross-namespace or non-K8s.
-- **`lookback`**: default `1h` (good general-purpose window for "what's been going on"). Use `5m`–`15m`
-  when the user implies "right now / this moment". Use the user's time window literally when they
-  give one ("over the past 30 minutes" → `30m`; "in the last 6 hours" → `6h`).
+- **`cluster`**: pass whenever the user names a cluster (even partially) — "the oteldemo cluster", "how's prod-us-east doing", "check the staging env". Use the user's literal phrasing; the tool fuzzy-matches it. Omit only when the user clearly wants a cross-cluster view or there's a single cluster in the env.
+- **`namespace`**: pass when the user scopes to a K8s namespace. Same fuzzy-match logic as cluster.
+
+### Handling disambiguation responses
+
+When the user-supplied `cluster` or `namespace` matches multiple candidates (or none), the tool **does not** run the analysis. It returns a short response with `disambiguation_needed` set to `"cluster"`, `"namespace"`, or `"cluster_and_namespace"`, plus the candidate list:
+
+```json
+{
+  "disambiguation_needed": "cluster",
+  "cluster_requested": "oteldemo",
+  "cluster_candidates": ["oteldemo-prod", "oteldemo-staging"],
+  "cluster_match": "multiple"
+}
+```
+
+When you see this, **don't re-call the tool with a guessed cluster name.** Surface the candidates to the user verbatim, ask which one they meant, then re-call the tool with the exact name they pick. Same flow for `namespace_match: "none"` (the requested name doesn't exist in recent telemetry) — show candidates and ask.
+- **`lookback`**: **default `1h`** for any unqualified prompt — "what's the status of X", "how is X doing", "check on X", "give me a status report". Don't drop to 15m unless the user explicitly says something time-localized like "right now / this second / this minute". Use the user's time window literally when they give one ("over the past 30 minutes" → `30m`; "in the last 6 hours" → `6h`; "today" → `24h`). The 1h default is intentional — most cluster-state questions need a window wide enough to surface degradation patterns, and 15m hides slow-burning issues.
 - **`job_filter`**: optional ML-job prefix, e.g. `k8s-`. Rarely needed.
 - **`exclude_entities`**: optional wildcard to hide known noise, e.g. `chaos-*`.
 
@@ -82,12 +95,16 @@ Then walk the output top-down:
 2. **Degraded services**: name them with reasons (error rate, latency). These are the investigation targets.
 3. **Pods** (if present): top memory consumers — cross-reference with degraded services.
 4. **Anomalies** (if present): by-severity counts + top entities. Drives the ML follow-up.
-5. **Next-step buttons**: the view surfaces `investigation_actions` as clickable prompts (drill into the
+5. **Alerts** (`alerts` field, always emitted): `active_count` / `recovered_count` plus `top_rules` and `active_samples`. **Read these before reaching for `manage-alerts`** — the rollup already shows what fired and why. Only call `manage-alerts` when the user wants to create/modify rules (not just see what fired). Cross-reference active alerts with degraded services: a pod-memory alert on the same pod that's degrading is a strong signal.
+6. **SLOs** (`slos` field, always emitted): authoritative source for "is this cluster meeting its objectives?". `configured: false` means no SLOs exist — surface the `note` once and move on. `configured: true` gives you `violated_count`, `healthy_count`, and `top_violations[]` with each violated SLO's current `sli_value`, `target`, and `one_hour_burn_rate`. **Read burn rate hard:** `> 14.4×` means the rolling-window error budget burns out in <2h at the current rate (page-worthy); `6–14×` is degrading; `< 1×` is safe pace. Cross-reference `top_violations[].name` with `degraded_services[]` — services that appear in both are the priority drilldowns. Don't suggest creating SLOs if `configured: true`; do suggest it if `configured: false`.
+7. **Next-step buttons**: the view surfaces `investigation_actions` as clickable prompts (drill into the
    top pod, investigate the degraded service, check blast radius). Mention them in chat so the user knows.
 
 Based on what you see, pick the next tool:
-- Degraded service named → `apm-service-dependencies` with `service: <name>` to map the neighborhood.
-- High anomaly count → `ml-anomalies` with matching `lookback` to drill in.
+- **Degraded service named → `apm-service-dependencies` first.** This is the highest-yield drilldown for a known-degraded service in almost every cluster. The topology map points directly at upstream/downstream root causes (slow gRPC dependency, hung leaf node, fan-out timing). Don't reach for `ml-anomalies` first — most clusters don't have anomaly jobs configured for arbitrary services, and you'll waste a turn on an empty result.
+- **`ml-anomalies` is a complementary, not primary, drilldown.** Use it when (a) the user wants anomaly *detail* on a known-degraded service AND `data_coverage.ml_anomalies` is true, OR (b) the user is investigating a vague symptom and wants detection. If `data_coverage.ml_anomalies` is false, skip `ml-anomalies` entirely — there are no jobs to query.
+- **If you do call `ml-anomalies` and it returns empty / no-jobs for the entity**, fall back to `apm-service-dependencies` for that same service immediately. Don't leave the user at a dead end.
+- High anomaly count in the rollup → `ml-anomalies` with matching `lookback` (this is the "lots of anomalies, what's worst?" path — different from the named-degraded-service path above).
 - Pod resource pressure on a specific node → `k8s-blast-radius` with that node name.
 
 ## Key principles
@@ -99,3 +116,12 @@ Based on what you see, pick the next tool:
   degraded thresholds. Always scan the details.
 - **Graceful degradation is by design.** APM-only output is still useful — don't apologize for missing K8s
   or ML signals; just report what you have.
+
+## Investigation discipline
+
+Multi-tool investigations should be **sequential and narrated**, not parallel and silent. Each tool call renders its own widget in the chat — firing 4-5 in a row after a single "yes" creates a wall of "Waiting…" placeholders that look like the system is broken.
+
+- **One tool call per turn.** After a tool returns, narrate what you saw — the headline number, what it implies, what it rules in or out — *before* making the next call. The narration is the user's only signal that you read the result.
+- **Sequential offers, not OR offers.** Don't ask "Want me to check X *or* Y?" — that's ambiguous and the user's "yes" turns into both calls in parallel. Phrase offers as a chain: "Want me to start with X? If it's inconclusive I can follow up with Y." The user gets the same options without the parallel-execution trap.
+- **Commit to a plan before "yes."** If a triage will need 3-4 tool calls, lay out the plan first ("I'll check anomalies for flagd, then its pod resources, then trace errors from product-reviews — pause me if you've seen enough at any point") and execute one step at a time. Don't pre-fire all 3 calls because the user agreed to "the plan."
+- **Read the rollup before drilling.** apm-health-summary already includes services, pods, anomalies, fired alerts, and SLOs in one response. If the user asks "what fired recently?" — answer from `alerts.top_rules`, don't call manage-alerts. If they ask "what's anomalous?" — answer from `anomalies.top_entities`, don't call ml-anomalies for the same data.

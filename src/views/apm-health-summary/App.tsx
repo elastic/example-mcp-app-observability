@@ -187,6 +187,7 @@ interface HealthScope {
 
 interface HealthData {
   overall_health: string;
+  cluster?: string;
   namespace: string;
   lookback: string;
   data_coverage?: DataCoverage;
@@ -215,6 +216,35 @@ interface HealthData {
   pods_note?: string;
   anomalies?: AnomalyInfo;
   anomalies_note?: string;
+  alerts?: {
+    active_count: number;
+    recovered_count: number;
+    top_rules: { name: string; count: number; severity?: string }[];
+    active_samples: {
+      rule: string;
+      reason: string;
+      instance_id?: string;
+      severity?: string;
+      started_ms?: number;
+    }[];
+    error?: string;
+  };
+  slos?: {
+    configured: boolean;
+    violated_count?: number;
+    healthy_count?: number;
+    top_violations?: {
+      name: string;
+      sli_value: number;
+      target: number;
+      error_budget_remaining?: number;
+      one_hour_burn_rate?: number;
+      one_day_burn_rate?: number;
+      indicator_type?: string;
+      last_evaluated_ms?: number;
+    }[];
+    note?: string;
+  };
   recommendation?: string;
   warning?: string;
   exclude_filter?: string;
@@ -240,8 +270,12 @@ const SEV_COLORS: Record<string, string> = {
   critical: "#F07840",
   major: "#E69F00",
   minor: "#56B4E9",
+  // "warning" tier (record_score 1-49) — desaturated blue-grey to read
+  // as "noted but weak" relative to the established minor/major/critical
+  // ramp. Distinct from minor's brighter sky blue.
+  warning: "#7A8C9A",
 };
-const SEV_ORDER = ["critical", "major", "minor"];
+const SEV_ORDER = ["critical", "major", "minor", "warning"];
 const HEALTH_SEVERITY: Record<string, DSSeverity> = {
   critical: "critical",
   degraded: "major",
@@ -313,10 +347,11 @@ function Donut({ segments, size = 120 }: { segments: Array<{ label: string; valu
   );
 }
 
-function severityFromScore(score: number): "critical" | "major" | "minor" | "none" {
+function severityFromScore(score: number): "critical" | "major" | "minor" | "warning" | "none" {
   if (score >= 90) return "critical";
   if (score >= 75) return "major";
   if (score >= 50) return "minor";
+  if (score >= 1) return "warning";
   return "none";
 }
 
@@ -350,7 +385,7 @@ function AnomalyHeatmap({
     entity: string;
     ts: number;
     score: number;
-    severity: "critical" | "major" | "minor" | "none";
+    severity: "critical" | "major" | "minor" | "warning" | "none";
     x: number;
     y: number;
   } | null>(null);
@@ -364,7 +399,7 @@ function AnomalyHeatmap({
     entity: string,
     ts: number,
     score: number,
-    severity: "critical" | "major" | "minor" | "none",
+    severity: "critical" | "major" | "minor" | "warning" | "none",
   ) => {
     if (!wrapRef.current) return;
     const cell = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -491,6 +526,117 @@ function AnomalyHeatmap({
   );
 }
 
+/**
+ * Tab strip dividing the body into purposeful groups:
+ *   Health    — verdict tiles, degraded chips, recommendation
+ *   Signals   — anomalies, alerts, SLOs (badge: total active signals)
+ *   Resources — top pods by memory, service throughput
+ *
+ * Always-visible chrome (header, scope card, time range, investigation
+ * actions) sits OUTSIDE the tabs — switching doesn't hide them.
+ */
+function HealthTabs({
+  active,
+  onChange,
+  signalsBadge,
+}: {
+  active: "health" | "signals" | "resources";
+  onChange: (t: "health" | "signals" | "resources") => void;
+  signalsBadge: number;
+}) {
+  const tabs: { key: "health" | "signals" | "resources"; label: string; badge?: number }[] = [
+    { key: "health", label: "Health" },
+    { key: "signals", label: "Signals", badge: signalsBadge > 0 ? signalsBadge : undefined },
+    { key: "resources", label: "Resources" },
+  ];
+  return (
+    <div
+      role="tablist"
+      className="health-tabs"
+      style={{
+        display: "flex",
+        gap: 4,
+        borderBottom: `1px solid ${theme.border}`,
+        marginBottom: 18,
+        marginTop: 4,
+      }}
+    >
+      {tabs.map((t) => {
+        const selected = t.key === active;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onClick={() => onChange(t.key)}
+            style={{
+              position: "relative",
+              padding: "12px 22px",
+              background: selected ? theme.bgSecondary : "transparent",
+              borderTop: "1px solid transparent",
+              borderLeft: "1px solid transparent",
+              borderRight: "1px solid transparent",
+              borderBottom: "none",
+              borderTopLeftRadius: 6,
+              borderTopRightRadius: 6,
+              color: selected ? theme.text : theme.textMuted,
+              fontFamily: "var(--font-sans)",
+              fontSize: 14,
+              fontWeight: selected ? 700 : 600,
+              letterSpacing: 0.02,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              transition: "color 120ms ease, background 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (!selected) (e.currentTarget as HTMLButtonElement).style.color = theme.text;
+            }}
+            onMouseLeave={(e) => {
+              if (!selected) (e.currentTarget as HTMLButtonElement).style.color = theme.textMuted;
+            }}
+          >
+            <span>{t.label}</span>
+            {t.badge !== undefined && (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono)",
+                  fontWeight: 600,
+                  padding: "1px 7px",
+                  borderRadius: 999,
+                  background: `${theme.red}22`,
+                  border: `1px solid ${theme.red}66`,
+                  color: theme.red,
+                  lineHeight: 1.4,
+                }}
+              >
+                {t.badge}
+              </span>
+            )}
+            {selected && (
+              <span
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: -1,
+                  height: 3,
+                  background: theme.blue,
+                  borderTopLeftRadius: 2,
+                  borderTopRightRadius: 2,
+                }}
+              />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
   const sev = anomalies.by_severity || {};
   const segments = SEV_ORDER.filter((s) => (sev[s] ?? 0) > 0).map((s) => ({
@@ -574,6 +720,263 @@ function AnomalyBreakdown({ anomalies }: { anomalies: AnomalyInfo }) {
 
 function shortenPod(name: string): string {
   return name.replace(/-[a-z0-9]{8,10}-[a-z0-9]{5}$/, "").replace(/-[a-z0-9]{8,10}$/, "");
+}
+
+/**
+ * Alerts block — fired-alert rollup from Kibana's `.alerts-*` index.
+ * Collapsed by default: just counts + the worst-offender rule on one
+ * row. Expanded: full top-rules list + recent reason samples.
+ * Filter chips don't apply here — most alerts are k8s-infra rules
+ * keyed on pod / namespace, which don't map cleanly to apps.
+ */
+function AlertsBlock({
+  alerts,
+  detailed,
+}: {
+  alerts: NonNullable<HealthData["alerts"]>;
+  detailed: boolean;
+}) {
+  if (alerts.error) {
+    return <div style={{ fontSize: 11, color: theme.textMuted }}>Alerts unavailable: {alerts.error}</div>;
+  }
+  const total = alerts.active_count + alerts.recovered_count;
+  if (total === 0) {
+    return (
+      <div style={{ fontSize: 12, color: theme.greenSoft }}>
+        No alerts fired in this window.
+      </div>
+    );
+  }
+
+  const Header = (
+    <div style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap" }}>
+      <div>
+        <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: alerts.active_count > 0 ? theme.red : theme.textDim }}>
+          {alerts.active_count}
+        </span>
+        <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 6 }}>active</span>
+      </div>
+      <div>
+        <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: theme.textDim }}>
+          {alerts.recovered_count}
+        </span>
+        <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 6 }}>recovered</span>
+      </div>
+      {!detailed && alerts.top_rules[0] && (
+        <div className="mono" style={{ fontSize: 11, color: theme.textMuted, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          top: <span style={{ color: theme.text }}>{alerts.top_rules[0].name}</span>{" "}
+          ({alerts.top_rules[0].count}{alerts.top_rules.length > 1 ? `, +${alerts.top_rules.length - 1} more` : ""})
+        </div>
+      )}
+    </div>
+  );
+
+  if (!detailed) return Header;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {Header}
+      {alerts.top_rules.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: theme.textDim, textTransform: "uppercase", letterSpacing: 0.5 }}>
+            Top rules with active alerts
+          </div>
+          {alerts.top_rules.map((r) => (
+            <div
+              key={r.name}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "4px 8px",
+                background: theme.bgSecondary,
+                border: `1px solid ${theme.border}`,
+                borderRadius: 4,
+                fontSize: 12,
+                color: theme.text,
+              }}
+            >
+              <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {r.name}
+              </span>
+              <span className="mono" style={{ color: theme.textMuted, marginLeft: 12, flexShrink: 0 }}>
+                {r.count}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {alerts.active_samples.length > 0 && (
+        <details style={{ fontSize: 12 }}>
+          <summary style={{ cursor: "pointer", color: theme.textMuted, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 600 }}>
+            Recent alert reasons ({alerts.active_samples.length})
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {alerts.active_samples.map((s, i) => (
+              <div
+                key={i}
+                style={{
+                  padding: "6px 10px",
+                  background: theme.bgSecondary,
+                  border: `1px solid ${theme.border}`,
+                  borderLeft: `3px solid ${theme.red}`,
+                  borderRadius: 4,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}
+              >
+                <div className="mono" style={{ fontWeight: 600, color: theme.text, marginBottom: 2 }}>
+                  {s.rule}
+                  {s.instance_id && s.instance_id !== "*" && (
+                    <span style={{ color: theme.textDim, fontWeight: 400 }}> · {s.instance_id}</span>
+                  )}
+                </div>
+                {s.reason && <div style={{ color: theme.textMuted }}>{s.reason}</div>}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
+ * SLOs block — sourced from `.slo-observability.summary-v3*` (the
+ * authoritative SLO status, regardless of whether burn-rate alerting
+ * rules are attached). Headline shows violated/healthy split; below is
+ * the list of currently-violated SLOs with current SLI %, target, and
+ * 1h burn rate (so the agent + user can prioritize the worst).
+ */
+function SlosBlock({
+  slos,
+  detailed,
+  filterActive,
+  serviceToApp,
+  passesFilter,
+}: {
+  slos: NonNullable<HealthData["slos"]>;
+  detailed: boolean;
+  filterActive: boolean;
+  serviceToApp: Map<string, string>;
+  passesFilter: (app: string | undefined) => boolean;
+}) {
+  if (!slos.configured) {
+    return (
+      <div style={{ fontSize: 11, color: theme.textMuted, lineHeight: 1.5 }}>
+        {slos.note || "No SLOs configured."}
+      </div>
+    );
+  }
+
+  // Filter SLOs to the selected app(s) when an app filter is active.
+  // SLO names start with the service name ("frontend · availability"),
+  // so the prefix is enough to map back to an app via serviceToApp.
+  const allViolations = slos.top_violations ?? [];
+  const violations = filterActive
+    ? allViolations.filter((v) => {
+        const svc = v.name.split(" · ")[0]?.trim();
+        const app = svc ? serviceToApp.get(svc) : undefined;
+        return passesFilter(app);
+      })
+    : allViolations;
+
+  const violated = filterActive ? violations.length : (slos.violated_count ?? 0);
+  const healthy = slos.healthy_count ?? 0;
+
+  if (violated === 0 && healthy === 0) {
+    return (
+      <div style={{ fontSize: 12, color: theme.textMuted }}>
+        SLOs configured but no status data yet — transforms may still be initializing.
+      </div>
+    );
+  }
+  if (violated === 0) {
+    return (
+      <div style={{ fontSize: 12, color: theme.greenSoft }}>
+        {filterActive ? "No violations in selected applications." : `All ${healthy} SLOs within target.`}
+      </div>
+    );
+  }
+
+  const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`;
+  const worst = violations[0];
+
+  const Header = (
+    <div style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap" }}>
+      <div>
+        <span className="mono" style={{ fontSize: 22, fontWeight: 700, color: theme.red }}>
+          {violated}
+        </span>
+        <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 6 }}>violated</span>
+      </div>
+      {!filterActive && (
+        <div>
+          <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: theme.greenSoft }}>
+            {healthy}
+          </span>
+          <span style={{ fontSize: 11, color: theme.textMuted, marginLeft: 6 }}>healthy</span>
+        </div>
+      )}
+      {!detailed && worst && (
+        <div className="mono" style={{ fontSize: 11, color: theme.textMuted, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          worst:{" "}
+          <span style={{ color: theme.text }}>{worst.name}</span>{" "}
+          (<span style={{ color: theme.red }}>{fmtPct(worst.sli_value)}</span>{" "}
+          / target {fmtPct(worst.target)}
+          {worst.one_hour_burn_rate !== undefined && worst.one_hour_burn_rate > 0 ? `, ${worst.one_hour_burn_rate.toFixed(1)}× burn` : ""})
+        </div>
+      )}
+    </div>
+  );
+
+  if (!detailed) return Header;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {Header}
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {violations.map((v, i) => {
+          const burn = v.one_hour_burn_rate ?? 0;
+          // Burn rate > 14.4 = 30d budget burns in <2h ("fast burn" — page-worthy);
+          // 6-14 = degrading; <1 = safe pace. Color accordingly.
+          const burnColor = burn > 14.4 ? theme.red : burn > 6 ? theme.amber : theme.textDim;
+          return (
+            <div
+              key={i}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto auto",
+                alignItems: "center",
+                gap: 12,
+                padding: "6px 10px",
+                background: theme.bgSecondary,
+                border: `1px solid ${theme.border}`,
+                borderLeft: `3px solid ${theme.red}`,
+                borderRadius: 4,
+                fontSize: 11,
+                lineHeight: 1.4,
+              }}
+            >
+              <div className="mono" style={{ fontWeight: 600, color: theme.text, overflow: "hidden", textOverflow: "ellipsis" }}>
+                {v.name}
+              </div>
+              <div className="mono" style={{ color: theme.textMuted, whiteSpace: "nowrap" }}>
+                <span style={{ color: theme.red }}>{fmtPct(v.sli_value)}</span>
+                <span style={{ marginLeft: 4, color: theme.textDim }}>/ target {fmtPct(v.target)}</span>
+              </div>
+              {burn > 0 && (
+                <div className="mono" style={{ color: burnColor, whiteSpace: "nowrap" }}>
+                  {burn.toFixed(1)}× burn
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function podMemColor(mb: number, max: number): string {
@@ -912,7 +1315,10 @@ function KpiTileCard({
   return (
     <div
       style={{
-        flex: "1 1 200px",
+        // 160px basis lets 4 tiles fit on a typical inline iframe width
+        // (was 200, which forced the last tile to wrap). The flex-grow
+        // still distributes extra width when there's room.
+        flex: "1 1 160px",
         minWidth: 0,
         padding: "12px 14px",
         background: theme.bgSecondary,
@@ -1072,6 +1478,85 @@ function KpiRow({
         {group.tiles.map((t) => (
           <KpiTileCard key={t.key} tile={t} window={group.timeline_window} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Degraded service triage strip — sits under the APM tile row when at
+ * least one service is degraded. Each chip is a button that fires a
+ * drilldown prompt into ml-anomalies for that service. Reasons are
+ * rendered as a compact "p99 412ms · 1.5% errors" tail so the user
+ * sees WHY each service is flagged before clicking.
+ */
+function DegradedServicesStrip({
+  degraded,
+  lookback,
+  onSend,
+}: {
+  degraded: { service: string; reasons: string[] }[];
+  lookback: string;
+  onSend: (prompt: string) => void;
+}) {
+  return (
+    <div style={{ marginTop: -6, marginBottom: 14 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          color: theme.textDim,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          marginBottom: 6,
+          paddingLeft: 2,
+        }}
+      >
+        Degraded — click to investigate
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {degraded.map((d) => {
+          const reasonText = d.reasons.length ? d.reasons.join(" · ") : "elevated signals";
+          // Triage routing: single-tool prompt. apm-service-dependencies
+          // is the highest-yield drilldown for a named-degraded service —
+          // topology is universally available and almost always points
+          // at the upstream/downstream causing the symptom.
+          //
+          // We deliberately do NOT chain a "then optionally drill into
+          // ml-anomalies…" sentence: Claude treats that as a parallel
+          // tool call and fires both at once, and the second tool
+          // renders an empty "Waiting for anomaly data…" widget that
+          // clutters the chat. Users can always ask for ml-anomalies
+          // explicitly as a follow-up.
+          const prompt =
+            `Investigate ${d.service}: ${reasonText}. ` +
+            `Use apm-service-dependencies (service "${d.service}", lookback "${lookback}") to map the neighborhood and spot upstream/downstream root causes.`;
+          return (
+            <button
+              key={d.service}
+              type="button"
+              onClick={() => onSend(prompt)}
+              title={`Drill into ${d.service} — ${reasonText}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "5px 10px",
+                background: `${theme.red}10`,
+                border: `1px solid ${theme.red}55`,
+                borderRadius: 999,
+                color: theme.text,
+                cursor: "pointer",
+                fontSize: 11,
+                lineHeight: 1.2,
+              }}
+            >
+              <span className="mono" style={{ fontWeight: 600 }}>{d.service}</span>
+              <span style={{ color: theme.textMuted }}>{reasonText}</span>
+              <span style={{ color: theme.textDim, fontSize: 10 }}>→</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -1281,8 +1766,22 @@ export function App() {
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
   // Default to detail (sparklines / bars) — that's the headline view. Toggle
   // collapses to a CondensedChips summary strip for compact scanning.
+  // Both sections default to the compact "summary" (chips) view — the
+  // detailed sparkline-per-row view is opt-in via the toggle. Keeps the
+  // health summary scannable; detail is one click away.
+  // Resources tab only contains pods + services — they get their own
+  // tab now, so the previous "collapse to keep the page short" rationale
+  // is moot. Default to detailed (sparkline) view there.
   const [memDetailed, setMemDetailed] = useState(true);
   const [svcDetailed, setSvcDetailed] = useState(true);
+  const [alertsDetailed, setAlertsDetailed] = useState(false);
+  const [slosDetailed, setSlosDetailed] = useState(false);
+  // Tabbed body: Health (tile rows + degraded + recommendation),
+  // Signals (anomalies + alerts + SLOs), Resources (top pods + service
+  // throughput). Splits the long single-column scroll into purposeful
+  // groups; counts badge on Signals so users can see fired-things even
+  // when on a different tab.
+  const [activeTab, setActiveTab] = useState<"health" | "signals" | "resources">("health");
   // App filter state — null means "all apps selected" (no filter active).
   // Reset whenever a new tool result lands so a different namespace doesn't
   // inherit the previous selection.
@@ -1457,6 +1956,7 @@ export function App() {
         {severity && data && (
           <SeverityChip severity={severity} label={data.overall_health} />
         )}
+        {data?.cluster && <QueryPill>cluster: {data.cluster}</QueryPill>}
         {data?.namespace && <QueryPill>namespace: {data.namespace}</QueryPill>}
         {data?.lookback && <QueryPill>lookback: {data.lookback}</QueryPill>}
         {data?.exclude_filter && <QueryPill>excluded: {data.exclude_filter}</QueryPill>}
@@ -1555,6 +2055,17 @@ export function App() {
           <RerunPresets context={data.rerun_context} onSend={onSend} />
         )}
 
+      <HealthTabs
+        active={activeTab}
+        onChange={setActiveTab}
+        signalsBadge={
+          (data.anomalies?.total ?? 0) +
+          (data.alerts?.active_count ?? 0) +
+          (data.slos?.violated_count ?? 0)
+        }
+      />
+
+      {activeTab === "health" && <>
       {/* KPI tile rows — one per backend. Each tile = headline value + optional
        * sparkline (or bars for discrete-rate metrics) + status chip when a
        * universal threshold exists. The legacy four-StatCard row was retired
@@ -1566,6 +2077,13 @@ export function App() {
       {apmTiles ? (
         <KpiRow label="APM" group={apmTiles} filterActive={filterActive} />
       ) : null}
+      {filteredDegraded.length > 0 && (
+        <DegradedServicesStrip
+          degraded={filteredDegraded}
+          lookback={data.lookback}
+          onSend={onSend}
+        />
+      )}
       {k8sTiles ? (
         <KpiRow label="Kubernetes" group={k8sTiles} filterActive={filterActive} />
       ) : null}
@@ -1626,6 +2144,34 @@ export function App() {
           </div>
         </SectionCard>
       )}
+      </>}
+
+      {activeTab === "signals" && <>
+      {/* Order: SLOs → Anomalies → Alerts. SLOs lead because they're the
+       *  authoritative "are we meeting our objectives?" signal — when
+       *  violated, that's THE thing to triage. Anomalies are the "is
+       *  something unusual?" follow-up. Alerts are the "what fired?"
+       *  log of point-in-time events, useful but lowest-priority for
+       *  triage compared to objective-driven SLO breach. */}
+      {data.slos && (
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label="Service-level objectives"
+              detailed={slosDetailed}
+              onToggle={() => setSlosDetailed((v) => !v)}
+            />
+          }
+        >
+          <SlosBlock
+            slos={data.slos}
+            detailed={slosDetailed}
+            filterActive={filterActive}
+            serviceToApp={serviceToApp}
+            passesFilter={passesFilter}
+          />
+        </SectionCard>
+      )}
 
       {/* Anomaly breakdown */}
       {anomalies ? (
@@ -1638,6 +2184,24 @@ export function App() {
         </SectionCard>
       ) : null}
 
+      {/* Fired alerts — collapsed-summary by default, expand for full
+       *  rule list + recent reason text. */}
+      {data.alerts && (
+        <SectionCard
+          title={
+            <SectionTitleWithToggle
+              label={`Alerts · last ${data.lookback}`}
+              detailed={alertsDetailed}
+              onToggle={() => setAlertsDetailed((v) => !v)}
+            />
+          }
+        >
+          <AlertsBlock alerts={data.alerts} detailed={alertsDetailed} />
+        </SectionCard>
+      )}
+      </>}
+
+      {activeTab === "resources" && <>
       {/* Top pods by memory — sparkline-per-row detail by default, with a
        * "Show summary" toggle that swaps in the compact CondensedChips
        * view. Falls back to HBarRow when the payload has no timelines. */}
@@ -1755,6 +2319,7 @@ export function App() {
           )}
         </SectionCard>
       )}
+      </>}
 
         <InvestigationActions actions={data.investigation_actions} onSend={onSend} />
       </div>

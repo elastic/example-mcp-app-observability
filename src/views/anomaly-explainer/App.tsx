@@ -105,12 +105,26 @@ export function App() {
 
   const mode = useMemo(() => pickMode(data), [data]);
 
-  if (!data || !mode) {
+  if (!data) {
     return (
       <Frame
         isFullscreen={isFullscreen}
         toggleFullscreen={toggleFullscreen}
         body={<Waiting />}
+        {...noticeProps}
+      />
+    );
+  }
+  if (!mode) {
+    // Result arrived but there are 0 anomalies. Distinct from `!data`
+    // (no response yet). Render the actual empty state — including the
+    // filter context — so users can see this is a definitive answer,
+    // not the iframe still loading.
+    return (
+      <Frame
+        isFullscreen={isFullscreen}
+        toggleFullscreen={toggleFullscreen}
+        body={<EmptyResult data={data} />}
         {...noticeProps}
       />
     );
@@ -507,6 +521,36 @@ function Waiting() {
     <div className="anom-empty">
       <div className="anom-empty-title">Waiting for anomaly data…</div>
       <div className="anom-empty-sub">Call ml-anomalies or observe to populate this view.</div>
+    </div>
+  );
+}
+
+/**
+ * Empty-result body — rendered when the tool returned a successful
+ * response but `anomalies.length === 0`. Surfaces the filter context
+ * the query was run with (entity, lookback, min_score, job) so it's
+ * obvious this is a definitive "nothing matched" rather than a
+ * still-loading widget.
+ */
+function EmptyResult({ data }: { data: AnomalyData }) {
+  const f = data.filters ?? {};
+  const filterBits: string[] = [];
+  if (f.entity) filterBits.push(`entity “${f.entity}”`);
+  if (f.jobId) filterBits.push(`job “${f.jobId}”`);
+  if (f.lookback) filterBits.push(`last ${f.lookback}`);
+  if (f.minScore !== undefined && f.minScore > 1) filterBits.push(`min score ${f.minScore}`);
+  const subtitle = filterBits.length
+    ? `Searched ${filterBits.join(" · ")}.`
+    : "Searched the default scope.";
+  return (
+    <div className="anom-empty">
+      <div className="anom-empty-title">No anomalies in this window</div>
+      <div className="anom-empty-sub">{subtitle}</div>
+      {data.hint && (
+        <div className="anom-empty-sub" style={{ marginTop: 6, opacity: 0.85 }}>
+          Try widening the window or lowering the score floor if you expected results.
+        </div>
+      )}
     </div>
   );
 }
