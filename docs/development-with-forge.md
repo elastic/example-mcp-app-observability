@@ -4,7 +4,7 @@ Forge is the simulation and evaluation platform we use to validate, enhance, and
 
 This guide assumes you'll use a Claude Code agent for setup and daily workflows. The patterns below explain *what* the agent should do; the [`mcp-app-dev-setup`](#claude-code-skill) skill encodes *how*.
 
-> **Audience.** This guide assumes Node.js / TypeScript fluency, comfort with K8s and OTel concepts, and ability to read Python (Forge is Python; you'll mostly run it, occasionally extend it). If you're new to Forge itself, that's expected — Forge has its own [VISION.md](https://github.com/elastic/forge/blob/main/VISION.md) and quickstart.
+> **Audience.** This guide assumes Node.js / TypeScript fluency, comfort with K8s and OTel concepts, and ability to read Python (Forge is Python; you'll mostly run it, occasionally extend it). If you're new to Forge itself, that's expected — Forge has its own [VISION.md](https://github.com/elastic/forge/blob/main/VISION.md). For a 5-minute "what is this?" walkthrough that doesn't require any cluster setup, start with Forge's [QUICKSTART.md](https://github.com/elastic/forge/blob/main/QUICKSTART.md) and look at the Showcase dashboard — you'll have model-tier benchmark data and per-investigation traces visible without writing any code.
 
 ---
 
