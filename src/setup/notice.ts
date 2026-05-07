@@ -7,12 +7,18 @@
  * Setup notice: structured field tools attach to their responses so views
  * can render a dismissible banner pointing users at skill installation.
  *
- * Two variants share the shape:
- *   - "welcome"    fires on the first few responses after server start when
- *                  no dismissal marker file exists; nudges the user to
- *                  install skills proactively.
- *   - "skill-gap"  fires when a query has tripped a pattern the skill
- *                  specifically warns against (see skill-check.ts).
+ * Three variants share the shape:
+ *   - "welcome"     fires on the first few responses after server start when
+ *                   no dismissal marker file exists; nudges the user to
+ *                   install skills proactively.
+ *   - "skill-gap"   fires when a query has tripped a pattern the skill
+ *                   specifically warns against — i.e., the user is missing
+ *                   guidance the latest skill would have provided. Pushes the
+ *                   install link.
+ *   - "schema-hint" fires when a query failed in a way that's *expected* on a
+ *                   particular deployment shape — the skill is current, but
+ *                   the LLM needs a nudge toward the right fallback. No
+ *                   install link; informational tone (see skill-check.ts).
  *
  * Welcome dismissal is persisted in a marker file in the user's home dir so
  * subsequent server starts don't keep re-nagging. Skill-gap notices are
@@ -26,13 +32,13 @@ import path from "path";
 import os from "os";
 
 export interface SetupNotice {
-  type: "welcome" | "skill-gap";
+  type: "welcome" | "skill-gap" | "schema-hint";
   title: string;
   message: string;
   install_url?: string;
-  /** For "skill-gap": which skill teaches the relevant guidance. */
+  /** For "skill-gap" / "schema-hint": which skill teaches the relevant guidance. */
   skill?: string;
-  /** For "skill-gap": short reason — used as a subtitle. */
+  /** For "skill-gap" / "schema-hint": short reason — used as a subtitle. */
   reason?: string;
 }
 

@@ -1399,13 +1399,16 @@ export function SearchInput({
 
 /**
  * Setup notice mirroring the tool-side type. Surfaced at the top of any view
- * whose latest tool result includes a `_setup_notice` field. Two variants:
+ * whose latest tool result includes a `_setup_notice` field. Three variants:
  *   - "welcome": proactive nudge to install skills, dismissible.
  *   - "skill-gap": fired when a query failed in a way the skill specifically
  *                  warns against. Not dismissible — fires fresh each time.
+ *   - "schema-hint": fired when a query failed in an *expected* way for the
+ *                  deployment shape and the LLM should retry against a
+ *                  different index. Info tone, no install link.
  */
 export interface SetupNotice {
-  type: "welcome" | "skill-gap";
+  type: "welcome" | "skill-gap" | "schema-hint";
   title: string;
   message: string;
   install_url?: string;
@@ -1442,9 +1445,10 @@ export function SetupNoticeBanner({
   onOpenLink?: (url: string) => void;
 }) {
   const isWelcome = notice.type === "welcome";
-  const tone = isWelcome ? "info" : "warn";
+  const isSchemaHint = notice.type === "schema-hint";
+  const tone = isWelcome || isSchemaHint ? "info" : "warn";
   return (
-    <div className={`ds-setup-notice ds-setup-notice-${tone}`} role={isWelcome ? "status" : "alert"}>
+    <div className={`ds-setup-notice ds-setup-notice-${tone}`} role={isWelcome || isSchemaHint ? "status" : "alert"}>
       <div className="ds-setup-notice-body">
         <div className="ds-setup-notice-title">{notice.title}</div>
         {notice.reason && (
