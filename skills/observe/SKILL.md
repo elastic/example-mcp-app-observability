@@ -346,6 +346,14 @@ In EDOT-ingested clusters, `traces-*.otel-*` carries **both** OTel-native fields
 
 > **Error-field warning.** On `traces-*.otel-*` the exception attributes use the `exception.*` namespace, **not** `error.*`. Querying `error.message` / `error.type` against an OTel-native index returns `verification_exception: Unknown column [error.message], did you mean any of [exception.message, message]?`. The `error.*` family belongs only to classic-APM `traces-apm*` documents. When you see the user ask "show me the error messages from X", reach for `exception.message` first.
 
+> **Where exception data actually lives — three deployment shapes.** OTel records exceptions as Span Events; *where they end up indexed* depends on the exporter pipeline:
+>
+> 1. **Flattened onto the trace doc** — the parent span carries `exception.message`, `exception.type`, `exception.stacktrace`. Common with EDOT + APM Server. Query `traces-*.otel-*`.
+> 2. **Exported as separate log records** — `logs-*.otel-*` carries `exception.message` / `exception.type`, correlated to the trace via `trace.id` and `span.id`. This is the *default* OpenTelemetry Collector pipeline. The trace doc itself only carries `status.message` / `status.code` (`Error` on failed spans).
+> 3. **Classic APM `error` events** — `traces-apm*` with `processor.event == "error"` carries `error.message` and `error.exception.type`. Only present when classic-APM agents are in use.
+>
+> The trace doc always carries `event.outcome == "failure"` and `status.message` regardless. If your `exception.message` query against `traces-*.otel-*` returns `Unknown column [exception.message]`, the deployment is shape 2 — switch to `logs-*.otel-*` with `WHERE exception.message IS NOT NULL` and join back to the trace via `trace.id` if needed. Don't assume the original index has the field just because the user said "from traces".
+
 Service p95 latency (OTel-native), last 15m — result in ms:
 
 ```
@@ -366,7 +374,9 @@ FROM traces-*.otel-*
 | KEEP error_rate_pct, errors, total
 ```
 
-Recent exception messages from a service (OTel-native) — `exception.message` lives on the same trace docs as the failed spans:
+Recent exception messages — try the trace index first (flattened-event pipelines), then fall back to logs (default OTel Collector pipeline):
+
+**1) Trace doc carries the exception (EDOT-flattened pipelines):**
 
 ```
 FROM traces-*.otel-*
@@ -378,7 +388,18 @@ FROM traces-*.otel-*
 | LIMIT 50
 ```
 
-Classic-APM equivalent — only when the OTel path returns empty:
+**2) Exception lives in logs (default OTel pipeline) — use this when (1) returns `Unknown column [exception.message]` or empty:**
+
+```
+FROM logs-*.otel-*
+| WHERE service.name == "checkout" AND @timestamp > NOW() - 15 minutes
+  AND exception.message IS NOT NULL
+| KEEP @timestamp, exception.type, exception.message, trace.id, span.id
+| SORT @timestamp DESC
+| LIMIT 50
+```
+
+**3) Classic-APM equivalent — only when both OTel paths return empty:**
 
 ```
 FROM traces-apm*
@@ -388,6 +409,8 @@ FROM traces-apm*
 | SORT @timestamp DESC
 | LIMIT 50
 ```
+
+If you only need a coarse signal (no message text), every shape carries `event.outcome == "failure"` on the trace doc and `status.message` / `status.code == "Error"` on OTel traces — count or sample those when neither `exception.*` nor `error.*` resolves.
 
 If `traces-*.otel-*` returns empty, the deployment is classic-APM-only — fall back to `traces-apm*` with `processor.event == "transaction"` and `transaction.duration.us`.
 
@@ -435,9 +458,13 @@ FROM logs-*
 
 ## After the tool returns
 
-Ignore `_setup_notice` if present in the response — it's view-side chrome (welcome banner or
-skill-gap hint when a query failed in a way the skill would have prevented). The UI surfaces it
-as a banner; don't echo or summarize it in chat.
+`_setup_notice` is view-side chrome — don't echo or summarize it in chat. There are three
+variants:
+- `welcome` and `skill-gap` are user-facing nudges to install the skill packs. Ignore them.
+- `schema-hint` is an actionable retry instruction the server emits when your query failed in a
+  way the latest skill *expects* on this deployment shape (e.g. exceptions live in
+  `logs-*.otel-*` instead of on the trace doc). Read its `message` and adapt your next call
+  accordingly — don't surface the banner text in chat, but do follow its guidance.
 
 The observe MCP App view renders inline in one of several modes, picked automatically from the result:
 

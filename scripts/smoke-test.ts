@@ -310,17 +310,27 @@ async function main() {
     );
   }
 
-  // -- Issue #8 fix (observe skill): exception.* on OTel traces --
-  // Confirms the field family the new skill guidance points at exists in
-  // real OTel data; an EMPTY result here means no recent failures, not
-  // a broken assumption.
+  // -- Issue #8 fix (observe skill): exception.* fallback chain --
+  // Two deployment shapes ship OTel exceptions. EDOT/APM-Server flattens the
+  // span event onto the trace doc (path A); the default OTel Collector pipeline
+  // exports it as a separate log record (path B). Skill guidance points the
+  // LLM through both. EMPTY on either = no recent failures, not a broken
+  // assumption. FAIL on BOTH would mean the skill chain is broken.
   await trySql(
-    "exception.* on OTel traces (issue #8 skill guidance)",
+    "exception.* on OTel traces — flattened pipeline (issue #8)",
     `FROM traces-*.otel-*
 | WHERE @timestamp > NOW() - 1h
   AND event.outcome == "failure"
   AND exception.message IS NOT NULL
 | KEEP @timestamp, exception.type, exception.message
+| LIMIT 5`
+  );
+  await trySql(
+    "exception.* on OTel logs — collector pipeline fallback (issue #8)",
+    `FROM logs-*.otel-*
+| WHERE @timestamp > NOW() - 1h
+  AND exception.message IS NOT NULL
+| KEEP @timestamp, exception.type, exception.message, trace.id
 | LIMIT 5`
   );
 

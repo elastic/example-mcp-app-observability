@@ -37,6 +37,15 @@ interface Pattern {
   error: RegExp;
   /** User-facing explanation. Should describe what to do. */
   message: string;
+  /**
+   * Notice variant. Defaults to "skill-gap" (the user is missing skill
+   * guidance — push install). Use "schema-hint" when the failure is the
+   * expected first step of a fallback chain in the latest skill — push the
+   * retry target instead of accusing the user of a missing skill.
+   */
+  variant?: "skill-gap" | "schema-hint";
+  /** Optional override title — defaults to "Skill missing: <skill>". */
+  title?: string;
 }
 
 const PATTERNS: Pattern[] = [
@@ -65,6 +74,20 @@ const PATTERNS: Pattern[] = [
   },
   {
     skill: "observe",
+    variant: "schema-hint",
+    title: "Schema hint: exceptions ship via logs on this deployment",
+    reason: "OTel exception fields not present on traces-*.otel-*",
+    query: /traces-\*\.otel-\*/i,
+    error: /Unknown column \[exception\.(message|type|stacktrace)\]/i,
+    message:
+      "On this deployment, OTel exception events are exported as separate log " +
+      "records, not flattened onto the trace doc. Retry the same query against " +
+      "`logs-*.otel-*` (the `exception.message` / `exception.type` fields live " +
+      "there, with `trace.id` and `span.id` for correlation back to the trace). " +
+      "The trace doc itself only carries `status.message` / `status.code`.",
+  },
+  {
+    skill: "observe",
     reason: "Wrong span-kind casing",
     query: /kind\s*==\s*"(SERVER|CLIENT|INTERNAL|PRODUCER|CONSUMER)"/,
     error: /(Unknown column|cannot resolve)|/, // generic — pattern is mostly query-driven
@@ -89,11 +112,13 @@ export function detectSkillGap(
   if (!esql || !errorMessage) return null;
   for (const p of PATTERNS) {
     if (p.query.test(esql) && p.error.test(errorMessage)) {
+      const variant = p.variant ?? "skill-gap";
       return {
-        type: "skill-gap",
-        title: `Skill missing: ${p.skill}`,
+        type: variant,
+        title: p.title ?? `Skill missing: ${p.skill}`,
         message: p.message,
-        install_url: INSTALL_URL,
+        // schema-hint failures aren't "you need to install something" — drop the install link.
+        ...(variant === "skill-gap" ? { install_url: INSTALL_URL } : {}),
         skill: p.skill,
         reason: p.reason,
       };
