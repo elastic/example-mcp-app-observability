@@ -1,5 +1,6 @@
 # Elastic Observability MCP App
 
+[![Latest Release](https://img.shields.io/github/v/release/elastic/example-mcp-app-observability?label=Download%20.mcpb&color=00bfb3)](https://github.com/elastic/example-mcp-app-observability/releases/latest)
 ![GitHub Downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Felastic%2Fexample-mcp-app-observability%2Fmain%2Fclone-counts.json&query=%24.downloads&label=downloads&color=brightgreen&logo=github)
 ![GitHub Clones](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Felastic%2Fexample-mcp-app-observability%2Fmain%2Fclone-counts.json&query=%24.total&label=clones&color=blue&logo=github)
 
