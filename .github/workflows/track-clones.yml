@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch and merge clone data
+      - name: Fetch and merge clone and download data
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -31,23 +31,27 @@ jobs:
             }) | map(select(.date as $d | $known | index($d) == null))
           ')
 
-          NEW_COUNT=$(echo "$NEW_DAYS" | jq 'length')
-          if [ "$NEW_COUNT" -eq 0 ]; then
-            echo "No new days to add."
-            exit 0
-          fi
+          NEW_CLONE_COUNT=$(echo "$NEW_DAYS" | jq 'length')
+          NEW_CLONE_TOTAL=$(echo "$NEW_DAYS" | jq 'if length > 0 then [.[].count] | add else 0 end')
 
-          NEW_TOTAL=$(echo "$NEW_DAYS" | jq '[.[].count] | add')
+          DOWNLOADS=$(gh api /repos/${{ github.repository }}/releases | jq '
+            [.[] | .assets[] | select(
+              .name == "example-mcp-app-observability.mcpb" or
+              .name == "example-mcp-app-observability.tgz"
+            ) | .download_count] | add // 0
+          ')
 
           echo "$EXISTING" | jq \
             --argjson new_days "$NEW_DAYS" \
-            --argjson new_total "$NEW_TOTAL" '
-            .total += $new_total |
+            --argjson new_clone_total "$NEW_CLONE_TOTAL" \
+            --argjson downloads "$DOWNLOADS" '
+            .total += $new_clone_total |
+            .downloads = $downloads |
             .days += $new_days |
             .days |= sort_by(.date)
           ' > clone-counts.json
 
-          echo "Added $NEW_COUNT new day(s), +$NEW_TOTAL clones"
+          echo "Added $NEW_CLONE_COUNT new clone day(s), +$NEW_CLONE_TOTAL clones, $DOWNLOADS total downloads"
 
       - name: Commit if changed
         run: |

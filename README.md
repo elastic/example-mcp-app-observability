@@ -1,5 +1,6 @@
 # Elastic Observability MCP App
 
+![GitHub Downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Felastic%2Fexample-mcp-app-observability%2Fmain%2Fclone-counts.json&query=%24.downloads&label=downloads&color=brightgreen&logo=github)
 ![GitHub Clones](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Felastic%2Fexample-mcp-app-observability%2Fmain%2Fclone-counts.json&query=%24.total&label=clones&color=blue&logo=github)
 
 An [MCP App](https://modelcontextprotocol.io/extensions/apps/overview) that brings interactive SRE workflows for Elastic Observability directly into Claude, VS Code, and other MCP-compatible AI hosts. Built on the [Model Context Protocol](https://modelcontextprotocol.io/) with interactive UI extensions that render inline in the conversation.
