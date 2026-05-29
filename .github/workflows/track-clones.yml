@@ -1,0 +1,60 @@
+name: Track Clone Count
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and merge clone data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          API_DATA=$(gh api /repos/${{ github.repository }}/traffic/clones)
+          EXISTING=$(cat clone-counts.json)
+
+          EXISTING_DATES=$(echo "$EXISTING" | jq '[.days[].date]')
+
+          NEW_DAYS=$(echo "$API_DATA" | jq --argjson known "$EXISTING_DATES" '
+            .clones | map({
+              date: (.timestamp | split("T")[0]),
+              count: .count,
+              uniques: .uniques
+            }) | map(select(.date as $d | $known | index($d) == null))
+          ')
+
+          NEW_COUNT=$(echo "$NEW_DAYS" | jq 'length')
+          if [ "$NEW_COUNT" -eq 0 ]; then
+            echo "No new days to add."
+            exit 0
+          fi
+
+          NEW_TOTAL=$(echo "$NEW_DAYS" | jq '[.[].count] | add')
+
+          echo "$EXISTING" | jq \
+            --argjson new_days "$NEW_DAYS" \
+            --argjson new_total "$NEW_TOTAL" '
+            .total += $new_total |
+            .days += $new_days |
+            .days |= sort_by(.date)
+          ' > clone-counts.json
+
+          echo "Added $NEW_COUNT new day(s), +$NEW_TOTAL clones"
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet clone-counts.json || (
+            git add clone-counts.json &&
+            git commit -m "chore: update clone counts [skip ci]" &&
+            git push
+          )
