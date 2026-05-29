@@ -7,10 +7,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
+import { registerTrackedAppTool } from "./tracked-app-tool.js";
+import { noopAnalyticsClient, type AnalyticsClient } from "../elastic/analytics/index.js";
 import { z } from "zod";
 import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
@@ -59,8 +60,9 @@ interface ApmClassicRow {
   "kubernetes.deployment.name"?: string | null;
 }
 
-export function registerK8sBlastRadiusTool(server: McpServer) {
-  registerAppTool(
+export function registerK8sBlastRadiusTool(server: McpServer, analytics: AnalyticsClient = noopAnalyticsClient) {
+  registerTrackedAppTool(
+    analytics,
     server,
     "k8s-blast-radius",
     {

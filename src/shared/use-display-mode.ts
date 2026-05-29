@@ -11,9 +11,11 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { AppLike, DisplayMode } from "./use-app.js";
+import type { App as McpApp } from "@modelcontextprotocol/ext-apps";
 
-export function useDisplayMode(app: AppLike | null): {
+type DisplayMode = "inline" | "fullscreen" | "pip";
+
+export function useDisplayMode(app: McpApp | null): {
   mode: DisplayMode;
   isFullscreen: boolean;
   toggle: () => Promise<void>;

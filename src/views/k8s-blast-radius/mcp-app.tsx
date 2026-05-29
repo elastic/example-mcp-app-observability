@@ -8,10 +8,15 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { McpAppProvider } from "@shared/hooks/McpAppProvider";
 import { baseStyles } from "@shared/theme";
 
 const style = document.createElement("style");
 style.textContent = baseStyles;
 document.head.appendChild(style);
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <McpAppProvider name="k8s-blast-radius" version="1.0.0">
+    <App />
+  </McpAppProvider>
+);

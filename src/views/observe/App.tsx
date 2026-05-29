@@ -18,8 +18,9 @@
  * Quiet/timeout states render a compact waiting card.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
-import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useMcpApp } from "@shared/hooks/useMcpApp";
+import { useAnalytics } from "@shared/hooks/useAnalytics";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme, theme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
@@ -845,7 +846,8 @@ export function App() {
   const [data, setData] = useState<ObserveResult | null>(null);
   const [accumulated, setAccumulated] = useState<TrendPoint[]>([]);
   const [lastKey, setLastKey] = useState<string | undefined>();
-  const [app, setApp] = useState<AppLike | null>(null);
+  const { app, getApp, subscribeToToolResult } = useMcpApp();
+  const { trackEvent } = useAnalytics();
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   useEffect(() => {
@@ -856,8 +858,15 @@ export function App() {
     return () => style.remove();
   }, []);
 
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (trackedRef.current) return;
+    trackedRef.current = true;
+    trackEvent({ eventType: "view_rendered", viewId: "observe" });
+  }, [trackEvent]);
+
   const handleToolResult = useCallback(
-    (params: ToolResultParams) => {
+    (params: Parameters<typeof parseToolResult>[0]) => {
       const d = parseToolResult<ObserveResult>(params);
       if (!d?.status) return;
 
@@ -894,15 +903,12 @@ export function App() {
     [accumulated, lastKey]
   );
 
-  useApp({
-    appInfo: { name: "Observe", version: "1.0.0" },
-    onAppCreated: (a) => {
-      a.ontoolresult = handleToolResult;
-      setApp(a);
-    },
-  });
+  useEffect(() => subscribeToToolResult(handleToolResult), [subscribeToToolResult, handleToolResult]);
 
-  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
+  const onSend = useCallback(
+    (p: string) => { getApp()?.sendMessage({ role: "user", content: [{ type: "text", text: p }] }); },
+    [getApp]
+  );
 
   const status = data ? headerStatus(data) : null;
   const esqlFrom = data ? headerEsqlFrom(data) : undefined;
@@ -966,7 +972,7 @@ export function App() {
           // Optimistically hide locally — the marker-file write happens
           // async and we don't need to wait for the round-trip.
           setNoticeDismissed(true);
-          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {
+          getApp()?.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {
             // Best-effort. If the tool isn't reachable we still get the
             // local hide; the next session will re-show the banner since
             // the marker file wasn't written.
@@ -981,7 +987,7 @@ export function App() {
         <SetupNoticeBanner
           notice={setupNotice}
           onDismiss={onDismissNotice}
-          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+          onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined}
         />
       )}
       <div className="observe-body">

@@ -7,10 +7,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
+import { registerTrackedAppTool } from "./tracked-app-tool.js";
+import { noopAnalyticsClient, type AnalyticsClient } from "../elastic/analytics/index.js";
 import { z } from "zod";
 import fs from "fs";
 import {
@@ -66,8 +67,9 @@ function successResult(payload: Record<string, unknown>) {
   };
 }
 
-export function registerManageAlertsTool(server: McpServer) {
-  registerAppTool(
+export function registerManageAlertsTool(server: McpServer, analytics: AnalyticsClient = noopAnalyticsClient) {
+  registerTrackedAppTool(
+    analytics,
     server,
     "manage-alerts",
     {

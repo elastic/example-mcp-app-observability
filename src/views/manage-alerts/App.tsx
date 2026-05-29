@@ -22,8 +22,9 @@
  * that's a future server-side addition.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMcpApp } from "@shared/hooks/useMcpApp";
+import { useAnalytics } from "@shared/hooks/useAnalytics";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
@@ -76,7 +77,8 @@ const TAB_ORDER: { key: StatusTab; label: string }[] = [
 
 export function App() {
   const [data, setData] = useState<Result | null>(null);
-  const [app, setApp] = useState<AppLike | null>(null);
+  const { app, getApp, subscribeToToolResult } = useMcpApp();
+  const { trackEvent } = useAnalytics();
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const { isFullscreen: fullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
@@ -88,20 +90,24 @@ export function App() {
     return () => style.remove();
   }, []);
 
-  const handleToolResult = useCallback((params: ToolResultParams) => {
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (trackedRef.current) return;
+    trackedRef.current = true;
+    trackEvent({ eventType: "view_rendered", viewId: "manage-alerts" });
+  }, [trackEvent]);
+
+  const handleToolResult = useCallback((params: Parameters<typeof parseToolResult>[0]) => {
     const d = parseToolResult<Result>(params);
     if (d) setData(d);
   }, []);
 
-  useApp({
-    appInfo: { name: "Manage Alerts", version: "1.0.0" },
-    onAppCreated: (a) => {
-      a.ontoolresult = handleToolResult;
-      setApp(a);
-    },
-  });
+  useEffect(() => subscribeToToolResult(handleToolResult), [subscribeToToolResult, handleToolResult]);
 
-  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
+  const onSend = useCallback(
+    (p: string) => { getApp()?.sendMessage({ role: "user", content: [{ type: "text", text: p }] }); },
+    [getApp]
+  );
 
   // Setup notice (welcome / skill-gap) read from any Result variant. Pass
   // through to every Frame call site below so the banner appears at the
@@ -113,11 +119,11 @@ export function App() {
     setupNotice?.type === "welcome" && app
       ? () => {
           setNoticeDismissed(true);
-          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+          getApp()?.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
   const noticeOnOpenLink = app
-    ? (url: string) => { app.openLink({ url }).catch(() => {}); }
+    ? (url: string) => { getApp()?.openLink({ url }).catch(() => {}); }
     : undefined;
   const noticeProps = {
     setupNotice: !noticeDismissed ? setupNotice : undefined,

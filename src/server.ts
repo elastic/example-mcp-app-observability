@@ -13,32 +13,28 @@ import { registerK8sBlastRadiusTool } from "./tools/k8s-blast-radius.js";
 import { registerApmServiceDependenciesTool } from "./tools/apm-service-dependencies.js";
 import { registerManageAlertsTool } from "./tools/manage-alerts.js";
 import { registerSetupDismissTool } from "./tools/setup-dismiss.js";
+import { registerAnalyticsTools } from "./tools/analytics.js";
 import { isKibanaConfigured } from "./elastic/client.js";
+import { noopAnalyticsClient, type AnalyticsClient } from "./elastic/analytics/index.js";
 
-export function createServer(): McpServer {
+export function createServer(analytics: AnalyticsClient = noopAnalyticsClient): McpServer {
   const server = new McpServer({
     name: "elastic-o11y",
     version: "0.1.0",
   });
 
-  registerMlAnomaliesTool(server);
-  registerObserveTool(server);
-  registerApmHealthSummaryTool(server);
-  registerK8sBlastRadiusTool(server);
-  registerApmServiceDependenciesTool(server);
+  registerMlAnomaliesTool(server, analytics);
+  registerObserveTool(server, analytics);
+  registerApmHealthSummaryTool(server, analytics);
+  registerK8sBlastRadiusTool(server, analytics);
+  registerApmServiceDependenciesTool(server, analytics);
 
-  // manage-alerts hits Kibana APIs and can delete persistent rules. Gate its
-  // registration on an explicit KIBANA_URL so operators can selectively disable
-  // the tool (and its destructive operation=delete path) by leaving `kibana_url`
-  // blank in the install config. When unregistered the LLM never sees the tool
-  // and can't invoke it.
   if (isKibanaConfigured()) {
-    registerManageAlertsTool(server);
+    registerManageAlertsTool(server, analytics);
   }
 
-  // Internal tool used by views' setup banner — must register so the UI
-  // app.callServerTool path can route to it, regardless of Kibana config.
   registerSetupDismissTool(server);
+  registerAnalyticsTools(server, { analytics });
 
   return server;
 }

@@ -10,8 +10,9 @@
  * hover to highlight full upstream/downstream path.
  */
 
-import React, { useEffect, useState, useMemo, useCallback } from "react";
-import { useApp, AppLike } from "@shared/use-app";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useMcpApp } from "@shared/hooks/useMcpApp";
+import { useAnalytics } from "@shared/hooks/useAnalytics";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme, theme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
@@ -856,7 +857,8 @@ export function App() {
   const [direction, setDirection] = useState<GraphDirection>("vertical");
   const [edgeTooltip, setEdgeTooltip] = useState<TooltipInfo | null>(null);
   const [nodeTooltip, setNodeTooltip] = useState<TooltipInfo | null>(null);
-  const [app, setApp] = useState<AppLike | null>(null);
+  const { app, getApp, connected: mcpConnected, subscribeToToolResult } = useMcpApp();
+  const { trackEvent } = useAnalytics();
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
@@ -884,19 +886,24 @@ export function App() {
     return () => style.remove();
   }, []);
 
-  const { isConnected, error } = useApp({
-    appInfo: { name: "APM Service Dependencies", version: "1.0.0" },
-    capabilities: {},
-    onAppCreated: (a) => {
-      a.ontoolresult = (params) => {
-        const parsed = parseToolResult<DepData>(params);
-        if (parsed?.services && parsed?.edges) setData(parsed);
-      };
-      setApp(a);
-    },
-  });
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (trackedRef.current) return;
+    trackedRef.current = true;
+    trackEvent({ eventType: "view_rendered", viewId: "apm-service-dependencies" });
+  }, [trackEvent]);
 
-  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
+  const handleToolResult = useCallback((params: Parameters<typeof parseToolResult>[0]) => {
+    const parsed = parseToolResult<DepData>(params);
+    if (parsed?.services && parsed?.edges) setData(parsed);
+  }, []);
+
+  useEffect(() => subscribeToToolResult(handleToolResult), [subscribeToToolResult, handleToolResult]);
+
+  const onSend = useCallback(
+    (p: string) => { getApp()?.sendMessage({ role: "user", content: [{ type: "text", text: p }] }); },
+    [getApp]
+  );
 
   const layout = useMemo(() => {
     if (!data) return null;
@@ -908,7 +915,7 @@ export function App() {
     baseH: layout?.svgH,
   });
 
-  const connected = useMemo(() => {
+  const focusConnected = useMemo(() => {
     if (!focusTarget || !data) return null;
     return connectedSet(focusTarget, data.edges);
   }, [focusTarget, data]);
@@ -1116,18 +1123,7 @@ export function App() {
     </header>
   );
 
-  if (error) {
-    return (
-      <div className="ds-view">
-        {Header}
-        <div className="dep-empty">
-          <div className="dep-empty-title">Error</div>
-          <div className="dep-empty-sub">{error.message}</div>
-        </div>
-      </div>
-    );
-  }
-  if (!isConnected || !data) {
+  if (!mcpConnected || !data) {
     return (
       <div className="ds-view">
         {Header}
@@ -1167,7 +1163,7 @@ export function App() {
     setupNotice?.type === "welcome" && app
       ? () => {
           setNoticeDismissed(true);
-          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+          getApp()?.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
 
@@ -1179,7 +1175,7 @@ export function App() {
         <SetupNoticeBanner
           notice={setupNotice}
           onDismiss={onDismissNotice}
-          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+          onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined}
         />
       )}
 
@@ -1250,7 +1246,7 @@ export function App() {
             const dim =
               focusTarget !== null &&
               !edgeTouchesInspected &&
-              (!connected || !isEdgeConnected(edge, connected));
+              (!focusConnected || !isEdgeConnected(edge, focusConnected));
             return (
               <EdgePath
                 key={`e-${i}`}
@@ -1272,7 +1268,7 @@ export function App() {
             const dim =
               focusTarget !== null &&
               !isIns &&
-              (!connected || !connected.has(node.name));
+              (!focusConnected || !focusConnected.has(node.name));
             const isHov = hovered === node.name;
             const isPin = pinned === node.name;
             const incoming = nodeIncomingSeverity.get(node.name);

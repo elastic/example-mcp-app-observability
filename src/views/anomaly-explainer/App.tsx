@@ -20,8 +20,9 @@
  * `pickMode` — no input knob.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMcpApp } from "@shared/hooks/useMcpApp";
+import { useAnalytics } from "@shared/hooks/useAnalytics";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
@@ -57,7 +58,8 @@ const GROUP_OPTIONS: DropdownOption<GroupKey>[] = [
 
 export function App() {
   const [data, setData] = useState<AnomalyData | null>(null);
-  const [app, setApp] = useState<AppLike | null>(null);
+  const { app, getApp, subscribeToToolResult } = useMcpApp();
+  const { trackEvent } = useAnalytics();
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
 
   useEffect(() => {
@@ -68,20 +70,24 @@ export function App() {
     return () => style.remove();
   }, []);
 
-  const handleToolResult = useCallback((params: ToolResultParams) => {
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (trackedRef.current) return;
+    trackedRef.current = true;
+    trackEvent({ eventType: "view_rendered", viewId: "anomaly-explainer" });
+  }, [trackEvent]);
+
+  const handleToolResult = useCallback((params: Parameters<typeof parseToolResult>[0]) => {
     const d = parseToolResult<AnomalyData>(params);
     if (d) setData(d);
   }, []);
 
-  useApp({
-    appInfo: { name: "Anomaly Explainer", version: "1.0.0" },
-    onAppCreated: (a) => {
-      a.ontoolresult = handleToolResult;
-      setApp(a);
-    },
-  });
+  useEffect(() => subscribeToToolResult(handleToolResult), [subscribeToToolResult, handleToolResult]);
 
-  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
+  const onSend = useCallback(
+    (p: string) => { getApp()?.sendMessage({ role: "user", content: [{ type: "text", text: p }] }); },
+    [getApp]
+  );
 
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const setupNotice = data
@@ -91,11 +97,11 @@ export function App() {
     setupNotice?.type === "welcome" && app
       ? () => {
           setNoticeDismissed(true);
-          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+          getApp()?.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
   const noticeOnOpenLink = app
-    ? (url: string) => { app.openLink({ url }).catch(() => {}); }
+    ? (url: string) => { getApp()?.openLink({ url }).catch(() => {}); }
     : undefined;
   const noticeProps = {
     setupNotice: !noticeDismissed ? setupNotice : undefined,

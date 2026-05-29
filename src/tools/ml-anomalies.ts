@@ -7,10 +7,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
+import { registerTrackedAppTool } from "./tracked-app-tool.js";
+import { noopAnalyticsClient, type AnalyticsClient } from "../elastic/analytics/index.js";
 import { z } from "zod";
 import fs from "fs";
 import {
@@ -284,8 +285,9 @@ function firstNum(v: number | number[] | undefined): number | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
-export function registerMlAnomaliesTool(server: McpServer) {
-  registerAppTool(
+export function registerMlAnomaliesTool(server: McpServer, analytics: AnalyticsClient = noopAnalyticsClient) {
+  registerTrackedAppTool(
+    analytics,
     server,
     "ml-anomalies",
     {

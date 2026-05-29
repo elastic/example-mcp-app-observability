@@ -22,7 +22,8 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useApp, AppLike, ToolResultParams } from "@shared/use-app";
+import { useMcpApp } from "@shared/hooks/useMcpApp";
+import { useAnalytics } from "@shared/hooks/useAnalytics";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { theme, baseStyles, applyTheme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
@@ -1762,7 +1763,8 @@ function statusForRestarts(n: number): TileStatus {
 
 export function App() {
   const [data, setData] = useState<HealthData | null>(null);
-  const [app, setApp] = useState<AppLike | null>(null);
+  const { app, getApp, subscribeToToolResult } = useMcpApp();
+  const { trackEvent } = useAnalytics();
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
   // Default to detail (sparklines / bars) — that's the headline view. Toggle
   // collapses to a CondensedChips summary strip for compact scanning.
@@ -1796,7 +1798,7 @@ export function App() {
     return () => style.remove();
   }, []);
 
-  const handleToolResult = useCallback((params: ToolResultParams) => {
+  const handleToolResult = useCallback((params: Parameters<typeof parseToolResult>[0]) => {
     const d = parseToolResult<HealthData>(params);
     if (d?.overall_health) {
       setData(d);
@@ -1804,15 +1806,19 @@ export function App() {
     }
   }, []);
 
-  useApp({
-    appInfo: { name: "APM Health Summary", version: "1.0.0" },
-    onAppCreated: (a) => {
-      a.ontoolresult = handleToolResult;
-      setApp(a);
-    },
-  });
+  useEffect(() => subscribeToToolResult(handleToolResult), [subscribeToToolResult, handleToolResult]);
 
-  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (trackedRef.current) return;
+    trackedRef.current = true;
+    trackEvent({ eventType: "view_rendered", viewId: "apm-health-summary" });
+  }, [trackEvent]);
+
+  const onSend = useCallback(
+    (p: string) => { getApp()?.sendMessage({ role: "user", content: [{ type: "text", text: p }] }); },
+    [getApp]
+  );
 
   const allPods = data?.pods?.top_memory ?? [];
   const allServices = data?.services.details ?? [];
@@ -1992,7 +1998,7 @@ export function App() {
     setupNotice?.type === "welcome" && app
       ? () => {
           setNoticeDismissed(true);
-          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+          getApp()?.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
 
@@ -2003,7 +2009,7 @@ export function App() {
         <SetupNoticeBanner
           notice={setupNotice}
           onDismiss={onDismissNotice}
-          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+          onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined}
         />
       )}
       <div className="health-body">

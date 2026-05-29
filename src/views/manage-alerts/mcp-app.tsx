@@ -8,5 +8,10 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { McpAppProvider } from "@shared/hooks/McpAppProvider";
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <McpAppProvider name="manage-alerts" version="1.0.0">
+    <App />
+  </McpAppProvider>
+);

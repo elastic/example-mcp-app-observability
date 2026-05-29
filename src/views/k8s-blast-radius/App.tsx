@@ -22,8 +22,9 @@
  * and resets on tool re-invocation (e.g. re-running for a different node).
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useApp, AppLike } from "@shared/use-app";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMcpApp } from "@shared/hooks/useMcpApp";
+import { useAnalytics } from "@shared/hooks/useAnalytics";
 import { parseToolResult } from "@shared/parse-tool-result";
 import { applyTheme, theme } from "@shared/theme";
 import { useDisplayMode } from "@shared/use-display-mode";
@@ -162,7 +163,8 @@ export function App() {
       return [...prev, { name, details }];
     });
   }, []);
-  const [app, setApp] = useState<AppLike | null>(null);
+  const { app, getApp, connected, subscribeToToolResult } = useMcpApp();
+  const { trackEvent } = useAnalytics();
   const [noticeDismissed, setNoticeDismissed] = useState(false);
 
   const { isFullscreen, toggle: toggleFullscreen } = useDisplayMode(app);
@@ -175,18 +177,24 @@ export function App() {
     return () => style.remove();
   }, []);
 
-  const { isConnected, error } = useApp({
-    appInfo: { name: "K8s Blast Radius", version: "1.0.0" },
-    onAppCreated: (a) => {
-      a.ontoolresult = (params) => {
-        const parsed = parseToolResult<BlastRadiusData>(params);
-        if (parsed?.node && parsed?.status) setData(parsed);
-      };
-      setApp(a);
-    },
-  });
+  const trackedRef = useRef(false);
+  useEffect(() => {
+    if (trackedRef.current) return;
+    trackedRef.current = true;
+    trackEvent({ eventType: "view_rendered", viewId: "k8s-blast-radius" });
+  }, [trackEvent]);
 
-  const onSend = useCallback((p: string) => app?.sendMessage(p), [app]);
+  const handleToolResult = useCallback((params: Parameters<typeof parseToolResult>[0]) => {
+    const parsed = parseToolResult<BlastRadiusData>(params);
+    if (parsed?.node && parsed?.status) setData(parsed);
+  }, []);
+
+  useEffect(() => subscribeToToolResult(handleToolResult), [subscribeToToolResult, handleToolResult]);
+
+  const onSend = useCallback(
+    (p: string) => { getApp()?.sendMessage({ role: "user", content: [{ type: "text", text: p }] }); },
+    [getApp]
+  );
 
   const layout = useMemo(() => {
     if (!data) return null;
@@ -474,18 +482,7 @@ export function App() {
     </header>
   );
 
-  if (error) {
-    return (
-      <div className="ds-view">
-        {Header}
-        <div className="blast-empty">
-          <div className="blast-empty-title">Error</div>
-          <div className="blast-empty-sub">{error.message}</div>
-        </div>
-      </div>
-    );
-  }
-  if (!isConnected || !data) {
+  if (!connected || !data) {
     return (
       <div className="ds-view">
         {Header}
@@ -511,7 +508,7 @@ export function App() {
     setupNotice?.type === "welcome" && app
       ? () => {
           setNoticeDismissed(true);
-          app.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
+          getApp()?.callServerTool({ name: "_setup-dismiss-welcome", arguments: {} }).catch(() => {});
         }
       : undefined;
 
@@ -522,7 +519,7 @@ export function App() {
         <SetupNoticeBanner
           notice={setupNotice}
           onDismiss={onDismissNotice}
-          onOpenLink={app ? (url) => { app.openLink({ url }).catch(() => {}); } : undefined}
+          onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined}
         />
       )}
       <div className="blast-graph">

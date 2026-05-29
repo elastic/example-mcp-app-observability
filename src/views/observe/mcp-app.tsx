@@ -7,6 +7,11 @@
 
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { McpAppProvider } from "@shared/hooks/McpAppProvider";
 import { App } from "./App";
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <McpAppProvider name="observe" version="1.0.0">
+    <App />
+  </McpAppProvider>
+);

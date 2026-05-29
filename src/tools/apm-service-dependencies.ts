@@ -7,10 +7,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
+import { registerTrackedAppTool } from "./tracked-app-tool.js";
+import { noopAnalyticsClient, type AnalyticsClient } from "../elastic/analytics/index.js";
 import { z } from "zod";
 import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
@@ -308,8 +309,9 @@ FROM traces-apm*
   return safeEsqlRows<HealthRow>(classicQuery, errors, { optional: true });
 }
 
-export function registerApmServiceDependenciesTool(server: McpServer) {
-  registerAppTool(
+export function registerApmServiceDependenciesTool(server: McpServer, analytics: AnalyticsClient = noopAnalyticsClient) {
+  registerTrackedAppTool(
+    analytics,
     server,
     "apm-service-dependencies",
     {

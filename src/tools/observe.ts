@@ -7,10 +7,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
+import { registerTrackedAppTool } from "./tracked-app-tool.js";
+import { noopAnalyticsClient, type AnalyticsClient } from "../elastic/analytics/index.js";
 import { z } from "zod";
 import fs from "fs";
 import { mlAnomalyIndicesExist, queryAnomalies, severityLabel } from "../elastic/ml.js";
@@ -350,8 +351,9 @@ async function handleMetricMode(args: ObserveInput) {
   };
 }
 
-export function registerObserveTool(server: McpServer) {
-  registerAppTool(
+export function registerObserveTool(server: McpServer, analytics: AnalyticsClient = noopAnalyticsClient) {
+  registerTrackedAppTool(
+    analytics,
     server,
     "observe",
     {
