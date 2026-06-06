@@ -55,6 +55,10 @@ The diagram below traces the flow of a user request: Claude reads the relevant s
 
 ![Elastic Observability MCP App request flow](docs/screenshots/mcp_app_request_flow.svg)
 
+### Telemetry
+
+The MCP App emits anonymised usage events via `@elastic/ebt`. Shipping is mirrored to the user's Kibana telemetry opt-in — nothing leaves the process unless Kibana reports `optIn === true`. See [docs/telemetry.md](docs/telemetry.md) for the event catalog, what's collected, and how to opt out.
+
 ### Skills
 
 The `skills/` directory contains [Claude Skills](https://claude.com/docs/skills/overview) — `SKILL.md` files that teach Claude *when* and *how* to use the tools. Each skill teaches the agent to reach for the paired tool and fill its parameters from natural-language user intent, so users don't need to know tool names or deployment specifics. Skills ship as separate `.zip` artifacts (one per tool); upload individually in Claude Desktop via **Customize → Skills → Create Skill → Upload a skill**.
