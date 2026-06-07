@@ -200,6 +200,10 @@ FROM metrics-*
 
 These are the field paths this deployment's data actually uses — prefer them over guessing.
 
+> ⛔ **BEFORE WRITING ANY QUERY — check the field type first:**
+>
+> Look up the field you intend to aggregate in the tables below. If its type is `counter_long`, **stop — do not write `FROM`**. Use `TS` + `RATE()` as described in the "Counter fields" section. This is a hard syntax requirement: `FROM` is rejected for `counter_long` fields regardless of which aggregation function you use, and the error cannot be fixed by changing `AVG` to `MAX` or `SUM`. The source command must be `TS`.
+
 ### OTel Kubernetes (kubeletstats receiver)
 
 Index: `metrics-kubeletstatsreceiver.otel*`
@@ -286,9 +290,47 @@ FROM metrics-kubeletstatsreceiver.otel*
         available = AVG(k8s.node.memory.available)
 ```
 
+Pods above namespace memory average (requires ES 9.2+ `INLINE STATS`):
+
+```
+FROM metrics-kubeletstatsreceiver.otel*
+| WHERE @timestamp > NOW() - 5 minutes
+  AND k8s.pod.memory.working_set IS NOT NULL
+  AND k8s.namespace.name == "<namespace>"
+| STATS pod_mem = AVG(k8s.pod.memory.working_set) BY k8s.pod.name
+| INLINE STATS ns_avg = AVG(pod_mem)
+| WHERE pod_mem > ns_avg
+| EVAL pct_above_avg = ROUND((pod_mem - ns_avg) * 100.0 / ns_avg, 1)
+| SORT pod_mem DESC
+```
+
+Use `INLINE STATS` whenever the question involves comparing individual entities to a group aggregate
+("above average", "top X% of namespace memory", "pods consuming more than their share"). Without it,
+this requires two separate queries and client-side joining.
+
 ### Counter fields — require `TS` + `RATE()`
 
-Network I/O, network errors, and uptime fields are stored as monotonically-increasing counters (`counter_long`), **not** instantaneous gauges. `FROM` + `MAX`/`AVG`/`SUM`/`VALUES` on a counter field is a hard error — ES|QL returns `argument of [...] must be [...numeric except counter types]`.
+> ⛔ **MANDATORY PRE-QUERY CHECKLIST — run this before writing any ES|QL:**
+>
+> 1. **Is any field I'm querying in the counter fields table below?** (network I/O, network errors, uptime)
+>    - YES → **Stop. Use `TS`, not `FROM`.** Do not write `FROM` under any circumstances. Go to the `TS` pattern below.
+>    - NO → `FROM` is fine. Proceed normally.
+> 2. **Am I inside a `TS` query?**
+>    - Use `TBUCKET(duration)` for time bucketing — e.g. `TBUCKET(1 hour)`.
+>    - **Never use `BUCKET(@timestamp, interval)`** — that is `FROM`-query syntax and will fail with a parse error inside `TS`.
+> 3. **Am I aggregating across multiple pods/nodes?**
+>    - YES → wrap `RATE()` in `SUM()`.
+>    - NO (single entity) → wrap in `AVG()`.
+>
+> Skipping this checklist and defaulting to `FROM` on a counter field is the single most common query mistake. The error it produces (`argument of [...] must be [...numeric except counter types]`) is not recoverable by changing the aggregation function — the source command must be `TS`.
+
+Network I/O, network errors, and uptime fields are stored as monotonically-increasing counters
+(`counter_long`), **not** instantaneous gauges. `FROM` + `MAX`/`AVG`/`SUM`/`VALUES` on a counter
+field is a hard error — ES|QL returns `argument of [...] must be [...numeric except counter types]`.
+
+> **Version requirement:** `TS`, `RATE()`, and `TBUCKET()` require Elasticsearch **9.2+**. On older
+> clusters, `counter_long` fields cannot be aggregated at all — there is no workaround. If `TS <index>`
+> returns a parse error, verify the cluster version before iterating on syntax.
 
 Counter fields in this deployment:
 
@@ -299,26 +341,67 @@ Counter fields in this deployment:
 | `k8s.node.network.io`, `k8s.node.network.errors` | node-level equivalents |
 | `k8s.node.uptime`, `k8s.pod.uptime` | seconds since start |
 
-**Correct pattern:** use `TS` as the source command, wrap `RATE()` in an aggregation, filter the counter field `IS NOT NULL`, and group by `direction` whenever you query network fields.
-
-Network throughput by cluster, last 15m (result in bytes/sec):
+**Correct pattern:** `TS` as the **source command** (replaces `FROM`), `RATE()` wrapped in an outer
+aggregation, counter field filtered `IS NOT NULL`, and `BY direction` whenever querying network fields.
 
 ```
+// CORRECT — TS as source, SUM(RATE()) for cluster-wide total, BUCKET(@timestamp, interval) for time bucketing
+// Always alias the BUCKET expression and SORT by the alias — SORT on the raw BUCKET(...) expression fails
 TS metrics-kubeletstatsreceiver.otel*
 | WHERE @timestamp > NOW() - 15 minutes
-  AND k8s.pod.network.io IS NOT NULL
-| STATS rate_bps = AVG(RATE(k8s.pod.network.io))
-  BY k8s.cluster.name, direction
-| SORT rate_bps DESC
+  AND k8s.node.network.io IS NOT NULL
+| STATS total_bps = SUM(RATE(k8s.node.network.io))
+  BY bucket = BUCKET(@timestamp, 1 minute), direction
+| SORT bucket ASC
+
+// WRONG — FROM is rejected for counter_long fields
+FROM metrics-kubeletstatsreceiver.otel*
+| STATS max_io = MAX(k8s.node.network.io) ...   ← hard error
+
+// WRONG — sorting on the raw BUCKET expression (not the alias) fails in TS context
+TS metrics-kubeletstatsreceiver.otel*
+| STATS total_bps = SUM(RATE(k8s.node.network.io))
+  BY bucket = BUCKET(@timestamp, 1 minute), direction
+| SORT BUCKET(@timestamp, 1 minute) ASC   ← parse error; use alias instead
+```
+
+**`SUM` vs `AVG` when wrapping `RATE()`:** Use `SUM(RATE(...))` when aggregating across multiple
+parallel time series (e.g. total cluster throughput across all nodes). Use `AVG(RATE(...))` when you
+want the mean rate per entity (e.g. average per-pod transmit rate). Mixing them up produces silently
+wrong numbers — `AVG` of a cluster-wide roll-up understates throughput; `SUM` of a single-entity
+query overstates it.
+
+**Time bucketing in `TS` queries:** Use `BUCKET(@timestamp, interval)` — the same syntax as `FROM`
+queries. Always assign it an alias (e.g. `BY bucket = BUCKET(@timestamp, 1 hour)`) and reference
+that alias in any subsequent `SORT` — sorting on the raw `BUCKET(@timestamp, ...)` expression is
+rejected in `TS` context. `TBUCKET` (duration-only form) does **not** work reliably on this
+deployment and should not be used.
+
+```
+// CORRECT — aliased BUCKET, sorted by alias
+TS metrics-kubeletstatsreceiver.otel*
+| STATS total_bps = SUM(RATE(k8s.node.network.io))
+  BY bucket = BUCKET(@timestamp, 1 hour), direction
+| SORT bucket ASC
+
+// WRONG — TBUCKET is unreliable; fails with "@timestamp not found" on this deployment
+TS metrics-kubeletstatsreceiver.otel*
+| STATS total_bps = SUM(RATE(k8s.node.network.io))
+  BY TBUCKET(1 hour), direction   ← verification_exception on @timestamp
+
+// WRONG — passing @timestamp to TBUCKET is also rejected
+| STATS ... BY TBUCKET(@timestamp, 1 hour)   ← argument type error
 ```
 
 Rules:
-- `TS`, not `FROM`. `FROM` will be rejected.
-- Wrap `RATE()` in `AVG()` (or similar) when grouping — bare `RATE(...) BY ...` is rejected.
+- `TS <index>`, not `FROM <index>`. `FROM` will be rejected for `counter_long` fields.
+- Wrap `RATE()` in `SUM()` for totals across entities, `AVG()` for per-entity averages — bare `RATE(...) BY ...` is rejected.
 - Network counters are emitted as **separate docs per direction**. Without `BY direction` or a `direction == "..."` filter, transmit and receive aggregate into a meaningless combined number.
 - Without `IS NOT NULL` the query spans many kubeletstats docs that carry a different metric — you get nulls, not errors.
+- Use `BUCKET(@timestamp, interval)` for time bucketing inside `TS` queries, always aliased. Do **not** use `TBUCKET`.
 
-**Escape hatch — raw counter snapshot:** if you want the current counter value (e.g. "how long has node X been up"), cast first. `TO_LONG` strips the counter type and unlocks standard aggregations:
+**Escape hatch — raw counter snapshot:** if you want the current counter value (e.g. "how long has
+node X been up"), cast first. `TO_LONG` strips the counter type and unlocks standard aggregations:
 
 ```
 FROM metrics-kubeletstatsreceiver.otel*
@@ -410,8 +493,6 @@ FROM traces-apm*
 | LIMIT 50
 ```
 
-If you only need a coarse signal (no message text), every shape carries `event.outcome == "failure"` on the trace doc and `status.message` / `status.code == "Error"` on OTel traces — count or sample those when neither `exception.*` nor `error.*` resolves.
-
 If `traces-*.otel-*` returns empty, the deployment is classic-APM-only — fall back to `traces-apm*` with `processor.event == "transaction"` and `transaction.duration.us`.
 
 **Throughput trend — use the pre-aggregated rollup when possible.** `metrics-service_summary.1m.otel-*` carries per-minute request counts in `service_summary` (a regular `long`, designed to `SUM`). Cheaper and faster than scanning raw traces for "how many requests/min over the last hour":
@@ -444,6 +525,7 @@ FROM logs-*
 - When the user names a namespace, match it exactly (e.g. `oteldemo-esyox-default`, not
   `otel-demo`). If unsure, call `apm-health-summary` first — its `namespace_candidates` field
   surfaces fuzzy matches.
+- **String literals use double quotes only.** ES|QL does not accept single quotes — `WHERE kind == "Server"`, never `WHERE kind == 'Server'`. Single quotes cause `token recognition error` failures.
 - **Match the aggregation to the field's storage shape.** Three shapes to recognize:
   - **Gauges** (`memory.working_set`, `memory.available`, `cpu.usage`, `filesystem.usage` in
     `metrics-kubeletstatsreceiver.otel*`): use `AVG` / `MAX` / `MIN`. **Do not `SUM` a gauge** — it
@@ -455,6 +537,22 @@ FROM logs-*
   - **Pre-aggregated rollups** (`service_summary` on `metrics-service_summary.1m.otel-*`,
     `span.destination.service.response_time.count` on `metrics-service_destination.1m.otel-*`):
     designed for `SUM` across the window. Each doc is already a per-minute bucket count.
+- **Use `CHANGE_POINT` to detect regime shifts automatically** on time-bucketed results rather than
+  eyeballing the table. Append it after any `STATS ... BY BUCKET(@timestamp, interval)` query when
+  the user asks about spikes, dips, or anomalies in a metric over time:
+
+  ```
+  FROM metrics-kubeletstatsreceiver.otel*
+  | WHERE @timestamp > NOW() - 24 hours AND k8s.node.cpu.usage IS NOT NULL
+  | STATS avg_cpu = AVG(k8s.node.cpu.usage) BY bucket = BUCKET(@timestamp, 1 hour)
+  | SORT bucket ASC
+  | CHANGE_POINT avg_cpu ON bucket
+  | WHERE type IS NOT NULL
+  ```
+
+  `CHANGE_POINT` appends `type` (e.g. `step_change`, `spike`, `dip`) and `pvalue` columns. Filter
+  `WHERE type IS NOT NULL` to surface only the detected change points. Works on any numeric
+  time-bucketed series — CPU, memory, error rates, throughput.
 
 ## After the tool returns
 
