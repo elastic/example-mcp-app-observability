@@ -164,7 +164,14 @@ function fmt(v: number | null | undefined, unit?: "bytes" | "ms" | "pct" | "raw"
 
 function inferUnit(description: string, esql?: string): "bytes" | "ms" | "pct" | "raw" {
   const s = `${description} ${esql || ""}`.toLowerCase();
-  if (s.includes("memory") || s.includes("bytes") || s.includes("working_set")) return "bytes";
+  if (
+    s.includes("memory") ||
+    s.includes("bytes") ||
+    s.includes("working_set") ||
+    s.includes("throughput") ||
+    s.includes("network.io")
+  )
+    return "bytes";
   if (s.includes("latency") || s.includes("duration") || s.includes("ms")) return "ms";
   if (s.includes("cpu") || s.includes("utilization") || s.includes("pct")) return "pct";
   return "raw";
@@ -400,28 +407,75 @@ function formatCell(value: unknown, type: string): string {
 // columns where the first is a date and the second is numeric — we
 // extract a chartable series and render a sparkline above the rows.
 // Otherwise the chart is omitted and the table renders as before.
+type TimeSeriesResult =
+  | { kind: "single"; xs: number[]; ys: number[] }
+  | { kind: "multi"; xs: number[]; series: Record<string, number[]> };
+
 function detectTimeSeries(
   columns: TableResult["columns"],
   rows: TableResult["rows"]
-): { xs: number[]; ys: number[] } | null {
-  if (columns.length !== 2 || rows.length < 3) return null;
-  const dateCol = DATE_ES_TYPES.has(columns[0].type) ? 0 : DATE_ES_TYPES.has(columns[1].type) ? 1 : -1;
-  if (dateCol === -1) return null;
-  const valCol = dateCol === 0 ? 1 : 0;
-  if (!NUMERIC_ES_TYPES.has(columns[valCol].type)) return null;
+): TimeSeriesResult | null {
+  if (rows.length < 3) return null;
 
-  const points: { x: number; y: number }[] = [];
-  for (const r of rows) {
-    const xRaw = r[dateCol];
-    const yRaw = r[valCol];
-    const x = typeof xRaw === "number" ? xRaw : Date.parse(String(xRaw));
-    const y = typeof yRaw === "number" ? yRaw : parseFloat(String(yRaw));
-    if (Number.isNaN(x) || Number.isNaN(y)) continue;
-    points.push({ x, y });
+  // Single series: one date column + one numeric column.
+  if (columns.length === 2) {
+    const dateCol = DATE_ES_TYPES.has(columns[0].type) ? 0 : DATE_ES_TYPES.has(columns[1].type) ? 1 : -1;
+    if (dateCol === -1) return null;
+    const valCol = dateCol === 0 ? 1 : 0;
+    if (!NUMERIC_ES_TYPES.has(columns[valCol].type)) return null;
+
+    const points: { x: number; y: number }[] = [];
+    for (const r of rows) {
+      const xRaw = r[dateCol];
+      const yRaw = r[valCol];
+      const x = typeof xRaw === "number" ? xRaw : Date.parse(String(xRaw));
+      const y = typeof yRaw === "number" ? yRaw : parseFloat(String(yRaw));
+      if (Number.isNaN(x) || Number.isNaN(y)) continue;
+      points.push({ x, y });
+    }
+    if (points.length < 3) return null;
+    points.sort((a, b) => a.x - b.x);
+    return { kind: "single", xs: points.map((p) => p.x), ys: points.map((p) => p.y) };
   }
-  if (points.length < 3) return null;
-  points.sort((a, b) => a.x - b.x);
-  return { xs: points.map((p) => p.x), ys: points.map((p) => p.y) };
+
+  // Multi series: one date + one numeric + one keyword/text discriminator,
+  // e.g. `STATS y BY bucket = BUCKET(@timestamp, …), direction`.
+  if (columns.length === 3) {
+    const dateIdx = columns.findIndex((c) => DATE_ES_TYPES.has(c.type));
+    const numIdx = columns.findIndex((c) => NUMERIC_ES_TYPES.has(c.type));
+    const seriesIdx = columns.findIndex(
+      (c, i) => i !== dateIdx && i !== numIdx && (c.type === "keyword" || c.type === "text")
+    );
+    if (dateIdx === -1 || numIdx === -1 || seriesIdx === -1) return null;
+
+    const map = new Map<string, { x: number; y: number }[]>();
+    for (const r of rows) {
+      const xRaw = r[dateIdx];
+      const yRaw = r[numIdx];
+      const x = typeof xRaw === "number" ? xRaw : Date.parse(String(xRaw));
+      const y = typeof yRaw === "number" ? yRaw : parseFloat(String(yRaw));
+      const key = String(r[seriesIdx] ?? "");
+      if (Number.isNaN(x) || Number.isNaN(y) || !key) continue;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push({ x, y });
+    }
+    if (map.size < 2) return null; // single (or empty) series — leave it to the table
+    for (const pts of map.values()) pts.sort((a, b) => a.x - b.x);
+
+    // Align every series onto a shared x-axis (the union of all timestamps);
+    // gaps become NaN so the sparkline can skip them.
+    const allXs = Array.from(new Set([...map.values()].flatMap((pts) => pts.map((p) => p.x)))).sort(
+      (a, b) => a - b
+    );
+    const series: Record<string, number[]> = {};
+    for (const [key, pts] of map.entries()) {
+      const byX = new Map(pts.map((p) => [p.x, p.y]));
+      series[key] = allXs.map((x) => byX.get(x) ?? NaN);
+    }
+    return { kind: "multi", xs: allXs, series };
+  }
+
+  return null;
 }
 
 // Lightweight SVG sparkline + filled area, reused inline rather than
@@ -489,6 +543,163 @@ function TableSparkline({
   );
 }
 
+// Distinct line colours for grouped series, drawn from the existing theme.
+const SERIES_COLORS = [
+  theme.blue,
+  theme.green,
+  theme.amber,
+  theme.purple,
+  theme.cyan,
+  theme.orange,
+  theme.pink,
+  theme.redSoft,
+];
+
+// Per-series peak + average cards above the multi-series chart, matching the
+// Peak/Avg-per-direction layout users saw when Claude hand-rendered these as a
+// widget. Grouped by metric (all peaks, then all averages) so paired series
+// line up. Capped at 4 series to avoid an unreadable wall of cards.
+function MultiSeriesStatGrid({
+  series,
+  unit,
+}: {
+  series: Record<string, number[]>;
+  unit: "bytes" | "ms" | "pct" | "raw";
+}) {
+  const keys = Object.keys(series).slice(0, 4);
+  if (keys.length === 0) return null;
+  const stats = keys.map((key) => {
+    const finite = series[key].filter(Number.isFinite);
+    const peak = finite.length ? Math.max(...finite) : NaN;
+    const avg = finite.length ? finite.reduce((a, b) => a + b, 0) / finite.length : NaN;
+    return { key, peak, avg };
+  });
+  return (
+    <StatGrid>
+      {stats.map((s) => (
+        <StatCard key={`peak-${s.key}`} label={`Peak ${s.key}`} value={fmt(s.peak, unit)} />
+      ))}
+      {stats.map((s) => (
+        <StatCard key={`avg-${s.key}`} label={`Avg ${s.key}`} value={fmt(s.avg, unit)} />
+      ))}
+    </StatGrid>
+  );
+}
+
+// Multi-line sibling of TableSparkline: one line per series key, with a legend.
+// Same visual language as the single-series chart, just taller to fit the legend.
+function MultiSeriesSparkline({
+  xs,
+  series,
+  unit,
+}: {
+  xs: number[];
+  series: Record<string, number[]>;
+  unit: "bytes" | "ms" | "pct" | "raw";
+}) {
+  const W = 600;
+  // Taller than the single-series sparkline (90px): a dual/multi-line chart
+  // packs more information and the lines need vertical room to separate,
+  // especially when series sit far apart in value (e.g. TX ~2x RX).
+  const H = 140;
+  const PAD_X = 8;
+  const PAD_Y = 8;
+  const plotW = W - PAD_X * 2;
+  const plotH = H - PAD_Y * 2;
+
+  const keys = Object.keys(series);
+  const allYs = Object.values(series).flat().filter(Number.isFinite);
+  if (allYs.length === 0) return null;
+
+  const min = Math.min(...allYs);
+  const max = Math.max(...allYs);
+  const range = max - min || Math.abs(max) || 1;
+  const xMin = xs[0];
+  const xMax = xs[xs.length - 1];
+  const xSpan = xMax - xMin || 1;
+  const xAt = (i: number) => PAD_X + ((xs[i] - xMin) / xSpan) * plotW;
+  const yAt = (v: number) => PAD_Y + plotH - ((v - min) / range) * plotH;
+  const fmtTime = (ms: number) =>
+    new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", gap: 16, marginBottom: 6, flexWrap: "wrap" }}>
+        {keys.map((key, i) => (
+          <span
+            key={key}
+            style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: theme.textMuted }}
+          >
+            <span
+              style={{
+                width: 18,
+                height: 2,
+                background: SERIES_COLORS[i % SERIES_COLORS.length],
+                display: "inline-block",
+                borderRadius: 1,
+              }}
+            />
+            {key}
+          </span>
+        ))}
+      </div>
+
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        style={{
+          width: "100%",
+          height: H,
+          display: "block",
+          background: theme.bgTertiary,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 4,
+        }}
+      >
+        {keys.map((key, ki) => {
+          const ys = series[key];
+          const color = SERIES_COLORS[ki % SERIES_COLORS.length];
+          const pts = xs.map((_, i) => ({ x: xAt(i), y: ys[i] })).filter((p) => Number.isFinite(p.y));
+          if (pts.length < 2) return null;
+          const line = pts
+            .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${yAt(p.y).toFixed(1)}`)
+            .join(" ");
+          const area = `${line} L ${pts[pts.length - 1].x.toFixed(1)} ${PAD_Y + plotH} L ${pts[0].x.toFixed(1)} ${PAD_Y + plotH} Z`;
+          return (
+            <g key={key}>
+              <path d={area} fill={color} opacity={0.1} />
+              <path
+                d={line}
+                fill="none"
+                stroke={color}
+                strokeWidth={1.4}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          );
+        })}
+      </svg>
+
+      <div
+        className="mono"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: 10,
+          color: theme.textDim,
+          marginTop: 4,
+        }}
+      >
+        <span>{fmtTime(xMin)}</span>
+        <span>min {fmt(min, unit)} · max {fmt(max, unit)}</span>
+        <span>{fmtTime(xMax)}</span>
+      </div>
+    </div>
+  );
+}
+
 function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) => void }) {
   const { columns, rows } = data;
   const ageSec = Math.max(0, Math.round((Date.now() - data.evaluated_at_ms) / 1000));
@@ -510,8 +721,14 @@ function TableView({ data, onSend }: { data: TableResult; onSend: (p: string) =>
           {ageSec === 0 ? "evaluated just now" : `evaluated ${ageSec}s ago`}
         </div>
 
-        {series && (
+        {series?.kind === "single" && (
           <TableSparkline xs={series.xs} ys={series.ys} unit={sparklineUnit} />
+        )}
+        {series?.kind === "multi" && (
+          <>
+            <MultiSeriesStatGrid series={series.series} unit={sparklineUnit} />
+            <MultiSeriesSparkline xs={series.xs} series={series.series} unit={sparklineUnit} />
+          </>
         )}
 
         {columns.length === 0 || rows.length === 0 ? (
