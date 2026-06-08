@@ -4,43 +4,28 @@
  * 2.0; you may not use this file except in compliance with the Elastic License
  * 2.0.
  *
- * Harness drop-in replacement for `@shared/use-app`.
+ * Harness mock for the MCP App context.
  *
- * `vite.harness.config.ts` aliases `@shared/use-app` → this file so every view
- * imports the mock hook without any view-code changes. The harness chrome
- * renders each view inside `<FixtureProvider>` and changes the `fixture` prop
- * as the user selects states in the sidebar; this hook re-delivers the payload
- * through the view's own `ontoolresult` handler.
+ * Views consume the host connection through `useMcpApp()`, which reads
+ * `McpAppContext`. The real `McpAppProvider` constructs an `@mcp/ext-apps`
+ * App and bridges it to the Claude Desktop host over postMessage. Here we
+ * supply the SAME context with a stand-in `app` so views render in-process
+ * with a fixture instead of a live host: `FixtureProvider` pushes the
+ * selected fixture's tool-result payload to every `subscribeToToolResult`
+ * listener, and the mock `app` routes `sendMessage` / `callServerTool` /
+ * `requestDisplayMode` back to the harness chrome's callbacks.
  */
 
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-
-// Mirror the real shapes so views compile unchanged.
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  McpAppContext,
+  type McpAppContextValue,
+  type McpApp,
+  type OnToolResult,
+  type ToolResultParams,
+} from "@shared/hooks/McpAppContext";
 
 export type DisplayMode = "inline" | "fullscreen" | "pip";
-
-export interface ToolResultParams {
-  content?: Array<{ type: string; text?: string }>;
-}
-
-export interface AppLike {
-  ontoolresult: ((params: ToolResultParams) => void) | null;
-  ontoolinput: ((params: Record<string, unknown>) => void) | null;
-  callServerTool: (params: {
-    name: string;
-    arguments: Record<string, unknown>;
-  }) => Promise<ToolResultParams>;
-  sendMessage: (text: string) => void;
-  requestDisplayMode: (params: { mode: DisplayMode }) => Promise<{ mode: DisplayMode }>;
-  openLink: (params: { url: string }) => Promise<unknown>;
-}
 
 export interface Fixture {
   label: string;
@@ -61,12 +46,37 @@ interface HarnessContextValue {
   onRequestDisplayMode: (mode: DisplayMode) => DisplayMode;
 }
 
-const HarnessContext = createContext<HarnessContextValue>({
-  fixture: null,
-  onSendMessage: () => {},
-  onCallServerTool: () => {},
-  onRequestDisplayMode: (m) => m,
-});
+/**
+ * Build a stand-in for the `@mcp/ext-apps` App. Only the surface the views and
+ * shared hooks actually touch is implemented: `sendMessage`, `callServerTool`,
+ * `requestDisplayMode`, `openLink`, and the `ontoolresult` sink. Everything is
+ * routed to the harness chrome's callbacks; the rest is typed away with a cast.
+ */
+function makeMockApp(handlers: HarnessContextValue): McpApp {
+  const extractText = (msg: unknown): string => {
+    const content = (msg as { content?: Array<{ text?: string }> } | undefined)?.content;
+    return Array.isArray(content) ? content.map((c) => c.text ?? "").join("") : String(msg ?? "");
+  };
+  const app = {
+    ontoolresult: null as ((p: ToolResultParams) => void) | null,
+    ontoolinput: null,
+    sendMessage: (msg: unknown) => handlers.onSendMessage(extractText(msg)),
+    callServerTool: async ({ name, arguments: args }: { name: string; arguments: Record<string, unknown> }) => {
+      handlers.onCallServerTool(name, args);
+      return { content: [] };
+    },
+    requestDisplayMode: async ({ mode }: { mode: DisplayMode }) => ({
+      mode: handlers.onRequestDisplayMode(mode),
+    }),
+    openLink: async ({ url }: { url: string }) => {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return {};
+    },
+    connect: async () => {},
+    close: () => {},
+  };
+  return app as unknown as McpApp;
+}
 
 export function FixtureProvider({
   value,
@@ -75,71 +85,64 @@ export function FixtureProvider({
   value: HarnessContextValue;
   children: React.ReactNode;
 }) {
-  const memo = useMemo(
-    () => value,
-    [value.fixture, value.onSendMessage, value.onCallServerTool, value.onRequestDisplayMode],
+  const listeners = useRef<Set<OnToolResult>>(new Set());
+
+  // One mock app instance per provider; its callbacks read live handlers via ref
+  // so a fixture/handler change never forces the view to re-acquire the app.
+  const handlersRef = useRef(value);
+  handlersRef.current = value;
+  const appRef = useRef<McpApp | null>(null);
+  if (!appRef.current) {
+    appRef.current = makeMockApp({
+      fixture: null,
+      onSendMessage: (t) => handlersRef.current.onSendMessage(t),
+      onCallServerTool: (n, a) => handlersRef.current.onCallServerTool(n, a),
+      onRequestDisplayMode: (m) => handlersRef.current.onRequestDisplayMode(m),
+    });
+  }
+
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    setConnected(true);
+  }, []);
+
+  const ctx = useMemo<McpAppContextValue>(
+    () => ({
+      app: appRef.current,
+      getApp: () => appRef.current,
+      connected,
+      subscribeToToolResult: (listener: OnToolResult) => {
+        listeners.current.add(listener);
+        // Deliver the current fixture to a freshly-subscribed view one tick
+        // later, mirroring the async ontoolresult delivery in production.
+        const f = handlersRef.current.fixture;
+        if (f) {
+          const t = setTimeout(() => listener(f.result), 0);
+          return () => {
+            clearTimeout(t);
+            listeners.current.delete(listener);
+          };
+        }
+        return () => listeners.current.delete(listener);
+      },
+    }),
+    [connected],
   );
-  return <HarnessContext.Provider value={memo}>{children}</HarnessContext.Provider>;
-}
 
-interface UseAppOptions {
-  appInfo?: { name: string; version: string };
-  capabilities?: Record<string, unknown>;
-  onAppCreated?: (app: AppLike) => void;
-}
-
-export function useApp(opts: UseAppOptions): {
-  isConnected: boolean;
-  error: Error | null;
-} {
-  const { fixture, onSendMessage, onCallServerTool, onRequestDisplayMode } =
-    useContext(HarnessContext);
-  const appRef = useRef<AppLike>({
-    ontoolresult: null,
-    ontoolinput: null,
-    callServerTool: () => Promise.resolve({}),
-    sendMessage: () => {},
-    requestDisplayMode: () => Promise.resolve({ mode: "inline" }),
-    openLink: () => Promise.resolve({}),
-  });
-  const setupRef = useRef(false);
-  const [, force] = useState(0);
-
-  // One-time setup: hand the view its AppLike so it can register handlers.
+  // Re-dispatch whenever the selected fixture changes.
   useEffect(() => {
-    if (setupRef.current) return;
-    setupRef.current = true;
-    const app = appRef.current;
-    app.sendMessage = (text) => onSendMessage(text);
-    app.callServerTool = async ({ name, arguments: args }) => {
-      onCallServerTool(name, args);
-      return { content: [] };
-    };
-    app.requestDisplayMode = async ({ mode }) => {
-      const applied = onRequestDisplayMode(mode);
-      return { mode: applied };
-    };
-    app.openLink = async ({ url }) => {
-      // In the harness, just open in a new tab — the iframe sandbox doesn't
-      // apply because the harness runs at the top level. Production routes
-      // through Claude Desktop's ui/open-link handler.
-      window.open(url, "_blank", "noopener,noreferrer");
-      return {};
-    };
-    opts.onAppCreated?.(app);
-    force((n) => n + 1);
-  }, [opts, onSendMessage, onCallServerTool, onRequestDisplayMode]);
-
-  // Whenever the fixture changes, re-dispatch through the view's handler.
-  useEffect(() => {
-    if (!fixture) return;
-    // Defer one tick so the view has applied its own handler even if the
-    // setup effect just ran in the same microtask.
+    if (!value.fixture) return;
     const t = setTimeout(() => {
-      appRef.current.ontoolresult?.(fixture.result);
+      for (const l of [...listeners.current]) {
+        try {
+          l(value.fixture!.result);
+        } catch (e) {
+          console.error("[harness] tool-result listener failed:", e);
+        }
+      }
     }, 0);
     return () => clearTimeout(t);
-  }, [fixture]);
+  }, [value.fixture]);
 
-  return { isConnected: !!fixture, error: null };
+  return <McpAppContext.Provider value={ctx}>{children}</McpAppContext.Provider>;
 }

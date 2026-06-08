@@ -127,6 +127,77 @@ export const observeFixtures: FixtureSet = {
     },
     "What was the frontend memory over the past 60 seconds?"
   ),
+  tableMultiSeries: fixture(
+    "TABLE (multi-series — dual-line chart auto-renders)",
+    {
+      status: "TABLE",
+      description: "node network throughput by direction · last 24h · 1h buckets",
+      // Exact column shape the verification query returns:
+      // [throughput_bps: double, bucket: date, direction: keyword]
+      columns: [
+        { name: "throughput_bps", type: "double" },
+        { name: "bucket", type: "date" },
+        { name: "direction", type: "keyword" },
+      ],
+      rows: (() => {
+        const start = Date.parse("2026-06-07T12:00:00Z");
+        const out: [number, number, string][] = [];
+        // 13 hourly buckets, transmit ~0.53 MB/s, receive ~0.24 MB/s (~2.2x apart)
+        for (let i = 0; i < 13; i++) {
+          const t = start + i * 3_600_000;
+          const tx = 0.53e6 * (1 + Math.sin(i * 0.5) * 0.18);
+          const rx = 0.24e6 * (1 + Math.cos(i * 0.4) * 0.15);
+          out.push([Math.round(tx), t, "transmit"]);
+          out.push([Math.round(rx), t, "receive"]);
+        }
+        return out;
+      })(),
+      row_count: 26,
+      truncated: false,
+      evaluated_at_ms: Date.parse("2026-06-08T12:00:00Z"),
+      message: "Returned 26 rows.",
+      esql:
+        'TS metrics-kubeletstatsreceiver.otel*\n| WHERE k8s.cluster.name == "oteldemo-dvdkd" AND @timestamp > NOW() - 24 hours AND k8s.node.network.io IS NOT NULL\n| STATS throughput_bps = SUM(RATE(k8s.node.network.io)) BY bucket = BUCKET(@timestamp, 1 hour), direction\n| SORT bucket ASC',
+    },
+    "Chart cluster network throughput by direction over the last 24 hours."
+  ),
+  tableMultiSeriesSparse: fixture(
+    "TABLE (multi-series — sparse / mismatched timestamps)",
+    {
+      status: "TABLE",
+      description: "pod restarts by reason · sparse buckets (NaN-gap repro)",
+      columns: [
+        { name: "restarts", type: "double" },
+        { name: "bucket", type: "date" },
+        { name: "reason", type: "keyword" },
+      ],
+      // Deliberately misaligned: "OOMKilled" only appears in early buckets,
+      // "Error" only in later ones, with a couple of shared timestamps. Forces
+      // the aligned x-axis to carry NaN gaps the path renderer must skip rather
+      // than draw a line down to the origin.
+      rows: (() => {
+        const t0 = Date.parse("2026-06-08T00:00:00Z");
+        const h = (n: number) => t0 + n * 3_600_000;
+        return [
+          [3, h(0), "OOMKilled"],
+          [5, h(1), "OOMKilled"],
+          [2, h(2), "OOMKilled"],
+          [4, h(3), "OOMKilled"],
+          [1, h(3), "Error"],
+          [6, h(4), "Error"],
+          [2, h(5), "Error"],
+          [3, h(6), "Error"],
+        ] as [number, number, string][];
+      })(),
+      row_count: 8,
+      truncated: false,
+      evaluated_at_ms: Date.parse("2026-06-08T07:00:00Z"),
+      message: "Returned 8 rows.",
+      esql:
+        'TS metrics-k8s.otel*\n| STATS restarts = MAX(k8s.container.restarts) BY bucket = BUCKET(@timestamp, 1 hour), reason\n| SORT bucket ASC',
+    },
+    "Chart pod restarts by reason over time."
+  ),
   sampled_flat: fixture(
     "SAMPLED (metric mode — flat memory, repro of bug)",
     {
