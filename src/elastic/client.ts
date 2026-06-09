@@ -65,6 +65,38 @@ export function isKibanaConfigured(): boolean {
   return Boolean(cleanEnv(process.env.KIBANA_URL));
 }
 
+/**
+ * Best-effort Kibana base URL for the telemetry opt-in check, which piggybacks
+ * on Kibana's `/api/telemetry/v2/config`. `kibana_url` is an optional install
+ * field, so:
+ *   - explicitly configured  → use it (`derived: false`)
+ *   - blank, Elastic Cloud   → derive it; the Kibana host is the Elasticsearch
+ *                              host with the `.es.` label swapped for `.kb.`
+ *                              (`derived: true`)
+ *   - blank, self-managed    → no host convention exists → return `null`
+ *
+ * A blank Kibana URL collapses to the Elasticsearch URL in {@link getConfig},
+ * so a `kibanaUrl` that still equals `elasticsearchUrl` means "not configured".
+ * Callers must treat a `null` (and any failure on a `derived` URL) as a quiet
+ * opt-out, never an error — derivation is a Cloud-only convenience and a miss
+ * on self-managed is expected, not a misconfiguration worth surfacing.
+ */
+export function resolveTelemetryKibanaUrl(): { url: string; derived: boolean } | null {
+  const config = getConfig();
+  if (config.kibanaUrl !== config.elasticsearchUrl) {
+    return { url: config.kibanaUrl, derived: false };
+  }
+  let u: URL;
+  try {
+    u = new URL(config.elasticsearchUrl);
+  } catch {
+    return null;
+  }
+  if (!u.host.includes(".es.")) return null;
+  u.host = u.host.replace(".es.", ".kb.");
+  return { url: u.toString().replace(/\/$/, ""), derived: true };
+}
+
 export async function esRequest<T = unknown>(
   path: string,
   options: {
@@ -114,10 +146,14 @@ export async function kibanaRequest<T = unknown>(
     body?: unknown;
     params?: Record<string, string>;
     apiVersion?: string;
+    // Override the Kibana base URL for this request. Used by the telemetry
+    // opt-in check to target a derived Cloud Kibana host when `kibana_url`
+    // is unset (see resolveTelemetryKibanaUrl). Defaults to config.kibanaUrl.
+    baseUrl?: string;
   } = {}
 ): Promise<T> {
   const config = getConfig();
-  const url = new URL(config.kibanaUrl + path);
+  const url = new URL((options.baseUrl ?? config.kibanaUrl) + path);
   if (options.params) {
     for (const [k, v] of Object.entries(options.params)) {
       url.searchParams.set(k, v);

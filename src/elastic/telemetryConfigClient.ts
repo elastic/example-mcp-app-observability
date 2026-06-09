@@ -19,9 +19,12 @@ export interface TelemetryConfig {
 }
 
 export class TelemetryConfigClient {
-  async fetchConfig(): Promise<TelemetryConfig> {
+  // `baseUrl` overrides the Kibana endpoint for this call — the telemetry
+  // service passes a derived Cloud Kibana URL when `kibana_url` is unset.
+  async fetchConfig(baseUrl?: string): Promise<TelemetryConfig> {
     return kibanaRequest<TelemetryConfig>(TELEMETRY_CONFIG_PATH, {
       apiVersion: KIBANA_API_VERSION,
+      ...(baseUrl ? { baseUrl } : {}),
     });
   }
 }

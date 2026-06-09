@@ -77,7 +77,7 @@
     "kibana_url": {
       "type": "string",
       "title": "Kibana URL (optional — enables manage-alerts)",
-      "description": "Kibana URL (e.g. https://your-cluster.kb.cloud.example.com). Leave blank to disable the manage-alerts tool — useful if you want the server to be strictly read-only (no rule creation or deletion).",
+      "description": "Kibana URL (e.g. https://your-cluster.kb.cloud.example.com). Leave blank to disable the manage-alerts tool — useful if you want the server to be strictly read-only (no rule creation or deletion). Also enables anonymous usage telemetry opt-in (read from Kibana); on Elastic Cloud this is auto-derived from the Elasticsearch URL when left blank, but self-managed deployments must set it for telemetry to follow your Kibana opt-in setting.",
       "required": false,
       "sensitive": false
     },
