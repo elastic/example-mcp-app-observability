@@ -9,6 +9,10 @@ dist/
 *.backup
 *.zip
 *.mcpb
+
+# Internal Forge-based dev workflow doc — not for the public repo
+docs/development-with-forge.md
+
 .claude/*
 !.claude/skills/
 !.claude/skills/**
