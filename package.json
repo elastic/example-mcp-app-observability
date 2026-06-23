@@ -1,6 +1,6 @@
 {
   "name": "example-mcp-app-observability",
-  "version": "1.3.1",
+  "version": "1.3.4",
   "description": "MCP App server for Elastic Observability — interactive SRE workflows for Kubernetes incident investigation, ML anomaly triage, blast-radius assessment, remediation, and alert-rule management (create, list, get, delete)",
   "type": "module",
   "license": "Elastic-2.0",
@@ -38,6 +38,7 @@
     "dev": "concurrently --raw \"node scripts/build-views.js --watch\" \"tsx watch main.ts\"",
     "harness": "vite --config vite.harness.config.ts",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/tools/*.test.ts",
     "audit:fields": "tsx scripts/audit-fields.ts",
     "mcpb:pack": "bash scripts/build-mcpb.sh",
     "skills:zip": "bash scripts/build-skill-zips.sh",
