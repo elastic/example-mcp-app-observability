@@ -209,6 +209,17 @@ interface K8sAppRollup {
   cpu_util_pct: number;
   mem_util_pct: number;
   restart_count: number;
+  // Short display name (the bucket key may be namespace-qualified to avoid
+  // collisions, e.g. "otel-prod/postgresql" — `name` stays "postgresql").
+  name?: string;
+  // The k8s namespace this workload runs in — the collision disambiguator.
+  namespace?: string;
+  // Provenance: how this bucket's app identity was resolved —
+  // "service" (pod→service.name via traces), "label" (app.kubernetes.io/name),
+  // "namespace" (k8s.namespace.name fallback). Omitted for _ungrouped/_other.
+  source?: "service" | "label" | "namespace";
+  // Logical parent grouping when known (e.g. service.namespace).
+  group?: string;
 }
 
 /**
@@ -244,15 +255,41 @@ function buildServiceGroups(
 }
 
 /**
- * Bucket per-pod resource snapshots into per-app rollups using the
- * pod -> service -> service.namespace chain. Pods that don't resolve
- * to an app go under the "_ungrouped" bucket so the view can offer a
- * dedicated chip for them. Caps at PODS_BY_APP_CAP buckets — the
- * remainder collapses into "_other" so totals reconcile with the
- * namespace-aggregate cpu/mem tiles even when the long tail is
- * truncated.
+ * Bucket per-pod resource snapshots into per-app rollups using a granular-first
+ * app-identity hierarchy: APM service.name (with service.namespace as a parent
+ * `group`) → app.kubernetes.io/name → k8s.namespace.name → "_ungrouped". Each
+ * bucket records how it resolved in `source`. Only pods with no identity at all
+ * land in "_ungrouped". Caps at PODS_BY_APP_CAP buckets — the remainder
+ * collapses into "_other" so totals reconcile with the namespace-aggregate
+ * cpu/mem tiles even when the long tail is truncated.
  */
-function buildPodsByApp(
+interface PodIdentity {
+  name: string; // short display name
+  namespace?: string; // k8s namespace (collision disambiguator)
+  source?: "service" | "label" | "namespace";
+  group?: string; // logical parent (service.namespace) when known
+}
+
+// App-identity hierarchy, resolved per pod, granular-first:
+//   1. APM service.name (pod has traces) — the actionable unit; carries its
+//      service.namespace as a parent `group` so coarser roll-ups stay possible.
+//   2. app.kubernetes.io/name on the pod — for workloads with no traces.
+//   3. k8s.namespace.name — last resort so the pod still groups.
+//   4. _ungrouped — no identity at all.
+function resolvePodIdentity(
+  snap: PodResourceSnapshot,
+  podServiceMap: Map<string, string>,
+  serviceNamespaceMap: Map<string, string>,
+): PodIdentity {
+  const ns = snap.namespace;
+  const svc = podServiceMap.get(snap.pod);
+  if (svc) return { name: svc, namespace: ns, source: "service", group: serviceNamespaceMap.get(svc) ?? ns };
+  if (snap.app_label) return { name: snap.app_label, namespace: ns, source: "label", group: ns };
+  if (ns) return { name: ns, namespace: ns, source: "namespace" };
+  return { name: "_ungrouped" };
+}
+
+export function buildPodsByApp(
   podSnapshots: Map<string, PodResourceSnapshot>,
   podServiceMap: Map<string, string>,
   serviceNamespaceMap: Map<string, string>
@@ -266,9 +303,10 @@ function buildPodsByApp(
     mem_lim: number;
     restart_count: number;
     pod_count: number;
+    ident?: PodIdentity;
   }
   const acc = new Map<string, Acc>();
-  const bump = (key: string, snap: PodResourceSnapshot) => {
+  const bump = (key: string, snap: PodResourceSnapshot, ident?: PodIdentity) => {
     const a = acc.get(key) ?? {
       cpu_use: 0, cpu_lim: 0, mem_use: 0, mem_lim: 0, restart_count: 0, pod_count: 0,
     };
@@ -278,13 +316,33 @@ function buildPodsByApp(
     a.mem_lim += snap.mem_lim_bytes;
     a.restart_count += snap.restart_delta;
     a.pod_count += 1;
+    if (a.ident === undefined && ident) a.ident = ident;
     acc.set(key, a);
   };
 
-  for (const snap of podSnapshots.values()) {
-    const svc = podServiceMap.get(snap.pod);
-    const app = svc ? serviceNamespaceMap.get(svc) : undefined;
-    bump(app ?? "_ungrouped", snap);
+  // Pass 1: resolve each pod's identity.
+  const idents = [...podSnapshots.values()].map((snap) => ({
+    snap,
+    id: resolvePodIdentity(snap, podServiceMap, serviceNamespaceMap),
+  }));
+
+  // Detect short names that span more than one namespace — only THOSE get a
+  // namespace-qualified key, so e.g. two `postgresql` workloads in `otel-demo`
+  // and `otel-prod` become distinct buckets while single-namespace names stay
+  // clean (`cart`, not `otel-demo/cart`).
+  const namespacesByName = new Map<string, Set<string>>();
+  for (const { id } of idents) {
+    if (id.name.startsWith("_")) continue;
+    const set = namespacesByName.get(id.name) ?? new Set<string>();
+    if (id.namespace) set.add(id.namespace);
+    namespacesByName.set(id.name, set);
+  }
+
+  // Pass 2: bump, qualifying the key only on genuine cross-namespace collisions.
+  for (const { snap, id } of idents) {
+    const collides = (namespacesByName.get(id.name)?.size ?? 0) > 1;
+    const key = collides && id.namespace ? `${id.namespace}/${id.name}` : id.name;
+    bump(key, snap, id);
   }
 
   // Cap at PODS_BY_APP_CAP non-pseudo apps; collapse the long tail. The
@@ -314,11 +372,16 @@ function buildPodsByApp(
   const finalize = (key: string) => {
     const a = acc.get(key);
     if (!a) return;
+    const id = a.ident;
     out[key] = {
       pod_count: a.pod_count,
       cpu_util_pct: a.cpu_lim > 0 ? Math.round((a.cpu_use / a.cpu_lim) * 1000) / 10 : 0,
       mem_util_pct: a.mem_lim > 0 ? Math.round((a.mem_use / a.mem_lim) * 1000) / 10 : 0,
       restart_count: a.restart_count,
+      ...(id?.name && id.name !== key ? { name: id.name } : {}),
+      ...(id?.namespace ? { namespace: id.namespace } : {}),
+      ...(id?.source ? { source: id.source } : {}),
+      ...(id?.group ? { group: id.group } : {}),
     };
   };
   for (const [k] of kept) finalize(k);
@@ -588,17 +651,20 @@ async function queryServiceNamespaceFootprint(
 //
 // Unlike queryPodResources (which LIMIT 20s for the Top Pods list), this
 // pulls every pod in scope so by_app rollups reflect the full namespace.
-// Each row gets cpu/mem usage + limits and a restart delta (MAX − MIN over
-// the window, since restart_count is monotonic). Used downstream to bucket
-// by app and emit pods.by_app.
+// Each row gets cpu/mem usage + derived limits and a restart delta (MAX − MIN
+// over the window, since k8s.container.restarts is monotonic). Used downstream
+// to bucket by app and emit pods.by_app.
 
-interface PodResourceSnapshot {
+export interface PodResourceSnapshot {
   pod: string;
   cpu_use_cores: number;
   cpu_lim_cores: number;
   mem_use_bytes: number;
   mem_lim_bytes: number;
   restart_delta: number;
+  // Used as fallback grouping keys when a pod has no APM service (no traces).
+  app_label?: string; // app.kubernetes.io/name on the pod
+  namespace?: string; // k8s.namespace.name
 }
 
 /**
@@ -616,42 +682,56 @@ async function queryPodResourceSnapshot(
   const out = new Map<string, PodResourceSnapshot>();
   const nsFilter = namespace ? `\n  AND k8s.namespace.name == "${namespace.replace(/"/g, '\\"')}"` : "";
   const clusterFilter = cluster ? `\n  AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}"` : "";
+  // Also carry namespace + app.kubernetes.io/name per pod (constant per pod, so
+  // safe in BY) — they're the fallback grouping keys for pods with no APM
+  // service in buildPodsByApp.
   const usageEsql = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE @timestamp > NOW() - ${lookback}
   AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
 | STATS
     cpu_use = MAX(metrics.k8s.pod.cpu.usage),
     mem_use = MAX(metrics.k8s.pod.memory.working_set)
-  BY k8s.pod.name
+  BY k8s.pod.name,
+     ns = k8s.namespace.name,
+     app_label = \`resource.attributes.k8s.pod.label.app.kubernetes.io/name\`
 | LIMIT 1000`;
-  const limitsEsql = `FROM metrics-kubeletstatsreceiver.otel-*
+  // kubeletstats exposes pod limit *utilization* ratios directly
+  // (*_limit_utilization), not absolute cpu/memory limits. Query the ratio and
+  // derive the absolute limit per pod as usage / utilization below, so the
+  // downstream sum(use)/sum(lim) aggregation in buildPodsByApp is unchanged.
+  const utilEsql = `FROM metrics-kubeletstatsreceiver.otel-*
 | WHERE @timestamp > NOW() - ${lookback}
   AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
 | STATS
-    cpu_lim = MAX(metrics.k8s.pod.cpu.limit),
-    mem_lim = MAX(metrics.k8s.pod.memory.limit)
+    cpu_util = AVG(metrics.k8s.pod.cpu_limit_utilization),
+    mem_util = AVG(metrics.k8s.pod.memory_limit_utilization)
   BY k8s.pod.name
 | LIMIT 1000`;
-  const restartEsql = `FROM metrics-kubeletstatsreceiver.otel-*
+  // Container restart counts come from the k8s_cluster receiver
+  // (k8s.container.restarts is cumulative); restart_delta = restarts observed
+  // across the window.
+  const restartEsql = `FROM metrics-k8sclusterreceiver.otel-*
 | WHERE @timestamp > NOW() - ${lookback}
   AND k8s.pod.name IS NOT NULL${nsFilter}${clusterFilter}
 | STATS
-    restart_max = MAX(metrics.k8s.container.restart_count),
-    restart_min = MIN(metrics.k8s.container.restart_count)
+    restart_max = MAX(metrics.k8s.container.restarts),
+    restart_min = MIN(metrics.k8s.container.restarts)
   BY k8s.pod.name
 | LIMIT 1000`;
 
-  const [usageRows, limitsRows, restartRows] = await Promise.all([
+  const [usageRows, utilRows, restartRows] = await Promise.all([
     safeEsqlRows<{
       "k8s.pod.name"?: string;
       cpu_use?: number;
       mem_use?: number;
+      ns?: string;
+      app_label?: string;
     }>(usageEsql, errors, { optional: true }),
     safeEsqlRows<{
       "k8s.pod.name"?: string;
-      cpu_lim?: number;
-      mem_lim?: number;
-    }>(limitsEsql, errors, { optional: true }),
+      cpu_util?: number;
+      mem_util?: number;
+    }>(utilEsql, errors, { optional: true }),
     safeEsqlRows<{
       "k8s.pod.name"?: string;
       restart_max?: number;
@@ -659,11 +739,11 @@ async function queryPodResourceSnapshot(
     }>(restartEsql, errors, { optional: true }),
   ]);
 
-  const limitsByPod = new Map<string, { cpu_lim: number; mem_lim: number }>();
-  for (const r of limitsRows) {
+  const utilByPod = new Map<string, { cpu_util: number; mem_util: number }>();
+  for (const r of utilRows) {
     const pod = r["k8s.pod.name"];
     if (!pod) continue;
-    limitsByPod.set(pod, { cpu_lim: r.cpu_lim ?? 0, mem_lim: r.mem_lim ?? 0 });
+    utilByPod.set(pod, { cpu_util: r.cpu_util ?? 0, mem_util: r.mem_util ?? 0 });
   }
   const restartByPod = new Map<string, number>();
   for (const r of restartRows) {
@@ -675,14 +755,20 @@ async function queryPodResourceSnapshot(
   for (const r of usageRows) {
     const pod = r["k8s.pod.name"];
     if (!pod) continue;
-    const lim = limitsByPod.get(pod);
+    const cpu_use = r.cpu_use ?? 0;
+    const mem_use = r.mem_use ?? 0;
+    const util = utilByPod.get(pod);
+    // Absolute limit = usage / utilization (utilization = usage / limit). Zero
+    // util → unknown limit → 0 (the rollup treats 0 limit as "no data").
     out.set(pod, {
       pod,
-      cpu_use_cores: r.cpu_use ?? 0,
-      cpu_lim_cores: lim?.cpu_lim ?? 0,
-      mem_use_bytes: r.mem_use ?? 0,
-      mem_lim_bytes: lim?.mem_lim ?? 0,
+      cpu_use_cores: cpu_use,
+      cpu_lim_cores: util && util.cpu_util > 0 ? cpu_use / util.cpu_util : 0,
+      mem_use_bytes: mem_use,
+      mem_lim_bytes: util && util.mem_util > 0 ? mem_use / util.mem_util : 0,
       restart_delta: restartByPod.get(pod) ?? 0,
+      app_label: r.app_label,
+      namespace: r.ns,
     });
   }
   return out;
@@ -824,13 +910,11 @@ interface K8sUtilizationTimeline {
 }
 
 /**
- * Pod CPU/memory utilization timeline. The OTel kubeletstats receiver
- * doesn't always emit `metrics.k8s.pod.cpu.limit` / `mem.limit` — some
- * cluster configurations only ship usage. Querying for a missing
- * column 400s the WHOLE query, so we run a usage-only query first
- * (always works) and a separate optional query for limits. When
- * limits come back we report % utilization; otherwise we report
- * cores/bytes (`cpuMode`/`memMode`) and the view formats accordingly.
+ * Pod CPU/memory utilization timeline. kubeletstats emits limit *utilization*
+ * ratios (`*_limit_utilization`) only for pods that declare resource limits.
+ * We run an always-works usage query plus a separate optional utilization
+ * query. When utilization comes back we report % ; otherwise we fall back to
+ * raw usage cores/bytes (`cpuMode`/`memMode`) and the view formats accordingly.
  */
 async function queryK8sUtilizationTimeline(
   namespace: string | undefined,
@@ -842,56 +926,56 @@ async function queryK8sUtilizationTimeline(
   const clusterFilter = cluster ? `AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" ` : "";
 
   const usageEsql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_use = SUM(metrics.k8s.pod.cpu.usage), mem_use = SUM(metrics.k8s.pod.memory.working_set) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
-  const limitsEsql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_lim = SUM(metrics.k8s.pod.cpu.limit), mem_lim = SUM(metrics.k8s.pod.memory.limit) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  // kubeletstats ships limit *utilization* ratios, not absolute limits. Average
+  // the per-pod ratio per bucket and report it directly as % utilization.
+  const utilEsql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS cpu_util = AVG(metrics.k8s.pod.cpu_limit_utilization), mem_util = AVG(metrics.k8s.pod.memory_limit_utilization) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
 
-  const [usageRowsAll, limitsRowsAll] = await Promise.all([
+  const [usageRowsAll, utilRowsAll] = await Promise.all([
     safeEsqlRows<{
       cpu_use?: number;
       mem_use?: number;
       bucket?: string | number;
     }>(usageEsql, errors, { optional: true }),
-    // Optional: silently empty when the cluster doesn't track limits.
+    // Optional: silently empty when pods don't set resource limits.
     safeEsqlRows<{
-      cpu_lim?: number;
-      mem_lim?: number;
+      cpu_util?: number;
+      mem_util?: number;
       bucket?: string | number;
-    }>(limitsEsql, errors, { optional: true }),
+    }>(utilEsql, errors, { optional: true }),
   ]);
 
-  // Index limits by bucket for cheap lookup when joining with usage.
-  const limitsByBucket = new Map<number, { cpu_lim: number; mem_lim: number }>();
-  for (const r of limitsRowsAll) {
+  // Index utilization by bucket for cheap lookup when joining with usage.
+  const utilByBucket = new Map<number, { cpu_util: number; mem_util: number }>();
+  for (const r of utilRowsAll) {
     if (r.bucket == null) continue;
     const ts = typeof r.bucket === "number" ? r.bucket : Date.parse(r.bucket as string);
     if (Number.isNaN(ts)) continue;
-    limitsByBucket.set(ts, { cpu_lim: r.cpu_lim ?? 0, mem_lim: r.mem_lim ?? 0 });
+    utilByBucket.set(ts, { cpu_util: r.cpu_util ?? 0, mem_util: r.mem_util ?? 0 });
   }
 
-  // Re-shape usage rows to look like the original combined-row format,
-  // pulling matching limits from the lookup. Lets the existing
-  // pct/cores/bytes selection logic stay the same.
+  // Re-shape usage rows, pulling matching utilization from the lookup, so the
+  // existing pct/cores/bytes selection logic stays the same.
   const rows = usageRowsAll.map((r) => {
     const ts = r.bucket == null ? null : typeof r.bucket === "number" ? r.bucket : Date.parse(r.bucket as string);
-    const lim = ts != null && !Number.isNaN(ts) ? limitsByBucket.get(ts) : undefined;
+    const u = ts != null && !Number.isNaN(ts) ? utilByBucket.get(ts) : undefined;
     return {
       cpu_use: r.cpu_use,
       mem_use: r.mem_use,
-      cpu_lim: lim?.cpu_lim ?? 0,
-      mem_lim: lim?.mem_lim ?? 0,
+      cpu_util: u?.cpu_util ?? 0,
+      mem_util: u?.mem_util ?? 0,
       bucket: r.bucket,
     };
   });
 
-  // Decide mode per metric based on whether limits are populated anywhere
-  // in the lookback window. If they are, we report % utilization. If they
-  // aren't (common in real clusters where pods don't set resource limits),
-  // we fall back to raw usage — total cores in use for CPU, total bytes
-  // working-set for memory. Without this fallback the tile shows '—'
-  // even when the cluster is reporting plenty of usage data.
-  const cpuLimSeen = rows.some((r) => (r.cpu_lim ?? 0) > 0);
-  const memLimSeen = rows.some((r) => (r.mem_lim ?? 0) > 0);
-  const cpuMode: "pct" | "cores" = cpuLimSeen ? "pct" : "cores";
-  const memMode: "pct" | "bytes" = memLimSeen ? "pct" : "bytes";
+  // Decide mode per metric based on whether utilization is populated anywhere
+  // in the lookback window. If it is, report % utilization. If not (common when
+  // pods don't set resource limits), fall back to raw usage — total cores in
+  // use for CPU, total working-set bytes for memory. Without this fallback the
+  // tile shows '—' even when the cluster is reporting plenty of usage data.
+  const cpuUtilSeen = rows.some((r) => (r.cpu_util ?? 0) > 0);
+  const memUtilSeen = rows.some((r) => (r.mem_util ?? 0) > 0);
+  const cpuMode: "pct" | "cores" = cpuUtilSeen ? "pct" : "cores";
+  const memMode: "pct" | "bytes" = memUtilSeen ? "pct" : "bytes";
 
   const cpu: MetricTimelineBucket[] = [];
   const mem: MetricTimelineBucket[] = [];
@@ -899,14 +983,9 @@ async function queryK8sUtilizationTimeline(
     if (r.bucket == null) continue;
     const ts = typeof r.bucket === "number" ? r.bucket! : Date.parse(r.bucket as string);
     if (Number.isNaN(ts)) continue;
-    const cpuVal =
-      cpuMode === "pct"
-        ? r.cpu_lim && r.cpu_lim > 0 ? ((r.cpu_use ?? 0) / r.cpu_lim) * 100 : 0
-        : r.cpu_use ?? 0;
-    const memVal =
-      memMode === "pct"
-        ? r.mem_lim && r.mem_lim > 0 ? ((r.mem_use ?? 0) / r.mem_lim) * 100 : 0
-        : r.mem_use ?? 0;
+    // utilization is a 0–1 ratio → ×100 for %.
+    const cpuVal = cpuMode === "pct" ? (r.cpu_util ?? 0) * 100 : r.cpu_use ?? 0;
+    const memVal = memMode === "pct" ? (r.mem_util ?? 0) * 100 : r.mem_use ?? 0;
     cpu.push({ ts, value: Math.round(cpuVal * 10) / 10 });
     mem.push({ ts, value: Math.round(memVal * 10) / 10 });
   }
@@ -921,10 +1000,10 @@ async function queryK8sRestartTimeline(
 ): Promise<MetricTimelineBucket[]> {
   const nsFilter = namespace ? `AND k8s.namespace.name == "${namespace}" ` : "";
   const clusterFilter = cluster ? `AND k8s.cluster.name == "${cluster.replace(/"/g, '\\"')}" ` : "";
-  // restart_count is a monotonic counter per container; SUM per bucket gives a
-  // rough activity proxy without diffing. Good enough for a sparkline; can
-  // refine to deltas later if needed.
-  const esql = `FROM metrics-kubeletstatsreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS restarts = MAX(metrics.k8s.container.restart_count) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
+  // k8s.container.restarts (from the k8s_cluster receiver) is a monotonic
+  // counter per container; MAX per bucket then diffed below gives per-bucket
+  // restart activity for the sparkline.
+  const esql = `FROM metrics-k8sclusterreceiver.otel-* | WHERE @timestamp > NOW() - ${lookback} ${nsFilter}${clusterFilter}| STATS restarts = MAX(metrics.k8s.container.restarts) BY bucket = BUCKET(@timestamp, ${METRIC_TIMELINE_SPAN_MIN} minute) | SORT bucket ASC`;
   const rows = await safeEsqlRows<{ restarts?: number; bucket?: string | number }>(esql, errors, {
     optional: true,
   });
@@ -1932,6 +2011,37 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
         queryPodResourceSnapshot(effectiveNs, effectiveCluster, lb, queryErrors),
       ]);
 
+      // Resolve each service to its best-available application identity ONCE and
+      // reuse it for svc.app, pod.app, and the service_groups chips so they never
+      // disagree — the view shows an "ungrouped" chip if ANY service or pod lacks
+      // `.app`. Hierarchy: service.namespace → app.kubernetes.io/name → service
+      // name (so nothing is ever unresolved).
+      const serviceLabelMap = new Map<string, string>();
+      for (const snap of podSnapshots.values()) {
+        const s = podServiceMap.get(snap.pod);
+        if (s && snap.app_label && !serviceLabelMap.has(s)) {
+          serviceLabelMap.set(s, snap.app_label);
+        }
+      }
+      let usedNamespace = false;
+      let usedLabel = false;
+      const appMap = new Map<string, string>();
+      for (const s of services) {
+        const ns = serviceNamespaceMap.get(s.service);
+        if (ns) {
+          appMap.set(s.service, ns);
+          usedNamespace = true;
+          continue;
+        }
+        const label = serviceLabelMap.get(s.service);
+        if (label) {
+          appMap.set(s.service, label);
+          usedLabel = true;
+          continue;
+        }
+        appMap.set(s.service, s.service);
+      }
+
       // Attach timeline + peak + per-service KPIs + app group to each row.
       for (const svc of services) {
         const tl = serviceTimelines.get(svc.service);
@@ -1945,8 +2055,7 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
           svc.avg_latency_ms = kpi.avg_latency_ms;
           svc.error_rate_pct = kpi.error_rate_pct;
         }
-        const ns = serviceNamespaceMap.get(svc.service);
-        if (ns) svc.app = ns;
+        svc.app = appMap.get(svc.service);
       }
       for (const pod of pods) {
         const tl = podTimelines.get(pod.pod);
@@ -1957,8 +2066,12 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
         const svc = podServiceMap.get(pod.pod);
         if (svc) {
           pod.service = svc;
-          const app = serviceNamespaceMap.get(svc);
-          if (app) pod.app = app;
+          pod.app = appMap.get(svc);
+        } else {
+          // No APM service (no traces): fall back to the pod's own k8s identity
+          // so it still resolves to an app instead of "ungrouped".
+          const snap = podSnapshots.get(pod.pod);
+          pod.app = snap?.app_label ?? snap?.namespace;
         }
       }
       const servicesTimelineWindow = deriveTimelineWindow(serviceTimelines);
@@ -2014,20 +2127,21 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
       }
       if (clustersAvailable.length > 1) scope.clusters_available = clustersAvailable;
 
-      // Application grouping. Only `service.namespace` is consulted in this
-      // commit; k8s-label and naming-prefix fallbacks land alongside the
-      // pod→service mapping commit (where the k8s-side label query lives).
-      // When no service.namespace is present anywhere, omit service_groups
-      // entirely so the view's apps strip stays hidden rather than showing
-      // a single "ungrouped" bucket.
+      // Application grouping reuses the resilient appMap resolved above
+      // (service.namespace → app.kubernetes.io/name → service name).
       const serviceGroups = buildServiceGroups(
         services,
-        serviceNamespaceMap,
+        appMap,
         serviceNamespaceFootprint
       );
       if (serviceGroups.length > 0) {
         scope.service_groups = serviceGroups;
-        scope.service_groups_source = "service.namespace";
+        // Report the most-authoritative signal that actually contributed.
+        scope.service_groups_source = usedNamespace
+          ? "service.namespace"
+          : usedLabel
+            ? "k8s_label"
+            : "naming_prefix";
       }
 
       if (Object.keys(scope).length > 0) result.scope = scope;
@@ -2137,9 +2251,9 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
                   peak: peakOf(k8sUtil.mem),
                 };
               })();
-        // Restart count is optional in the OTel kubeletstats receiver — when
-        // the cluster doesn't export `metrics.k8s.container.restart_count`,
-        // the timeline query 400s and we fall through to an empty array.
+        // Restart count comes from the k8s_cluster receiver — when the cluster
+        // doesn't export `metrics.k8s.container.restarts`, the timeline query
+        // returns empty and we fall through to an empty array.
         // Distinguish "metric absent" (show — / "not tracked") from a real
         // zero ("0 / last 1h"). Without the distinction the tile lies.
         const restartTracked = k8sRestartTl.length > 0;
