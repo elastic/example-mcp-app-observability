@@ -22,6 +22,7 @@ export interface Anomaly {
   typical?: number | number[];
   deviationPercent?: number;
   influencers?: Record<string, string[]>;
+  kibana_url?: string | null;
 }
 
 export interface TimePoint {
@@ -54,6 +55,7 @@ export interface AnomalyData {
   chart_points?: number;
   investigation_actions?: InvestigationAction[];
   rerun_context?: RerunContext;
+  kibana_explorer_url?: string | null;
   detail?: {
     entity_label?: string;
     namespace?: string;

@@ -28,7 +28,8 @@
         "ELASTICSEARCH_URL": "${user_config.elasticsearch_url}",
         "ELASTICSEARCH_API_KEY": "${user_config.elasticsearch_api_key}",
         "KIBANA_URL": "${user_config.kibana_url}",
-        "KIBANA_API_KEY": "${user_config.kibana_api_key}"
+        "KIBANA_API_KEY": "${user_config.kibana_api_key}",
+        "KIBANA_SPACE_ID": "${user_config.kibana_space_id}"
       }
     }
   },
@@ -87,6 +88,13 @@
       "description": "API key for Kibana authentication. Leave blank to reuse the Elasticsearch API key — in most Elastic Cloud deployments the same key authenticates against both endpoints.",
       "required": false,
       "sensitive": true
+    },
+    "kibana_space_id": {
+      "type": "string",
+      "title": "Kibana Space ID (optional)",
+      "description": "Kibana Space ID for deep links in tool responses. Leave blank to use the default space (recommended for most deployments). Only set this if your data lives in a custom named space.",
+      "required": false,
+      "sensitive": false
     }
   },
   "keywords": [

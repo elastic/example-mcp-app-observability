@@ -148,16 +148,35 @@ export function App() {
         isFullscreen={isFullscreen}
         toggleFullscreen={toggleFullscreen}
         contextRow={
-          headerPills.length > 0 ? (
+          (headerPills.length > 0 || data.kibana_explorer_url) ? (
             <div className="anom-context-row">
               {headerPills.map((p) => (
                 <QueryPill key={p.label}>{p.label}: {p.value}</QueryPill>
               ))}
+              {data.kibana_explorer_url && noticeProps.noticeOnOpenLink && (
+                <button
+                  type="button"
+                  onClick={() => noticeProps.noticeOnOpenLink!(data.kibana_explorer_url!)}
+                  style={{
+                    background: "rgba(0,153,255,0.08)",
+                    border: "1px solid #09f",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                    padding: "1px 8px",
+                    fontSize: 11,
+                    lineHeight: "20px",
+                    color: "#09f",
+                    marginLeft: "auto",
+                  }}
+                >
+                  View all anomalies ↗
+                </button>
+              )}
             </div>
           ) : undefined
         }
         headline={data.headline && headerPills.length === 0 ? data.headline : undefined}
-        body={<AnomalyDetailView top={top} data={data} onSend={onSend} />}
+        body={<AnomalyDetailView top={top} data={data} onSend={onSend} onOpenLink={noticeProps.noticeOnOpenLink} />}
         {...noticeProps}
       />
     );
@@ -415,6 +434,7 @@ function OverviewView({
               anomaly={a}
               selected={k === selectedKey}
               onClick={() => setSelectedKey((prev) => (prev === k ? null : k))}
+              onOpenLink={noticeProps?.noticeOnOpenLink}
             />
           );
         }
@@ -446,6 +466,7 @@ function OverviewView({
         data={data}
         onSend={onSend}
         onDrillDown={() => onSend(drillFor(selected))}
+        onOpenLink={noticeProps?.noticeOnOpenLink}
       />
     </>
   ) : null;

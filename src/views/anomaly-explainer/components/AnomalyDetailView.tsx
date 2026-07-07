@@ -28,18 +28,13 @@ export function AnomalyDetailView({
   data,
   onSend,
   onDrillDown,
+  onOpenLink,
 }: {
   top: Anomaly;
   data: AnomalyData;
   onSend: (prompt: string) => void;
-  /**
-   * When provided, prepends a "Get full details" button to the action bar.
-   * Used by the overview-mode detail pane, which shows whatever per-anomaly
-   * data the overview payload carries (sparse — no time series, no actual /
-   * typical values, no influencers) and offers an explicit drill-through to
-   * have the LLM fetch the full payload.
-   */
   onDrillDown?: () => void;
+  onOpenLink?: (url: string) => void;
 }) {
   const sev = top.severity || severityFromScore(top.recordScore);
   const actual = firstNum(top.actual);
@@ -104,9 +99,28 @@ export function AnomalyDetailView({
       <div className="anom-summary">
         <ScoreRing score={top.recordScore} severity={sev} />
         <div className="anom-summary-text">
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <SeverityChip severity={sev} label={sev} />
             <span className="anom-summary-headline">{headline}</span>
+            {top.kibana_url && onOpenLink && (
+              <button
+                type="button"
+                onClick={() => onOpenLink(top.kibana_url!)}
+                title="View job in Kibana ML"
+                style={{
+                  background: "rgba(0,153,255,0.08)",
+                  border: "1px solid #09f",
+                  borderRadius: 3,
+                  cursor: "pointer",
+                  padding: "1px 6px",
+                  fontSize: 11,
+                  lineHeight: "16px",
+                  color: "#09f",
+                }}
+              >
+                View in Kibana ↗
+              </button>
+            )}
           </div>
           {/* Subtitle and fnField removed — Detected, Deviation, Function,
               Field, and namespace influencer all live in the fact grid
@@ -186,7 +200,27 @@ export function AnomalyDetailView({
                   }}
                 >
                   <span>{entityLabel(a)} · {a.jobId}</span>
-                  <span>{Math.round(a.recordScore)}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span>{Math.round(a.recordScore)}</span>
+                    {a.kibana_url && onOpenLink && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenLink(a.kibana_url!)}
+                        title="View job in Kibana ML"
+                        style={{
+                          background: "rgba(0,153,255,0.08)",
+                          border: "1px solid #09f",
+                          borderRadius: 3,
+                          cursor: "pointer",
+                          padding: "1px 5px",
+                          fontSize: 10,
+                          lineHeight: "16px",
+                          color: "#09f",
+                          fontFamily: "inherit",
+                        }}
+                      >↗</button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

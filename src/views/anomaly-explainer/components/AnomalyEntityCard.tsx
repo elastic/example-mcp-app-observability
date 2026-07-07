@@ -14,10 +14,12 @@ export function AnomalyEntityCard({
   anomaly,
   selected,
   onClick,
+  onOpenLink,
 }: {
   anomaly: Anomaly;
   selected?: boolean;
   onClick: () => void;
+  onOpenLink?: (url: string) => void;
 }) {
   const sev = anomaly.severity || severityFromScore(anomaly.recordScore);
   const stripeClass =
@@ -40,6 +42,14 @@ export function AnomalyEntityCard({
           <span>{anomaly.jobId}</span>
           <span>·</span>
           <span>{fmtRelativeTime(anomaly.timestamp)}</span>
+          {anomaly.kibana_url && onOpenLink && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenLink(anomaly.kibana_url!); }}
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "var(--ds-text-label)", fontSize: 11, lineHeight: 1 }}
+              title="View job in Kibana ML"
+            >↗</button>
+          )}
         </div>
       </div>
       <div className="anom-entity-card-score">

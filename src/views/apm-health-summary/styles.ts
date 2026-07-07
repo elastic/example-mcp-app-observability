@@ -315,6 +315,21 @@ export const viewStyles = `
     outline: 2px solid var(--accent);
     outline-offset: 1px;
   }
+  .health-scope-group.is-active-filter {
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-tertiary));
+    border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    color: var(--accent);
+  }
+  .health-scope-group.is-active-filter .health-scope-group-label {
+    color: var(--accent);
+  }
+  .health-scope-group.is-active-filter .health-scope-group-count {
+    color: color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  .health-scope-group.is-active-filter:hover {
+    background: color-mix(in srgb, var(--accent) 18%, var(--bg-tertiary));
+    border-color: var(--accent);
+  }
   .health-scope-group.is-deselected {
     opacity: 0.45;
     text-decoration: line-through;

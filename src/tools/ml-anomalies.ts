@@ -20,6 +20,7 @@ import {
   type AnomalyQueryResult,
 } from "../elastic/ml.js";
 import { esRequest } from "../elastic/client.js";
+import { getLinkCtx, buildMlJobLink, buildMlAnomalyExplorerLink } from "../elastic/kibanaLinks.js";
 import { resolveViewPath } from "./view-path.js";
 import { consumeWelcomeNotice } from "../setup/notice.js";
 // Unit inference shared with the view — see src/shared/infer-unit.ts. Don't
@@ -45,6 +46,7 @@ interface Enriched extends AnomalyQueryResult {
   chart_window?: string;
   chart_points?: number;
   time_series_note?: string;
+  kibana_explorer_url?: string | null;
   rerun_context?: {
     tool: string;
     current_lookback: string;
@@ -153,6 +155,15 @@ async function enrichForView(
 ): Promise<Enriched> {
   const anomalies = result.anomalies || [];
   const enriched: Enriched = { ...result };
+
+  const { ctx: linkCtx } = await getLinkCtx();
+  enriched.kibana_explorer_url = buildMlAnomalyExplorerLink(linkCtx);
+  if (enriched.anomalies) {
+    enriched.anomalies = enriched.anomalies.map((a) => ({
+      ...a,
+      kibana_url: buildMlJobLink(linkCtx, a.jobId),
+    }));
+  }
 
   // Build investigation actions based on what came back
   const actions: InvestigationAction[] = [];

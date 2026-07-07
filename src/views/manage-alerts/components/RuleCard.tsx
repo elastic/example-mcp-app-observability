@@ -36,7 +36,6 @@ export function RuleCard({
           <div className="rule-card-name">{rule.name}</div>
           <div className="rule-card-meta">
             <span className="rule-card-type-pill">{shortType(rule.rule_type_id)}</span>
-            <span className="rule-card-id mono">#{rule.id}</span>
             {typeof rule.active_alert_count === "number" && rule.active_alert_count > 0 ? (
               <span className="rule-card-alerts-pill">
                 {rule.active_alert_count} active

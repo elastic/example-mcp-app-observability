@@ -35,6 +35,21 @@ interface ServiceHealth {
   avg_duration_us: number;
   p99_duration_us?: number;
   error_count?: number;
+  error_rate?: number;
+  exception_count?: number;
+}
+
+interface PriorHealth {
+  span_count?: number;
+  avg_duration_us?: number;
+  error_count?: number;
+  error_rate?: number;
+}
+
+interface ServiceTrend {
+  span_trend_pct?: number;
+  latency_trend_pct?: number;
+  error_rate_delta_pp?: number;
 }
 
 interface ServiceNode {
@@ -44,6 +59,10 @@ interface ServiceNode {
   deployment?: string;
   namespace?: string;
   health?: ServiceHealth;
+  prior_health?: PriorHealth;
+  trend?: ServiceTrend;
+  silent?: boolean;
+  kibana_url?: string | null;
 }
 
 interface Edge {
@@ -102,6 +121,7 @@ function formatCount(n: number): string {
 }
 
 function healthIndicator(svc: ServiceNode): { color: string; label: string } {
+  if (svc.silent) return { color: theme.red, label: "⚠ silent" };
   if (!svc.health) return { color: theme.textDim, label: "no traces" };
   const err = svc.health.error_count ?? 0;
   const total = svc.health.span_count;
@@ -607,6 +627,30 @@ function IncomingSeverityTag({
   );
 }
 
+function SilentTag({ node }: { node: LayoutNode }) {
+  const text = "⚠ silent";
+  const padX = 6, padY = 2, charW = 6.4, fontSize = 9;
+  const tagH = fontSize + padY * 2 + 2;
+  const tagW = Math.ceil(text.length * charW) + padX * 2;
+  const tagX = node.x;
+  const tagY = node.y - tagH + 4;
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      <title>Service stopped reporting — had active traces in the prior window</title>
+      <rect x={tagX} y={tagY} width={tagW} height={tagH}
+        rx={tagH / 2} ry={tagH / 2}
+        fill="#3a1a16" stroke={theme.red} strokeWidth={1}
+      />
+      <text x={tagX + tagW / 2} y={tagY + tagH / 2 + fontSize / 2 - 1}
+        fill={theme.red} fontSize={fontSize}
+        fontFamily="'JetBrains Mono', monospace" fontWeight={700} textAnchor="middle"
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
 /**
  * Top-of-graph anomalies strip — surfaces the worst edges in the
  * current topology so a 600s outlier can't hide between two healthy
@@ -701,6 +745,7 @@ function NodeCard({
   onLeave,
   onClick,
   onToggleInspect,
+  onOpenLink,
 }: {
   node: LayoutNode;
   dimmed: boolean;
@@ -715,6 +760,7 @@ function NodeCard({
   onLeave: () => void;
   onClick: (e: React.MouseEvent) => void;
   onToggleInspect: () => void;
+  onOpenLink?: (url: string) => void;
 }) {
   const color = roleColor(node.svc.role);
   const hi = healthIndicator(node.svc);
@@ -796,6 +842,32 @@ function NodeCard({
           >
             {node.name}
           </span>
+          {node.svc.kibana_url && onOpenLink && (
+            <button
+              type="button"
+              title="View in Kibana"
+              style={{
+                background: "rgba(0,153,255,0.08)",
+                border: "1px solid #09f",
+                borderRadius: 3,
+                cursor: "pointer",
+                padding: "0 3px",
+                fontSize: 9,
+                lineHeight: "14px",
+                color: "#09f",
+                flexShrink: 0,
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenLink(node.svc.kibana_url!);
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {"\u2197"}
+            </button>
+          )}
           <span
             title={`${fanIn} upstream \u00b7 ${fanOut} downstream`}
             style={{
@@ -813,28 +885,26 @@ function NodeCard({
             {`${fanIn}\u2194${fanOut}`}
           </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 3, flexWrap: "nowrap", overflow: "hidden" }}>
           {node.svc.language && (
-            <span
-              style={{
-                fontSize: 9,
-                color: theme.textMuted,
-                fontFamily: "'JetBrains Mono', monospace",
-              }}
-            >
+            <span style={{ fontSize: 9, color: theme.textMuted, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
               {node.svc.language}
             </span>
           )}
-          <span style={{ fontSize: 9, color: hi.color }}>{hi.label}</span>
+          <span style={{ fontSize: 9, color: hi.color, flexShrink: 0 }}>{hi.label}</span>
+          {node.svc.trend?.error_rate_delta_pp != null && Math.abs(node.svc.trend.error_rate_delta_pp) >= 0.5 && (
+            <span style={{ fontSize: 8, color: node.svc.trend.error_rate_delta_pp > 0 ? theme.red : theme.green, flexShrink: 0 }}>
+              {node.svc.trend.error_rate_delta_pp > 0 ? "↑" : "↓"}
+            </span>
+          )}
           {node.svc.health?.avg_duration_us != null && (
-            <span
-              style={{
-                fontSize: 9,
-                color: theme.textDim,
-                fontFamily: "'JetBrains Mono', monospace",
-              }}
-            >
+            <span style={{ fontSize: 9, color: theme.textDim, fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
               {formatDuration(node.svc.health.avg_duration_us)} avg
+            </span>
+          )}
+          {node.svc.trend?.latency_trend_pct != null && Math.abs(node.svc.trend.latency_trend_pct) >= 15 && (
+            <span style={{ fontSize: 8, color: node.svc.trend.latency_trend_pct > 0 ? theme.amber : theme.green, flexShrink: 0 }}>
+              {node.svc.trend.latency_trend_pct > 0 ? "↑" : "↓"}
             </span>
           )}
         </div>
@@ -961,7 +1031,8 @@ export function App() {
       const err = s.health.error_count ?? 0;
       return total > 0 && err / total > 0.02;
     }).length;
-    return { roots, leaves, withHealth, unhealthy };
+    const silent = data.services.filter((s) => s.silent).length;
+    return { roots, leaves, withHealth, unhealthy, silent };
   }, [data]);
 
   const isDragging = panZoom.isDragging;
@@ -1006,7 +1077,12 @@ export function App() {
         lines.push(k8s.join(" · "));
       }
 
-      if (svc.health) {
+      if (svc.silent) {
+        lines.push("⚠ silent — was reporting, now no traces");
+        if (svc.prior_health?.span_count) {
+          lines.push(`prior window: ${formatCount(svc.prior_health.span_count)} spans`);
+        }
+      } else if (svc.health) {
         const h = svc.health;
         const total = h.span_count;
         const err = h.error_count ?? 0;
@@ -1015,10 +1091,18 @@ export function App() {
         if (total > 0) {
           lines.push(`errors: ${formatCount(err)} (${rate.toFixed(2)}%)`);
         }
+        if (h.exception_count) lines.push(`APM exceptions: ${formatCount(h.exception_count)}`);
         if (h.avg_duration_us != null) {
           const durParts = [`avg: ${formatDuration(h.avg_duration_us)}`];
           if (h.p99_duration_us != null) durParts.push(`p99: ${formatDuration(h.p99_duration_us)}`);
           lines.push(durParts.join(" · "));
+        }
+        if (svc.trend) {
+          const trendParts: string[] = [];
+          if (svc.trend.span_trend_pct != null) trendParts.push(`throughput ${svc.trend.span_trend_pct > 0 ? "+" : ""}${svc.trend.span_trend_pct}%`);
+          if (svc.trend.latency_trend_pct != null) trendParts.push(`latency ${svc.trend.latency_trend_pct > 0 ? "+" : ""}${svc.trend.latency_trend_pct}%`);
+          if (svc.trend.error_rate_delta_pp != null) trendParts.push(`err ${svc.trend.error_rate_delta_pp > 0 ? "+" : ""}${svc.trend.error_rate_delta_pp}pp`);
+          if (trendParts.length) lines.push(`vs prior: ${trendParts.join(" · ")}`);
         }
       } else {
         lines.push("no trace data");
@@ -1071,6 +1155,14 @@ export function App() {
           <span className="dep-header-stat-sep">·</span>
           <span className="dep-header-stat" style={{ color: theme.red }}>
             <strong>{stats.unhealthy}</strong> unhealthy
+          </span>
+        </>
+      )}
+      {stats.silent > 0 && (
+        <>
+          <span className="dep-header-stat-sep">·</span>
+          <span className="dep-header-stat" style={{ color: theme.red }}>
+            <strong>{stats.silent}</strong> silent
           </span>
         </>
       )}
@@ -1288,6 +1380,7 @@ export function App() {
                     setPinned((prev) => (prev === node.name ? null : node.name));
                   }}
                   onToggleInspect={() => toggleInspect(node.name)}
+                  onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined}
                   onHover={(e) => {
                     if (isDragging) return;
                     setHovered(node.name);
@@ -1303,6 +1396,9 @@ export function App() {
                 />
                 {incoming && !dim && (
                   <IncomingSeverityTag node={node} severity={incoming} />
+                )}
+                {node.svc.silent && !dim && (
+                  <SilentTag node={node} />
                 )}
               </g>
             );
@@ -1361,6 +1457,12 @@ export function App() {
                     {svc.language ? ` · ${svc.language}` : ""}
                     {svc.namespace ? ` · ns: ${svc.namespace}` : ""}
                   </div>
+                  {svc.silent && (
+                    <div className="dep-inspect-card-meta-row" style={{ color: theme.red, fontWeight: 600 }}>
+                      ⚠ silent — no traces in current window
+                      {svc.prior_health?.span_count ? ` (had ${formatCount(svc.prior_health.span_count)} spans prior)` : ""}
+                    </div>
+                  )}
                   {svc.health && svc.health.span_count > 0 && (
                     <div className="dep-inspect-card-meta-row">
                       <strong>{formatCount(svc.health.span_count)}</strong> spans
@@ -1370,6 +1472,11 @@ export function App() {
                           <span style={{ color: hi.color }}>{hi.label}</span>
                         </>
                       )}
+                    </div>
+                  )}
+                  {(svc.health?.exception_count ?? 0) > 0 && (
+                    <div className="dep-inspect-card-meta-row">
+                      <span style={{ color: theme.amber }}>{formatCount(svc.health!.exception_count!)} APM exceptions</span>
                     </div>
                   )}
                   {svc.health?.avg_duration_us != null && (
@@ -1385,6 +1492,26 @@ export function App() {
                       <strong>{fan.in}</strong> upstream · <strong>{fan.out}</strong> downstream
                     </div>
                   )}
+                  {svc.trend && (svc.trend.span_trend_pct != null || svc.trend.latency_trend_pct != null || svc.trend.error_rate_delta_pp != null) && (
+                    <div className="dep-inspect-card-meta-row" style={{ marginTop: 4, paddingTop: 4, borderTop: `1px solid ${theme.border}`, fontSize: 10, color: theme.textMuted }}>
+                      <span>vs prior {data?.filters?.lookback ?? "window"}:{" "}</span>
+                      {svc.trend.span_trend_pct != null && (
+                        <span style={{ color: svc.trend.span_trend_pct > 0 ? theme.green : theme.red, marginLeft: 4 }}>
+                          throughput {svc.trend.span_trend_pct > 0 ? "+" : ""}{svc.trend.span_trend_pct}%
+                        </span>
+                      )}
+                      {svc.trend.latency_trend_pct != null && (
+                        <span style={{ color: svc.trend.latency_trend_pct > 0 ? theme.amber : theme.green, marginLeft: 8 }}>
+                          latency {svc.trend.latency_trend_pct > 0 ? "+" : ""}{svc.trend.latency_trend_pct}%
+                        </span>
+                      )}
+                      {svc.trend.error_rate_delta_pp != null && (
+                        <span style={{ color: svc.trend.error_rate_delta_pp > 0 ? theme.red : theme.green, marginLeft: 8 }}>
+                          err {svc.trend.error_rate_delta_pp > 0 ? "+" : ""}{svc.trend.error_rate_delta_pp}pp
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="dep-inspect-card-foot">
                   <button
@@ -1395,6 +1522,15 @@ export function App() {
                   >
                     {isFocused ? "Focused" : "Make focus"}
                   </button>
+                  {svc.kibana_url && app && (
+                    <button
+                      type="button"
+                      className="dep-inspect-card-action"
+                      onClick={() => { getApp()?.openLink({ url: svc.kibana_url! }).catch(() => {}); }}
+                    >
+                      View in Kibana ↗
+                    </button>
+                  )}
                 </div>
               </div>
             );

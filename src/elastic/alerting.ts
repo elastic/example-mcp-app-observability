@@ -5,7 +5,7 @@
  * 2.0.
  */
 
-import { kibanaRequest } from "./client.js";
+import { kibanaRequest, esRequest } from "./client.js";
 
 /**
  * Produce a human-readable Kibana saved-object id from the rule name + check interval:
@@ -71,6 +71,7 @@ export interface RuleExecutionStatus {
 export interface ListedRule {
   id: string;
   name: string;
+  description?: string;
   tags: string[];
   enabled: boolean;
   rule_type_id: string;
@@ -186,5 +187,68 @@ export async function getRule(ruleId: string): Promise<ListedRule> {
 export async function deleteRule(ruleId: string): Promise<void> {
   await kibanaRequest(`/api/alerting/rule/${encodeURIComponent(ruleId)}`, {
     method: "DELETE",
+  });
+}
+
+export interface AlertInstance {
+  id: string;
+  status: string;
+  grouping?: Record<string, string> | null;
+  url?: string | null;
+  conditions?: string | null;
+  reason?: string | null;
+  severity?: string | null;
+  started_at?: string | null;
+}
+
+export async function getActiveAlertsForRule(ruleId: string): Promise<AlertInstance[]> {
+  const body = {
+    query: {
+      bool: {
+        filter: [{ term: { "kibana.alert.rule.uuid": ruleId } }],
+      },
+    },
+    size: 20,
+    sort: [
+      { "kibana.alert.status": "asc" }, // "active" sorts before "recovered"
+      { "@timestamp": "desc" },
+    ],
+    _source: [
+      "kibana.alert.uuid",
+      "kibana.alert.status",
+      "kibana.alert.grouping",
+      "kibana.alert.url",
+      "kibana.alert.evaluation.conditions",
+      "kibana.alert.reason",
+      "kibana.alert.severity",
+      "kibana.alert.start",
+    ],
+  };
+
+  const result = await esRequest<{
+    hits: { hits: { _id: string; _source: Record<string, unknown> }[] };
+  }>("/.alerts-*/_search", { method: "POST", body });
+
+  return result.hits.hits.map((hit) => {
+    const s = hit._source;
+    const evalConditions = s["kibana.alert.evaluation.conditions"];
+    const grouping = s["kibana.alert.grouping"];
+    return {
+      id: (s["kibana.alert.uuid"] as string) ?? hit._id,
+      status: (s["kibana.alert.status"] as string) ?? "unknown",
+      grouping:
+        grouping && typeof grouping === "object" && !Array.isArray(grouping)
+          ? (grouping as Record<string, string>)
+          : null,
+      url: (s["kibana.alert.url"] as string) ?? null,
+      conditions: Array.isArray(evalConditions)
+        ? (evalConditions as string[]).join("; ")
+        : typeof evalConditions === "string"
+          ? evalConditions
+          : null,
+      reason: (s["kibana.alert.reason"] as string) ?? null,
+      severity: (s["kibana.alert.severity"] as string) ?? null,
+      started_at: (s["kibana.alert.start"] as string) ?? null,
+    };
   });
 }

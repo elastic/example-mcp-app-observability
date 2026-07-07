@@ -19,9 +19,11 @@ import {
   listRules,
   getRule,
   deleteRule,
+  getActiveAlertsForRule,
   ListedRule,
 } from "../elastic/alerting.js";
 import { getConfig } from "../elastic/client.js";
+import { getLinkCtx, buildAlertRuleLink, type LinkCtx } from "../elastic/kibanaLinks.js";
 import { resolveViewPath } from "./view-path.js";
 import { consumeWelcomeNotice } from "../setup/notice.js";
 
@@ -230,18 +232,21 @@ async function handleCreate(input: ManageAlertsInput, kibanaUrl: string) {
   if (!input.metric_field) return errorResult("operation='create' requires metric_field.");
   if (input.threshold === undefined) return errorResult("operation='create' requires threshold.");
 
-  const rule = await createCustomThresholdRule({
-    ruleName: input.rule_name,
-    metricField: input.metric_field,
-    threshold: input.threshold,
-    comparator: input.comparator,
-    kqlFilter: input.kql_filter,
-    checkInterval: input.check_interval,
-    aggType: input.agg_type,
-    timeSize: input.time_size,
-    timeUnit: input.time_unit,
-    indexPattern: input.index_pattern,
-  });
+  const [rule, { ctx: linkCtx }] = await Promise.all([
+    createCustomThresholdRule({
+      ruleName: input.rule_name,
+      metricField: input.metric_field,
+      threshold: input.threshold,
+      comparator: input.comparator,
+      kqlFilter: input.kql_filter,
+      checkInterval: input.check_interval,
+      aggType: input.agg_type,
+      timeSize: input.time_size,
+      timeUnit: input.time_unit,
+      indexPattern: input.index_pattern,
+    }),
+    getLinkCtx(),
+  ]);
 
   const aggType = input.agg_type ?? "avg";
   const comparator = input.comparator ?? ">";
@@ -280,6 +285,7 @@ async function handleCreate(input: ManageAlertsInput, kibanaUrl: string) {
     index_pattern: input.index_pattern ?? "metrics-*",
     enabled: true,
     tags: rule.tags,
+    kibana_url: buildAlertRuleLink(linkCtx, rule.id),
     message: `Alert rule '${input.rule_name}' created successfully. It will check ${aggType}(${input.metric_field}) ${comparator} ${input.threshold} every ${checkInterval}. Rule ID: ${rule.id}. View in Kibana → Alerts → Rules.`,
     cleanup_hint: `To delete this rule: DELETE ${kibanaUrl}/api/alerting/rule/${rule.id} with kbn-xsrf: true header — or call manage-alerts with operation='delete' and rule_id='${rule.id}'.`,
     investigation_actions: actions,
@@ -294,15 +300,18 @@ async function handleList(input: ManageAlertsInput, _kibanaUrl: string) {
   // users can switch between "all" and "MCP-only" without re-prompting.
   const effectiveTags = input.tags && input.tags.length ? input.tags : undefined;
 
-  const result = await listRules({
-    tags: effectiveTags,
-    search: input.search,
-    ruleTypeIds: input.rule_type_ids,
-    perPage: input.per_page,
-    page: input.page,
-  });
+  const [result, { ctx: linkCtx }] = await Promise.all([
+    listRules({
+      tags: effectiveTags,
+      search: input.search,
+      ruleTypeIds: input.rule_type_ids,
+      perPage: input.per_page,
+      page: input.page,
+    }),
+    getLinkCtx(),
+  ]);
 
-  const summaries = result.data.map(summarizeRule);
+  const summaries = result.data.map((r) => summarizeRule(r, linkCtx));
 
   const actions: ToolAction[] = [];
   if (summaries.length > 0) {
@@ -359,8 +368,12 @@ async function handleList(input: ManageAlertsInput, _kibanaUrl: string) {
 
 async function handleGet(input: ManageAlertsInput, kibanaUrl: string) {
   if (!input.rule_id) return errorResult("operation='get' requires rule_id.");
-  const rule = await getRule(input.rule_id);
-  const summary = summarizeRule(rule);
+  const [rule, { ctx: linkCtx }, activeAlerts] = await Promise.all([
+    getRule(input.rule_id),
+    getLinkCtx(),
+    getActiveAlertsForRule(input.rule_id).catch(() => [] as Awaited<ReturnType<typeof getActiveAlertsForRule>>),
+  ]);
+  const summary = summarizeRule(rule, linkCtx, activeAlerts);
 
   const actions: ToolAction[] = [
     {
@@ -394,7 +407,7 @@ async function handleDelete(input: ManageAlertsInput, _kibanaUrl: string) {
     let preview;
     try {
       const rule = await getRule(input.rule_id);
-      preview = summarizeRule(rule);
+      preview = summarizeRule(rule, null);
     } catch (exc) {
       const msg = exc instanceof Error ? exc.message : String(exc);
       return errorResult(`Could not load rule '${input.rule_id}' for delete preview: ${msg}`);
@@ -441,7 +454,11 @@ async function handleDelete(input: ManageAlertsInput, _kibanaUrl: string) {
   });
 }
 
-function summarizeRule(rule: ListedRule) {
+function summarizeRule(
+  rule: ListedRule,
+  linkCtx: LinkCtx | null,
+  activeAlerts?: Awaited<ReturnType<typeof getActiveAlertsForRule>>,
+) {
   const params = rule.params ?? {};
   const criteria = (params as { criteria?: unknown[] }).criteria;
   const firstCriterion =
@@ -456,10 +473,15 @@ function summarizeRule(rule: ListedRule) {
       : undefined;
   const metric = firstCriterion?.metrics?.[0];
   const search = (params as { searchConfiguration?: { index?: string; query?: { query?: string } } }).searchConfiguration;
+  const groupBy = (params as { groupBy?: string[] }).groupBy;
+  const esqlQuery = (params as { esqlQuery?: { esql?: string } | string }).esqlQuery;
+  const sloId = (params as { sloId?: string }).sloId;
+  const burnRateWindows = (params as { windows?: unknown[] }).windows;
 
   return {
     id: rule.id,
     name: rule.name,
+    description: rule.description ?? null,
     rule_type_id: rule.rule_type_id,
     enabled: rule.enabled,
     tags: rule.tags,
@@ -480,5 +502,18 @@ function summarizeRule(rule: ListedRule) {
         : null,
     index_pattern: search?.index ?? null,
     kql_filter: search?.query?.query || null,
+    kibana_url: linkCtx ? buildAlertRuleLink(linkCtx, rule.id) : null,
+    group_by: Array.isArray(groupBy) && groupBy.length ? groupBy : null,
+    esql_query:
+      typeof esqlQuery === "string"
+        ? esqlQuery
+        : esqlQuery && typeof esqlQuery === "object" && "esql" in esqlQuery
+          ? (esqlQuery as { esql: string }).esql
+          : null,
+    all_criteria: Array.isArray(criteria) && criteria.length > 1 ? criteria : null,
+    rule_parameters: params && Object.keys(params).length ? params : null,
+    active_alerts: activeAlerts && activeAlerts.length ? activeAlerts : null,
+    slo_id: sloId ?? null,
+    burn_rate_windows: Array.isArray(burnRateWindows) && burnRateWindows.length ? burnRateWindows : null,
   };
 }

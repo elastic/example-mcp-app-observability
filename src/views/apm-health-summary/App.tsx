@@ -62,6 +62,7 @@ interface ServiceDetail {
   app?: string;
   timeline?: MetricTimelineBucket[];
   peak_throughput?: number;
+  kibana_url?: string | null;
 }
 
 interface DegradedService {
@@ -111,6 +112,7 @@ interface AnomalyInfo {
    *  comment for the cap + _other reconciliation. */
   by_entity?: Record<string, AnomalyEntityRollup>;
   timeline_window?: TimelineWindow;
+  kibana_explorer_url?: string | null;
 }
 
 type TileStatus = "ok" | "degraded" | "critical";
@@ -220,7 +222,7 @@ interface HealthData {
   alerts?: {
     active_count: number;
     recovered_count: number;
-    top_rules: { name: string; count: number; severity?: string }[];
+    top_rules: { name: string; count: number; severity?: string; kibana_url?: string | null }[];
     active_samples: {
       rule: string;
       reason: string;
@@ -235,6 +237,7 @@ interface HealthData {
     violated_count?: number;
     healthy_count?: number;
     top_violations?: {
+      id?: string;
       name: string;
       sli_value: number;
       target: number;
@@ -243,6 +246,7 @@ interface HealthData {
       one_day_burn_rate?: number;
       indicator_type?: string;
       last_evaluated_ms?: number;
+      kibana_url?: string | null;
     }[];
     note?: string;
   };
@@ -258,6 +262,18 @@ interface HealthData {
   investigation_actions?: InvestigationAction[];
   rerun_context?: RerunContext;
   scope?: HealthScope;
+  apm_url?: string | null;
+  k8s_url?: string | null;
+  errors?: {
+    total_count: number;
+    top_groups: Array<{
+      service: string;
+      grouping_key?: string;
+      error_type?: string;
+      count: number;
+      kibana_url?: string | null;
+    }>;
+  };
 }
 
 // Okabe-Ito-derived palette: vermillion / orange / sky-blue. Strong hue separation
@@ -536,19 +552,24 @@ function AnomalyHeatmap({
  * Always-visible chrome (header, scope card, time range, investigation
  * actions) sits OUTSIDE the tabs — switching doesn't hide them.
  */
+type TabKey = "health" | "signals" | "resources" | "errors";
+
 function HealthTabs({
   active,
   onChange,
   signalsBadge,
+  errorsBadge,
 }: {
-  active: "health" | "signals" | "resources";
-  onChange: (t: "health" | "signals" | "resources") => void;
+  active: TabKey;
+  onChange: (t: TabKey) => void;
   signalsBadge: number;
+  errorsBadge: number;
 }) {
-  const tabs: { key: "health" | "signals" | "resources"; label: string; badge?: number }[] = [
+  const tabs: { key: TabKey; label: string; badge?: number }[] = [
     { key: "health", label: "Health" },
     { key: "signals", label: "Signals", badge: signalsBadge > 0 ? signalsBadge : undefined },
     { key: "resources", label: "Resources" },
+    { key: "errors", label: "Errors", badge: errorsBadge > 0 ? errorsBadge : undefined },
   ];
   return (
     <div
@@ -733,9 +754,11 @@ function shortenPod(name: string): string {
 function AlertsBlock({
   alerts,
   detailed,
+  onOpenLink,
 }: {
   alerts: NonNullable<HealthData["alerts"]>;
   detailed: boolean;
+  onOpenLink?: (url: string) => void;
 }) {
   if (alerts.error) {
     return <div style={{ fontSize: 11, color: theme.textMuted }}>Alerts unavailable: {alerts.error}</div>;
@@ -800,9 +823,19 @@ function AlertsBlock({
               <span className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {r.name}
               </span>
-              <span className="mono" style={{ color: theme.textMuted, marginLeft: 12, flexShrink: 0 }}>
-                {r.count}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: 12 }}>
+                <span className="mono" style={{ color: theme.textMuted }}>
+                  {r.count}
+                </span>
+                {r.kibana_url && onOpenLink && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenLink(r.kibana_url!)}
+                    style={{ background: "rgba(0,153,255,0.08)", border: "1px solid #09f", borderRadius: 3, cursor: "pointer", padding: "1px 6px", fontSize: 10, lineHeight: "16px", color: "#09f" }}
+                    title="View in Kibana alerts"
+                  >↗</button>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -856,12 +889,14 @@ function SlosBlock({
   filterActive,
   serviceToApp,
   passesFilter,
+  onOpenLink,
 }: {
   slos: NonNullable<HealthData["slos"]>;
   detailed: boolean;
   filterActive: boolean;
   serviceToApp: Map<string, string>;
   passesFilter: (app: string | undefined) => boolean;
+  onOpenLink?: (url: string) => void;
 }) {
   if (!slos.configured) {
     return (
@@ -948,7 +983,7 @@ function SlosBlock({
               key={i}
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr auto auto",
+                gridTemplateColumns: `1fr auto auto${v.kibana_url && onOpenLink ? " auto" : ""}`,
                 alignItems: "center",
                 gap: 12,
                 padding: "6px 10px",
@@ -967,10 +1002,18 @@ function SlosBlock({
                 <span style={{ color: theme.red }}>{fmtPct(v.sli_value)}</span>
                 <span style={{ marginLeft: 4, color: theme.textDim }}>/ target {fmtPct(v.target)}</span>
               </div>
-              {burn > 0 && (
+              {burn > 0 ? (
                 <div className="mono" style={{ color: burnColor, whiteSpace: "nowrap" }}>
                   {burn.toFixed(1)}× burn
                 </div>
+              ) : <div />}
+              {v.kibana_url && onOpenLink && (
+                <button
+                  type="button"
+                  onClick={() => onOpenLink(v.kibana_url!)}
+                  style={{ background: "rgba(0,153,255,0.08)", border: "1px solid #09f", borderRadius: 3, cursor: "pointer", padding: "1px 6px", fontSize: 10, lineHeight: "16px", color: "#09f" }}
+                  title="View SLO in Kibana"
+                >↗</button>
               )}
             </div>
           );
@@ -1433,10 +1476,14 @@ function KpiRow({
   label,
   group,
   filterActive,
+  kibanaUrl,
+  onOpenLink,
 }: {
   label: string;
   group: KpiTileGroup;
   filterActive?: boolean;
+  kibanaUrl?: string | null;
+  onOpenLink?: (url: string) => void;
 }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -1455,6 +1502,26 @@ function KpiRow({
         }}
       >
         <span>{label}</span>
+        {kibanaUrl && onOpenLink && (
+          <button
+            type="button"
+            onClick={() => onOpenLink(kibanaUrl)}
+            style={{
+              background: "rgba(0,153,255,0.08)",
+              border: "1px solid #09f",
+              borderRadius: 3,
+              cursor: "pointer",
+              padding: "1px 6px",
+              fontSize: 10,
+              lineHeight: "16px",
+              color: "#09f",
+              textTransform: "none",
+              letterSpacing: 0,
+              fontWeight: 400,
+              fontFamily: "inherit",
+            }}
+          >↗</button>
+        )}
         {filterActive && (
           <span
             className="mono"
@@ -1500,21 +1567,42 @@ function DegradedServicesStrip({
   lookback: string;
   onSend: (prompt: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   return (
-    <div style={{ marginTop: -6, marginBottom: 14 }}>
+    <div>
       <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setExpanded((v) => !v); }}
         style={{
           fontSize: 10,
           fontWeight: 600,
           color: theme.textDim,
           textTransform: "uppercase",
           letterSpacing: 0.5,
-          marginBottom: 6,
+          marginBottom: expanded ? 6 : 0,
           paddingLeft: 2,
+          display: "flex",
+          alignItems: "center",
+          cursor: "pointer",
+          userSelect: "none",
         }}
       >
-        Degraded — click to investigate
+        <span>Degraded ({degraded.length})</span>
+        {!expanded && (
+          <>
+            <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: theme.textMuted, marginLeft: 8, fontSize: 11 }}>
+              {degraded.slice(0, 3).map((d) => d.service).join(", ")}{degraded.length > 3 ? ` +${degraded.length - 3} more` : ""}
+            </span>
+            <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: theme.red, marginLeft: 10, fontSize: 10 }}>
+              expand to investigate →
+            </span>
+          </>
+        )}
+        <span style={{ fontSize: 9, color: theme.textMuted, marginLeft: "auto" }}>{expanded ? "▲" : "▼"}</span>
       </div>
+      {expanded && (
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         {degraded.map((d) => {
           const reasonText = d.reasons.length ? d.reasons.join(" · ") : "elevated signals";
@@ -1559,6 +1647,7 @@ function DegradedServicesStrip({
           );
         })}
       </div>
+      )}
     </div>
   );
 }
@@ -1586,17 +1675,10 @@ interface AppKey { key: string; label: string; isPseudo: boolean }
  *  always last. */
 function deriveAppList(data: HealthData): AppKey[] {
   const groups = data.scope?.service_groups ?? [];
-  const list: AppKey[] = groups.map((g) => ({ key: g.label, label: g.label, isPseudo: false }));
-
-  const services = data.services?.details ?? [];
-  const pods = data.pods?.top_memory ?? [];
-  const hasUngroupedSvc = services.some((s) => !s.app);
-  const hasUngroupedPod = pods.some((p) => !p.app);
-  const byAppHasUngrouped = !!data.pods?.by_app?.[UNGROUPED];
-  if (hasUngroupedSvc || hasUngroupedPod || byAppHasUngrouped) {
-    list.push({ key: UNGROUPED, label: "ungrouped", isPseudo: true });
-  }
-  return list;
+  return groups.map((g) => ({ key: g.label, label: g.label, isPseudo: false }));
+  // "ungrouped" is intentionally omitted: items without an app identity are
+  // always visible regardless of filter (passesFilter treats undefined as true),
+  // so there's nothing useful to select by clicking an "ungrouped" chip.
 }
 
 /** Resolve an anomaly entity string ("service.name=checkout",
@@ -1608,23 +1690,29 @@ function entityToApp(
   podToApp: Map<string, string>
 ): string | undefined {
   const eq = entity.indexOf("=");
-  if (eq < 0) return undefined;
-  const field = entity.slice(0, eq);
-  const value = entity.slice(eq + 1);
-  if (field === "service.name" || field.endsWith(".service.name")) {
-    return serviceToApp.get(value);
+  if (eq >= 0) {
+    const field = entity.slice(0, eq);
+    const value = entity.slice(eq + 1);
+    if (field === "service.name" || field.endsWith(".service.name")) {
+      return serviceToApp.get(value);
+    }
+    // ML influencers emit either OTel (k8s.pod.name) or ECS
+    // (kubernetes.pod.name) field names depending on the job's source.
+    if (
+      field === "k8s.pod.name" ||
+      field.endsWith(".k8s.pod.name") ||
+      field === "kubernetes.pod.name" ||
+      field.endsWith(".kubernetes.pod.name")
+    ) {
+      return podToApp.get(value);
+    }
+    return undefined;
   }
-  // ML influencers emit either OTel (k8s.pod.name) or ECS
-  // (kubernetes.pod.name) field names depending on the job's source.
-  if (
-    field === "k8s.pod.name" ||
-    field.endsWith(".k8s.pod.name") ||
-    field === "kubernetes.pod.name" ||
-    field.endsWith(".kubernetes.pod.name")
-  ) {
-    return podToApp.get(value);
-  }
-  return undefined;
+  // Raw value without field prefix (influencer_field_values in apm-health-summary
+  // aggregation). Try service name first, then pod name.
+  const svcApp = serviceToApp.get(entity);
+  if (svcApp !== undefined) return svcApp;
+  return podToApp.get(entity);
 }
 
 /** Filtered KPI-tile values derived from the in-scope service set + pod
@@ -1679,14 +1767,19 @@ function recomputeApmTiles(
 
 function recomputeK8sTiles(
   baseTiles: KpiTileGroup,
-  byAppKeys: string[],
-  byApp: Record<string, K8sAppRollup>
+  selectedApps: Set<string>,
+  byApp: Record<string, K8sAppRollup>,
+  serviceToApp: Map<string, string>
 ): KpiTileGroup {
   if (!baseTiles?.tiles) return baseTiles;
   let cpuSum = 0, memSum = 0, restartSum = 0, podSum = 0, n = 0;
-  for (const k of byAppKeys) {
-    const r = byApp[k];
-    if (!r) continue;
+  // by_app is keyed by service name; selectedApps has app-group labels.
+  // Use serviceToApp to bridge: include a by_app entry when its service
+  // maps to a selected app label (or the key itself is the label as fallback).
+  for (const [svcKey, r] of Object.entries(byApp)) {
+    if (svcKey.startsWith("_")) continue;
+    const appLabel = serviceToApp.get(svcKey) ?? svcKey;
+    if (!selectedApps.has(appLabel)) continue;
     cpuSum += r.cpu_util_pct;
     memSum += r.mem_util_pct;
     restartSum += r.restart_count;
@@ -1783,7 +1876,7 @@ export function App() {
   // throughput). Splits the long single-column scroll into purposeful
   // groups; counts badge on Signals so users can see fired-things even
   // when on a different tab.
-  const [activeTab, setActiveTab] = useState<"health" | "signals" | "resources">("health");
+  const [activeTab, setActiveTab] = useState<TabKey>("health");
   // App filter state — null means "all apps selected" (no filter active).
   // Reset whenever a new tool result lands so a different namespace doesn't
   // inherit the previous selection.
@@ -1852,7 +1945,8 @@ export function App() {
   const passesFilter = useCallback(
     (rowApp: string | undefined) => {
       if (!selectedApps) return true;
-      return selectedApps.has(rowApp ?? UNGROUPED);
+      if (rowApp === undefined) return true; // ungrouped items always visible
+      return selectedApps.has(rowApp);
     },
     [selectedApps]
   );
@@ -1892,8 +1986,8 @@ export function App() {
   const k8sTiles = useMemo(() => {
     if (!data?.k8s_tiles) return undefined;
     if (!filterActive || !selectedApps || !data.pods?.by_app) return data.k8s_tiles;
-    return recomputeK8sTiles(data.k8s_tiles, [...selectedApps], data.pods.by_app);
-  }, [data, selectedApps, filterActive]);
+    return recomputeK8sTiles(data.k8s_tiles, selectedApps, data.pods.by_app, serviceToApp);
+  }, [data, selectedApps, filterActive, serviceToApp]);
 
   // Filtered anomaly rollup: when filter is active, drop heatmap rows
   // whose entity doesn't resolve to a selected app, and recompute the
@@ -1935,14 +2029,15 @@ export function App() {
   const toggleApp = useCallback(
     (key: string) => {
       setSelectedApps((prev) => {
-        const allKeys = appList.map((a) => a.key);
-        const current = prev ?? new Set(allKeys);
-        const next = new Set(current);
+        if (!prev) {
+          // No filter active — first click selects ONLY this app.
+          return new Set([key]);
+        }
+        const next = new Set(prev);
         if (next.has(key)) next.delete(key);
         else next.add(key);
-        // If the user re-selected everything, clear the filter so subsequent
-        // payloads inherit "all-selected" rather than carrying state forward.
-        if (next.size === allKeys.length) return null;
+        // Empty selection or "all selected" both mean no filter.
+        if (next.size === 0 || next.size >= appList.length) return null;
         return next;
       });
     },
@@ -2069,6 +2164,7 @@ export function App() {
           (data.alerts?.active_count ?? 0) +
           (data.slos?.violated_count ?? 0)
         }
+        errorsBadge={data.errors?.total_count ?? 0}
       />
 
       {activeTab === "health" && <>
@@ -2081,17 +2177,25 @@ export function App() {
        * Falls back to the legacy StatGrid when neither tile group is in the
        * payload (e.g. older cached results / non-MCP consumers). */}
       {apmTiles ? (
-        <KpiRow label="APM" group={apmTiles} filterActive={filterActive} />
+        <KpiRow label="APM" group={apmTiles} filterActive={filterActive} kibanaUrl={data.apm_url} onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined} />
       ) : null}
       {filteredDegraded.length > 0 && (
-        <DegradedServicesStrip
-          degraded={filteredDegraded}
-          lookback={data.lookback}
-          onSend={onSend}
-        />
+        <div style={{
+          border: `1px solid ${theme.red}55`,
+          borderRadius: 6,
+          padding: "8px 10px",
+          marginBottom: 14,
+          marginTop: -6,
+        }}>
+          <DegradedServicesStrip
+            degraded={filteredDegraded}
+            lookback={data.lookback}
+            onSend={onSend}
+          />
+        </div>
       )}
       {k8sTiles ? (
-        <KpiRow label="Kubernetes" group={k8sTiles} filterActive={filterActive} />
+        <KpiRow label="Kubernetes" group={k8sTiles} filterActive={filterActive} kibanaUrl={data.k8s_url} onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined} />
       ) : null}
       {!data.apm_tiles && !data.k8s_tiles && (
         <StatGrid>
@@ -2128,7 +2232,7 @@ export function App() {
           </div>
         </SectionCard>
       )}
-      {data.recommendation && (
+      {data.recommendation && !data.degraded_services?.length && (
         <SectionCard>
           <div
             style={{
@@ -2166,6 +2270,7 @@ export function App() {
               label="Service-level objectives"
               detailed={slosDetailed}
               onToggle={() => setSlosDetailed((v) => !v)}
+              badge={filterActive ? "cluster-wide" : undefined}
             />
           }
         >
@@ -2175,13 +2280,31 @@ export function App() {
             filterActive={filterActive}
             serviceToApp={serviceToApp}
             passesFilter={passesFilter}
+            onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined}
           />
         </SectionCard>
       )}
 
       {/* Anomaly breakdown */}
       {anomalies ? (
-        <SectionCard title="Anomaly breakdown">
+        <SectionCard
+          title={
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span>Anomaly breakdown</span>
+              {filterActive && (
+                <span style={{ fontSize: 10, color: theme.textMuted, fontWeight: 400, letterSpacing: 0 }}>cluster-wide</span>
+              )}
+              {anomalies.kibana_explorer_url && app && (
+                <button
+                  type="button"
+                  onClick={() => { getApp()?.openLink({ url: anomalies.kibana_explorer_url! }).catch(() => {}); }}
+                  style={{ background: "rgba(0,153,255,0.08)", border: "1px solid #09f", borderRadius: 3, cursor: "pointer", padding: "1px 6px", fontSize: 10, lineHeight: "16px", color: "#09f", fontWeight: "normal" }}
+                  title="Open anomaly explorer in Kibana"
+                >↗</button>
+              )}
+            </span>
+          }
+        >
           <AnomalyBreakdown anomalies={anomalies} />
         </SectionCard>
       ) : data.anomalies_note ? (
@@ -2202,7 +2325,7 @@ export function App() {
             />
           }
         >
-          <AlertsBlock alerts={data.alerts} detailed={alertsDetailed} />
+          <AlertsBlock alerts={data.alerts} detailed={alertsDetailed} onOpenLink={app ? (url) => { getApp()?.openLink({ url }).catch(() => {}); } : undefined} />
         </SectionCard>
       )}
       </>}
@@ -2218,6 +2341,7 @@ export function App() {
               label="Top pods by memory"
               detailed={memDetailed}
               onToggle={() => setMemDetailed((v) => !v)}
+              badge={filterActive ? "cluster-wide" : undefined}
             />
           }
         >
@@ -2288,10 +2412,16 @@ export function App() {
                 const vals = s.timeline?.map((b) => b.value) ?? [];
                 const tss = s.timeline?.map((b) => b.ts);
                 const peak = s.peak_throughput ?? (vals.length ? Math.max(...vals) : s.throughput);
+                const svcLabel = s.kibana_url && app ? (
+                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span>{s.service}</span>
+                    <button type="button" onClick={() => { getApp()?.openLink({ url: s.kibana_url! }).catch(() => {}); }} style={{ background: "rgba(0,153,255,0.08)", border: "1px solid #09f", borderRadius: 3, cursor: "pointer", padding: "1px 5px", fontSize: 10, lineHeight: "16px", color: "#09f" }} title="View service in Kibana">↗</button>
+                  </span>
+                ) : s.service;
                 return (
                   <SparklineRow
                     key={s.service}
-                    label={s.service}
+                    label={svcLabel}
                     values={vals.length ? vals : [s.throughput]}
                     timestamps={tss}
                     color={degradedSet.has(s.service) ? theme.redSoft : theme.blue}
@@ -2323,6 +2453,65 @@ export function App() {
               }))}
             />
           )}
+        </SectionCard>
+      )}
+      </>}
+
+      {activeTab === "errors" && <>
+      {data.errors?.top_groups.length ? (
+        <SectionCard title={`Error groups · last ${data.lookback}`}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {data.errors.top_groups.filter((g) =>
+              !filterActive || passesFilter(serviceToApp.get(g.service))
+            ).map((g, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `auto 1fr auto${g.kibana_url && app ? " auto" : ""}`,
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "7px 10px",
+                  background: theme.bgSecondary,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 4,
+                }}
+              >
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    color: theme.text,
+                    background: `${theme.red}18`,
+                    border: `1px solid ${theme.red}44`,
+                    borderRadius: 999,
+                    padding: "1px 7px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {g.service}
+                </span>
+                <span style={{ fontSize: 11, color: theme.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {g.error_type ?? "unknown error"}
+                </span>
+                <span className="mono" style={{ fontSize: 11, color: theme.textMuted, whiteSpace: "nowrap" }}>
+                  ×{g.count}
+                </span>
+                {g.kibana_url && app && (
+                  <button
+                    type="button"
+                    onClick={() => { getApp()?.openLink({ url: g.kibana_url! }).catch(() => {}); }}
+                    style={{ background: "rgba(0,153,255,0.08)", border: "1px solid #09f", borderRadius: 3, cursor: "pointer", padding: "1px 6px", fontSize: 10, lineHeight: "16px", color: "#09f" }}
+                    title="View error group in Kibana APM"
+                  >↗</button>
+                )}
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      ) : (
+        <SectionCard title="Errors">
+          <div style={{ fontSize: 11, color: theme.textMuted }}>No error groups found in the last {data.lookback}.</div>
         </SectionCard>
       )}
       </>}
@@ -2418,6 +2607,7 @@ function ScopeSubheader({
   const hasApm = coverage?.apm ?? scope.service_count !== undefined;
 
   const [appsHelpOpen, setAppsHelpOpen] = useState(false);
+  const [appsExpanded, setAppsExpanded] = useState(false);
   const appsHelpRef = useRef<HTMLSpanElement | null>(null);
   useEffect(() => {
     if (!appsHelpOpen) return;
@@ -2618,8 +2808,42 @@ function ScopeSubheader({
               </span>
             )}
           </span>
-          <div className="health-scope-groups-list" role="group" aria-label="Filter by application">
-            {appList.map((entry) => {
+          <button
+            type="button"
+            onClick={() => setAppsExpanded((v) => !v)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "1px 6px",
+              fontSize: 11,
+              color: theme.textMuted,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              marginLeft: 6,
+              fontFamily: "inherit",
+            }}
+          >
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>({appList.length})</span>
+            {!appsExpanded && (
+              <span style={{ fontWeight: 400, letterSpacing: 0, fontSize: 10, marginLeft: 4 }}>
+                {filterActive
+                  ? `${selectedApps?.size ?? 0} selected · ${filteredServiceCount} services`
+                  : `showing all ${scope.service_count ?? filteredServiceCount} services · expand to filter`}
+              </span>
+            )}
+            <span style={{ fontSize: 9 }}>{appsExpanded ? "▲" : "▼"}</span>
+          </button>
+          <div className="health-scope-groups-list" role="group" aria-label="Filter by application" style={{ display: appsExpanded ? undefined : "none" }}>
+            {(filterActive && selectedApps
+              ? [...appList].sort((a, b) => {
+                  const aSelected = selectedApps.has(a.key) ? 0 : 1;
+                  const bSelected = selectedApps.has(b.key) ? 0 : 1;
+                  return aSelected - bSelected;
+                })
+              : appList
+            ).map((entry) => {
               const group = groupByLabel.get(entry.key);
               const partial =
                 !!group && group.total !== undefined && group.total > group.services.length;
@@ -2638,7 +2862,13 @@ function ScopeSubheader({
                   titleParts.push(`${group.label}: ${group.services.join(", ")}`);
                 }
               }
-              titleParts.push(isSelected ? "Click to hide" : "Click to show");
+              titleParts.push(
+                !selectedApps
+                  ? "Click to filter to this app only"
+                  : isSelected
+                    ? "Click to remove from filter"
+                    : "Click to add to filter"
+              );
               const broadenPrompt = group
                 ? `Re-run apm-health-summary to include services for app "${group.label}" that are outside the current scope (cluster, namespace, or environment).`
                 : "";
@@ -2650,7 +2880,7 @@ function ScopeSubheader({
                       "health-scope-group" +
                       (partial ? " is-partial" : "") +
                       (entry.isPseudo ? " is-pseudo" : "") +
-                      (isSelected ? " is-selected" : " is-deselected")
+                      (isSelected ? " is-selected" + (filterActive ? " is-active-filter" : "") : " is-deselected")
                     }
                     aria-pressed={isSelected}
                     onClick={() => onToggleApp(entry.key)}
@@ -2686,7 +2916,7 @@ function ScopeSubheader({
               );
             })}
           </div>
-          {filterActive && (
+          {appsExpanded && filterActive && (
             <div className="health-scope-filter-active">
               <span>
                 Filter:{" "}

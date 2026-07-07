@@ -15,7 +15,8 @@ import { noopAnalyticsClient, type AnalyticsClient } from "../elastic/analytics/
 import { z } from "zod";
 import fs from "fs";
 import { safeEsqlRows } from "../elastic/esql.js";
-import { esRequest } from "../elastic/client.js";
+import { esRequest, kibanaRequest, isKibanaConfigured } from "../elastic/client.js";
+import { getLinkCtx, buildSloLink, buildApmServiceLink, buildAlertRuleLink, buildAlertsPageLink, buildMlAnomalyExplorerLink, buildApmServicesLink, buildK8sIntegrationAssetsLink, buildApmServiceErrorsLink } from "../elastic/kibanaLinks.js";
 import { mlAnomalyIndicesExist } from "../elastic/ml.js";
 import {
   resolveServicesInNamespace,
@@ -1143,7 +1144,7 @@ const TIMELINE_BUCKET_SPAN_MS = 5 * 60 * 1000;
 interface AlertsRollup {
   active_count: number;
   recovered_count: number;
-  top_rules: { name: string; count: number; severity?: string }[];
+  top_rules: { name: string; count: number; severity?: string; rule_id?: string }[];
   /** Full reason text + instance for the highest-priority handful of active
    *  alerts. Caps at 5 to keep the payload compact. */
   active_samples: {
@@ -1192,7 +1193,7 @@ async function queryFiredAlerts(lookback: string): Promise<AlertsRollup> {
                 top_severity: {
                   top_hits: {
                     size: 1,
-                    _source: ["kibana.alert.severity"],
+                    _source: ["kibana.alert.severity", "kibana.alert.rule.uuid"],
                   },
                 },
               },
@@ -1218,7 +1219,7 @@ async function queryFiredAlerts(lookback: string): Promise<AlertsRollup> {
             buckets: {
               key: string;
               doc_count: number;
-              top_severity?: { hits?: { hits?: { _source?: { kibana?: { alert?: { severity?: string } } } }[] } };
+              top_severity?: { hits?: { hits?: { _source?: { kibana?: { alert?: { severity?: string; rule?: { uuid?: string } } } } }[] } };
             }[];
           };
         };
@@ -1254,8 +1255,8 @@ async function queryFiredAlerts(lookback: string): Promise<AlertsRollup> {
     const top_rules: AlertsRollup["top_rules"] = ruleBuckets.slice(0, 8).map((b) => ({
       name: b.key,
       count: b.doc_count,
-      severity:
-        b.top_severity?.hits?.hits?.[0]?._source?.kibana?.alert?.severity || undefined,
+      severity: b.top_severity?.hits?.hits?.[0]?._source?.kibana?.alert?.severity || undefined,
+      rule_id: b.top_severity?.hits?.hits?.[0]?._source?.kibana?.alert?.rule?.uuid || undefined,
     }));
 
     const sampleHits = res.hits?.hits ?? [];
@@ -1297,6 +1298,7 @@ interface SloStatus {
    *  (worst breaches first). Includes target + burn rate so the view +
    *  agent can prioritize by severity. */
   top_violations?: {
+    id?: string;
     name: string;
     sli_value: number;
     target: number;
@@ -1325,6 +1327,7 @@ async function querySloStatus(): Promise<SloStatus> {
                 size: 12,
                 sort: [{ sliValue: { order: "asc" } }],
                 _source: [
+                  "slo.id",
                   "slo.name",
                   "slo.objective.target",
                   "slo.indicator.type",
@@ -1366,7 +1369,7 @@ async function querySloStatus(): Promise<SloStatus> {
     const top_violations: NonNullable<SloStatus["top_violations"]> = [];
     for (const h of res.aggregations?.violations?.top?.hits?.hits ?? []) {
       const s = h._source as {
-        slo?: { name?: string; objective?: { target?: number }; indicator?: { type?: string } };
+        slo?: { id?: string; name?: string; objective?: { target?: number }; indicator?: { type?: string } };
         status?: string;
         sliValue?: number;
         errorBudgetRemaining?: number;
@@ -1375,6 +1378,7 @@ async function querySloStatus(): Promise<SloStatus> {
         summaryUpdatedAt?: string;
       };
       top_violations.push({
+        id: s.slo?.id,
         name: s.slo?.name || "(unnamed SLO)",
         sli_value: typeof s.sliValue === "number" ? s.sliValue : 0,
         target: s.slo?.objective?.target ?? 0,
@@ -1802,6 +1806,95 @@ async function queryActiveAnomalies(
   }
 }
 
+function parseLookbackMs(lb: string): number {
+  const m = lb.match(/^(\d+)\s*([mhd])$/i);
+  if (!m) return 3_600_000;
+  const n = parseInt(m[1], 10);
+  const u = m[2].toLowerCase();
+  return n * (u === "m" ? 60_000 : u === "h" ? 3_600_000 : 86_400_000);
+}
+
+async function fetchServiceErrorGroups(
+  serviceName: string,
+  start: string,
+  end: string,
+  environment?: string
+): Promise<{ groups: Array<{ groupId: string; name: string; occurrences: number }>; error?: string }> {
+  type Resp = {
+    errorGroups?: Array<{
+      groupId?: string;
+      name?: string;
+      occurrences?: number;
+    }>;
+  };
+  try {
+    const res = await kibanaRequest<Resp>(
+      `/internal/apm/services/${encodeURIComponent(serviceName)}/errors/groups/main_statistics`,
+      {
+        params: {
+          start,
+          end,
+          environment: environment ?? "ENVIRONMENT_ALL",
+          kuery: "",
+        },
+      }
+    );
+    return {
+      groups: (res.errorGroups ?? []).map((g) => ({
+        groupId: g.groupId ?? "",
+        name: g.name ?? "",
+        occurrences: g.occurrences ?? 0,
+      })),
+    };
+  } catch (err) {
+    return { groups: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function queryTopErrorGroups(
+  services: ServiceRow[],
+  lb: string
+): Promise<{ total_count: number; groups: Array<{ service: string; grouping_key?: string; error_type?: string; count: number }>; api_errors?: string[] }> {
+  if (!isKibanaConfigured() || services.length === 0) {
+    return { total_count: 0, groups: [] };
+  }
+
+  const now = Date.now();
+  const end = new Date(now).toISOString();
+  const start = new Date(now - parseLookbackMs(lb)).toISOString();
+
+  const topServices = services.slice(0, 10);
+  const perService = await Promise.all(
+    topServices.map((s) => fetchServiceErrorGroups(s.service, start, end))
+  );
+
+  const all: Array<{ service: string; grouping_key: string; error_type: string; count: number }> = [];
+  const apiErrors: string[] = [];
+  for (let i = 0; i < topServices.length; i++) {
+    const result = perService[i];
+    if (result.error) apiErrors.push(`${topServices[i].service}: ${result.error}`);
+    for (const g of result.groups) {
+      if (g.groupId && g.occurrences > 0) {
+        all.push({
+          service: topServices[i].service,
+          grouping_key: g.groupId,
+          error_type: g.name,
+          count: g.occurrences,
+        });
+      }
+    }
+  }
+
+  all.sort((a, b) => b.count - a.count);
+  const top = all.slice(0, 15);
+
+  return {
+    total_count: top.reduce((s, g) => s + g.count, 0),
+    groups: top,
+    ...(apiErrors.length ? { api_errors: apiErrors } : {}),
+  };
+}
+
 function assessHealth(
   services: ServiceRow[],
   anomalies: AnomalyRollup
@@ -1959,7 +2052,7 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
         ? listNamespacesInCluster(effectiveCluster, lb, queryErrors)
         : Promise.resolve<string[] | undefined>(undefined);
 
-      const [services, pods, anomalies, alerts, slos] = await Promise.all([
+      const [services, pods, anomalies, alerts, slos, { ctx: linkCtx, note: linkNote }] = await Promise.all([
         noServicesInScope
           ? Promise.resolve<ServiceRow[]>([])
           : queryServices(serviceFilter, lb, queryErrors),
@@ -1969,7 +2062,10 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
         ),
         queryFiredAlerts(lb),
         querySloStatus(),
+        getLinkCtx(),
       ]);
+
+      const errorGroups = await queryTopErrorGroups(services, lb);
 
       // Fetch per-item timelines for the top rows the view actually renders +
       // aggregate timelines for the KPI tile rows. Run them in parallel so the
@@ -2087,6 +2183,20 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
         ml_anomalies: anomalyJobsSeen,
       };
 
+      const enrichedServiceDetails = services.slice(0, 15).map((s) => ({
+        ...s,
+        kibana_url: buildApmServiceLink(linkCtx, { serviceName: s.service, rangeFrom: `now-${lb}`, rangeTo: "now" }),
+      }));
+      const enrichedTopRules = alerts.top_rules.map((r) => ({
+        ...r,
+        // Fall back to the rules list page if the per-rule UUID isn't in the index
+        kibana_url: buildAlertRuleLink(linkCtx, r.rule_id) ?? buildAlertsPageLink(linkCtx),
+      }));
+      const enrichedSloViolations = slos.top_violations?.map((v) => ({
+        ...v,
+        kibana_url: buildSloLink(linkCtx, v.id),
+      }));
+
       const result: Record<string, unknown> = {
         overall_health: health,
         cluster: effectiveCluster || cluster || "all",
@@ -2096,7 +2206,7 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
         services: {
           total: services.length,
           degraded_count: degraded.length,
-          details: services.slice(0, 15),
+          details: enrichedServiceDetails,
           ...(servicesTimelineWindow ? { timeline_window: servicesTimelineWindow } : {}),
         },
         degraded_services: degraded,
@@ -2312,7 +2422,7 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
       }
 
       if (anomalyJobsSeen) {
-        result.anomalies = anomalies;
+        result.anomalies = { ...anomalies, kibana_explorer_url: buildMlAnomalyExplorerLink(linkCtx) };
       } else {
         result.anomalies_note =
           "No ML anomaly jobs contributed results. " +
@@ -2323,12 +2433,33 @@ export function registerApmHealthSummaryTool(server: McpServer, analytics: Analy
       // can render a stable "no alerts in window" state. Saves Claude
       // a separate manage-alerts call for the common "what fired
       // recently?" question.
-      result.alerts = alerts;
+      result.alerts = { ...alerts, top_rules: enrichedTopRules };
 
       // SLO status stub. When SLOs aren't configured, the `note` field
       // tells Claude (and the view) to surface the gap as a
       // configuration nudge rather than a missing-data error.
-      result.slos = slos;
+      result.slos = enrichedSloViolations !== undefined
+        ? { ...slos, top_violations: enrichedSloViolations }
+        : slos;
+
+      if (linkNote) result._kibana_links_note = linkNote;
+      result.apm_url = buildApmServicesLink(linkCtx);
+      result.k8s_url = buildK8sIntegrationAssetsLink(linkCtx);
+
+      if (errorGroups.groups.length > 0) {
+        result.errors = {
+          total_count: errorGroups.total_count,
+          top_groups: errorGroups.groups.map((g) => ({
+            ...g,
+            kibana_url: g.grouping_key
+              ? buildApmServiceErrorsLink(linkCtx, g.service, g.grouping_key)
+              : buildApmServiceErrorsLink(linkCtx, g.service),
+          })),
+        };
+      }
+      if (errorGroups.api_errors?.length) {
+        queryErrors.push(...errorGroups.api_errors.map((e) => `errors API: ${e}`));
+      }
 
       if (!services.length) {
         result.warning =

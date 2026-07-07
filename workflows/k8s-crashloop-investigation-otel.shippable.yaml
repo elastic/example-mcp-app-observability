@@ -24,8 +24,7 @@ consts:
   # Detector: high_mean k8s.pod.memory.working_set BY k8s.deployment.name PARTITION k8s.namespace.name.
   # So in .ml-anomalies-*, the alerting workload is by_field_value and the namespace is
   # partition_field_value (NOT service_name as the never-shipped k8s_pod_memory_growth assumed).
-  # 'demo_' prefix = the job prefix applied when installed from the integration ML module.
-  ml_memory_job: "demo_k8s_workload_memory_anomaly"
+  ml_memory_job: "k8s_workload_memory_anomaly"
   upstream_error_multiplier: 5
   upstream_latency_multiplier: 3
   recent_change_window_minutes: 120

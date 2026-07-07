@@ -7,6 +7,17 @@
 
 import type { InvestigationAction } from "@shared/components";
 
+export interface AlertInstance {
+  id: string;
+  status: string;
+  grouping?: Record<string, string> | null;
+  url?: string | null;
+  conditions?: string | null;
+  reason?: string | null;
+  severity?: string | null;
+  started_at?: string | null;
+}
+
 export interface RuleSummary {
   id: string;
   name: string;
@@ -23,6 +34,15 @@ export interface RuleSummary {
   window?: string | null;
   index_pattern?: string | null;
   kql_filter?: string | null;
+  kibana_url?: string | null;
+  description?: string | null;
+  group_by?: string[] | null;
+  esql_query?: string | null;
+  all_criteria?: unknown[] | null;
+  rule_parameters?: unknown | null;
+  active_alerts?: AlertInstance[] | null;
+  slo_id?: string | null;
+  burn_rate_windows?: unknown[] | null;
 }
 
 export interface CreateResult {
@@ -43,6 +63,7 @@ export interface CreateResult {
   tags?: string[];
   enabled?: boolean;
   message?: string;
+  kibana_url?: string | null;
   investigation_actions?: InvestigationAction[];
 }
 

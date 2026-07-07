@@ -161,6 +161,7 @@ export function App() {
           <RuleDetailView
             rule={rule}
             eyebrow={<span>Just created · {d.message ?? "saved to Kibana"}</span>}
+            onOpenLink={noticeOnOpenLink}
           />
         }
         footer={<NextSteps actions={d.investigation_actions} onSend={onSend} />}
@@ -183,6 +184,7 @@ export function App() {
                 `Delete the alert rule '${d.rule.name}' (id ${d.rule.id}) via manage-alerts with operation='delete'. Confirm first before dispatching.`,
               )
             }
+            onOpenLink={noticeOnOpenLink}
           />
         }
         footer={<NextSteps actions={d.investigation_actions} onSend={onSend} />}
@@ -541,6 +543,7 @@ function ListView({
             `Delete the alert rule '${selected.name}' (id ${selected.id}) via manage-alerts with operation='delete'. Confirm first before dispatching.`,
           )
         }
+        onOpenLink={noticeProps?.noticeOnOpenLink}
       />
     </>
   ) : null;
@@ -665,6 +668,7 @@ function createResultToRule(d: CreateResult): RuleSummary {
     window,
     index_pattern: d.index_pattern,
     kql_filter: d.kql_filter,
+    kibana_url: d.kibana_url,
   };
 }
 

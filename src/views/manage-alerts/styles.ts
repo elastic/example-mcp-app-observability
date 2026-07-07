@@ -511,6 +511,46 @@ export const viewStyles = `
     50%      { opacity: 0.4; }
   }
 
+  /* Metadata: alert instance rows — allow long conditions to wrap */
+  .rule-meta-alert-conditions {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* Rule description — shown below the title row when present */
+  .rule-detail-description {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    margin-top: -4px;
+  }
+
+  /* Alert reason banner — shown prominently above expandable sections */
+  .rule-detail-alert-reasons {
+    padding: 10px 12px;
+    background: var(--severity-major-bg);
+    border: 1px solid var(--severity-major-border);
+    border-radius: var(--radius-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rule-detail-reason-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .rule-detail-reason-item:last-of-type {
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
   /* Empty state */
   .rule-empty {
     display: flex;

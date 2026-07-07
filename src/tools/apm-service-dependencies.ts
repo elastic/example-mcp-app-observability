@@ -20,6 +20,7 @@ import {
   buildServiceFilter,
   resolveNamespace,
 } from "../elastic/apm.js";
+import { getLinkCtx, buildApmServiceLink } from "../elastic/kibanaLinks.js";
 import { resolveViewPath } from "./view-path.js";
 import { consumeWelcomeNotice } from "../setup/notice.js";
 
@@ -47,6 +48,11 @@ interface MetadataRow {
   "service.language.name"?: string;
   "k8s.deployment.name"?: string;
   "k8s.namespace.name"?: string;
+}
+
+interface ExceptionRow {
+  "service.name"?: string;
+  exception_count?: number;
 }
 
 interface ResolutionRow {
@@ -145,6 +151,12 @@ function parseDestination(resource: string): {
     }
   }
   return { raw: resource, protocol, target_service: target, port };
+}
+
+function doubleLookback(lb: string): string {
+  const m = lb.match(/^(\d+)([mhd])$/);
+  if (!m) return lb;
+  return `${parseInt(m[1], 10) * 2}${m[2]}`;
 }
 
 // Map gRPC service FQN (e.g. "oteldemo.AdService") to the actual service.name
@@ -309,6 +321,78 @@ FROM traces-apm*
   return safeEsqlRows<HealthRow>(classicQuery, errors, { optional: true });
 }
 
+async function fetchPriorHealth(
+  lb: string,
+  serviceFilter: string,
+  errors: string[]
+): Promise<HealthRow[]> {
+  const doubleLb = doubleLookback(lb);
+  const summaryQuery = `
+FROM metrics-service_summary.1m.otel-*
+| WHERE @timestamp > NOW() - ${doubleLb}
+  AND @timestamp <= NOW() - ${lb}
+  AND service.name IS NOT NULL${serviceFilter}
+| STATS
+    span_count = SUM(service_summary)
+  BY service.name
+| LIMIT 200
+`;
+  const tracesQuery = `
+FROM traces-*.otel-*
+| WHERE @timestamp > NOW() - ${doubleLb}
+  AND @timestamp <= NOW() - ${lb}
+  AND service.name IS NOT NULL${serviceFilter}
+| EVAL duration_us = duration / 1000
+| STATS
+    traces_span_count = COUNT(*),
+    avg_duration_us = AVG(duration_us),
+    p99_duration_us = PERCENTILE(duration_us, 99),
+    error_count = COUNT(CASE(status.code == "Error", 1, NULL))
+  BY service.name
+| LIMIT 200
+`;
+  const [summaryRows, tracesRows] = await Promise.all([
+    safeEsqlRows<HealthRow & { traces_span_count?: number }>(summaryQuery, errors),
+    safeEsqlRows<HealthRow & { traces_span_count?: number }>(tracesQuery, errors),
+  ]);
+  if (summaryRows.length || tracesRows.length) {
+    const merged = new Map<string, HealthRow>();
+    for (const row of summaryRows) {
+      const name = row["service.name"];
+      if (name) merged.set(name, { "service.name": name, span_count: row.span_count });
+    }
+    for (const row of tracesRows) {
+      const name = row["service.name"];
+      if (!name) continue;
+      const existing = merged.get(name) || { "service.name": name };
+      merged.set(name, {
+        ...existing,
+        span_count: existing.span_count ?? row.traces_span_count,
+        avg_duration_us: row.avg_duration_us,
+        p99_duration_us: row.p99_duration_us,
+        error_count: row.error_count,
+      });
+    }
+    return [...merged.values()];
+  }
+  return [];
+}
+
+async function fetchExceptionCounts(
+  lb: string,
+  serviceFilter: string,
+  errors: string[]
+): Promise<ExceptionRow[]> {
+  const query = `
+FROM logs-apm.error-*
+| WHERE @timestamp > NOW() - ${lb}
+  AND service.name IS NOT NULL${serviceFilter}
+| STATS exception_count = COUNT(*) BY service.name
+| LIMIT 200
+`;
+  return safeEsqlRows<ExceptionRow>(query, errors, { optional: true });
+}
+
 export function registerApmServiceDependenciesTool(server: McpServer, analytics: AnalyticsClient = noopAnalyticsClient) {
   registerTrackedAppTool(
     analytics,
@@ -352,6 +436,7 @@ export function registerApmServiceDependenciesTool(server: McpServer, analytics:
       const lb = lookback || "1h";
       const includeHealth = include_health !== false;
       const queryErrors: string[] = [];
+      const { ctx: linkCtx } = await getLinkCtx();
 
       // Namespace scoping goes through service.name resolution rather than a direct
       // `k8s.namespace.name == X` clause. Rationale: the pre-aggregated APM summary
@@ -436,11 +521,13 @@ FROM traces-*.otel-*
 | LIMIT 100
 `;
 
-      const [edgeRows, healthRows, metadataRows, targetResolution] = await Promise.all([
+      const [edgeRows, healthRows, metadataRows, targetResolution, priorHealthRows, exceptionRows] = await Promise.all([
         safeEsqlRows<EdgeRow>(edgesQuery, queryErrors),
-        includeHealth ? fetchHealth(lb, serviceFilter, queryErrors) : Promise.resolve([]),
+        includeHealth ? fetchHealth(lb, serviceFilter, queryErrors) : Promise.resolve([] as HealthRow[]),
         fetchMetadata(lb, serviceFilter, metadataQuery, queryErrors),
         fetchTargetResolution(lb, serviceFilter, queryErrors),
+        includeHealth ? fetchPriorHealth(lb, serviceFilter, queryErrors) : Promise.resolve([] as HealthRow[]),
+        includeHealth ? fetchExceptionCounts(lb, serviceFilter, queryErrors) : Promise.resolve([] as ExceptionRow[]),
       ]);
 
       if (!edgeRows.length) {
@@ -580,29 +667,77 @@ FROM traces-*.otel-*
         if (row["service.name"]) healthMap.set(row["service.name"]!, row);
       }
 
+      const priorHealthMap = new Map<string, HealthRow>();
+      for (const row of priorHealthRows) {
+        if (row["service.name"]) priorHealthMap.set(row["service.name"]!, row);
+      }
+
+      const exceptionMap = new Map<string, ExceptionRow>();
+      for (const row of exceptionRows) {
+        if (row["service.name"]) exceptionMap.set(row["service.name"]!, row);
+      }
+
       const services: Record<string, unknown>[] = [];
       for (const name of [...servicesSeen].sort()) {
         const node: Record<string, unknown> = { name };
         const meta = metaMap.get(name);
         if (meta) Object.assign(node, meta);
-        if (includeHealth && healthMap.has(name)) {
-          const h = healthMap.get(name)!;
-          const health: Record<string, unknown> = {};
-          if (h.span_count != null) health.span_count = h.span_count;
-          if (h.avg_duration_us != null) {
-            health.avg_duration_us = Math.round(h.avg_duration_us * 10) / 10;
+
+        if (includeHealth) {
+          const h = healthMap.get(name);
+          const priorH = priorHealthMap.get(name);
+          const exc = exceptionMap.get(name);
+
+          if (h) {
+            const spanCount = h.span_count ?? 0;
+            const errorCount = h.error_count ?? 0;
+            const health: Record<string, unknown> = {};
+            if (h.span_count != null) health.span_count = h.span_count;
+            if (h.avg_duration_us != null) health.avg_duration_us = Math.round(h.avg_duration_us * 10) / 10;
+            if (h.p99_duration_us != null) health.p99_duration_us = Math.round(h.p99_duration_us * 10) / 10;
+            health.error_count = errorCount;
+            health.error_rate = spanCount > 0 ? Math.round((errorCount / spanCount) * 10000) / 10000 : 0;
+            if (exc?.exception_count) health.exception_count = exc.exception_count;
+            node.health = health;
           }
-          if (h.p99_duration_us != null) {
-            health.p99_duration_us = Math.round(h.p99_duration_us * 10) / 10;
+
+          if (priorH) {
+            const priorSpanCount = priorH.span_count ?? 0;
+            const priorErrorCount = priorH.error_count ?? 0;
+            const priorErrorRate = priorSpanCount > 0 ? priorErrorCount / priorSpanCount : 0;
+            const prior: Record<string, unknown> = {};
+            if (priorH.span_count != null) prior.span_count = priorH.span_count;
+            if (priorH.avg_duration_us != null) prior.avg_duration_us = Math.round(priorH.avg_duration_us * 10) / 10;
+            prior.error_count = priorErrorCount;
+            prior.error_rate = Math.round(priorErrorRate * 10000) / 10000;
+            node.prior_health = prior;
+
+            const currentSpanCount = h?.span_count ?? 0;
+            const trend: Record<string, number> = {};
+            if (priorSpanCount > 0 && currentSpanCount > 0) {
+              trend.span_trend_pct = Math.round(((currentSpanCount - priorSpanCount) / priorSpanCount) * 100);
+            }
+            if (priorH.avg_duration_us && h?.avg_duration_us) {
+              trend.latency_trend_pct = Math.round(((h.avg_duration_us - priorH.avg_duration_us) / priorH.avg_duration_us) * 100);
+            }
+            if (h) {
+              const currentErrorRate = currentSpanCount > 0 ? (h.error_count ?? 0) / currentSpanCount : 0;
+              trend.error_rate_delta_pp = Math.round((currentErrorRate - priorErrorRate) * 1000) / 10;
+            }
+            if (Object.keys(trend).length) node.trend = trend;
+
+            if (priorSpanCount > 5 && (h?.span_count ?? 0) === 0) {
+              node.silent = true;
+            }
           }
-          if (h.error_count != null && h.error_count > 0) health.error_count = h.error_count;
-          if (Object.keys(health).length) node.health = health;
         }
+
         const hasIncoming = edges.some((e) => e.target === name);
         const hasOutgoing = edges.some((e) => e.source === name);
         if (hasOutgoing && !hasIncoming) node.role = "root";
         else if (hasIncoming && !hasOutgoing) node.role = "leaf";
         else node.role = "internal";
+        node.kibana_url = buildApmServiceLink(linkCtx, { serviceName: name, rangeFrom: `now-${lb}`, rangeTo: "now" });
         services.push(node);
       }
 

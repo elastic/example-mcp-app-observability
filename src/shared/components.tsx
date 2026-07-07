@@ -760,10 +760,12 @@ export function SectionTitleWithToggle({
   label,
   detailed,
   onToggle,
+  badge,
 }: {
   label: React.ReactNode;
   detailed: boolean;
   onToggle: () => void;
+  badge?: string;
 }) {
   return (
     <div
@@ -774,7 +776,12 @@ export function SectionTitleWithToggle({
         gap: 12,
       }}
     >
-      <span>{label}</span>
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {label}
+        {badge && (
+          <span style={{ fontSize: 10, color: theme.textMuted, fontWeight: 400, letterSpacing: 0 }}>{badge}</span>
+        )}
+      </span>
       <button
         onClick={onToggle}
         style={{
