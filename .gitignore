@@ -19,3 +19,6 @@ docs/development-with-forge.md
 
 # Internal Forge-based dev workflow skill — not for the public repo
 .claude/skills/mcp-app-dev-setup/
+
+# Local scratch/investigation scripts and test env files — not for the public repo
+scripts/local/

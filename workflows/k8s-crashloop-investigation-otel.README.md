@@ -6,23 +6,17 @@ branches on OOMKilled vs not, consults ML / logs, checks whether the failure is 
 environment-wide, correlates recent K8s changes, and synthesizes a root-cause hypothesis —
 before anyone opens a dashboard.
 
-## Two variants — identical except one const
+## ML job id
 
-| File | `ml_memory_job` const | Use |
-|---|---|---|
-| `k8s-crashloop-investigation-otel.yaml` | `demo_k8s_workload_memory_anomaly` | Our demo deployment (ML job installed with a `demo_` prefix) |
-| `k8s-crashloop-investigation-otel.shippable.yaml` | `k8s_workload_memory_anomaly` | **Customer-shippable** (integration default, no prefix) |
+The **only** per-environment knob is the `ml_memory_job` const — it must equal the installed
+job id. The `kubernetes_otel` integration installs the job as **`k8s_workload_memory_anomaly`**
+(job def in `packages/kubernetes_otel/kibana/ml_module/kubernetes_otel-metrics-ml.json`); if a
+deployment applies a job-id prefix, match it in the const.
 
-The step graphs are byte-for-byte identical (11 top-level steps). The **only** per-environment
-knob is the `ml_memory_job` const — it must equal the installed job id. The `kubernetes_otel`
-integration installs the job as **`k8s_workload_memory_anomaly`** (job def in
-`packages/kubernetes_otel/kibana/ml_module/kubernetes_otel-metrics-ml.json`); if a deployment
-applies a job-id prefix, match it in the const.
-
-> The `demo_*` job has the same detector — `high_mean k8s.pod.memory.working_set BY
-> k8s.deployment.name PARTITION k8s.namespace.name`. The OOM-branch ML query reads
-> `.ml-anomalies-*` record-level results: `by_field_value` = alerting workload (deployment),
-> `partition_field_value` = namespace, scored on `record_score`.
+> The detector is `high_mean k8s.pod.memory.working_set BY k8s.deployment.name PARTITION
+> k8s.namespace.name`. The OOM-branch ML query reads `.ml-anomalies-*` record-level results:
+> `by_field_value` = alerting workload (deployment), `partition_field_value` = namespace,
+> scored on `record_score`.
 
 ## Works OOTB — what each section needs
 
