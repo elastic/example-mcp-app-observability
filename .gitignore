@@ -16,3 +16,6 @@ docs/development-with-forge.md
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+
+# Internal Forge-based dev workflow skill — not for the public repo
+.claude/skills/mcp-app-dev-setup/
